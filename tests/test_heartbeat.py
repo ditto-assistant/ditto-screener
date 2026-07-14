@@ -12,6 +12,7 @@ from ditto_screener.heartbeat import (
     ScreenerHeartbeatRequest,
     ScreenerProgress,
     SystemMetricsCollector,
+    source_review_progress_stage,
 )
 
 _HOTKEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
@@ -27,6 +28,9 @@ _AGENT = "550e8400-e29b-41d4-a716-446655440000"
         "building",
         "starting",
         "health_check",
+        "source_review_0",
+        "source_review_50",
+        "source_review_100",
         "submitting",
     ],
 )
@@ -45,6 +49,22 @@ def test_v2_accepts_every_public_progress_stage(stage: str) -> None:
         }
     )
     assert heartbeat.progress == ScreenerProgress(stage=stage, started_at=100)
+
+
+@pytest.mark.parametrize(
+    ("completed", "total", "expected"),
+    [
+        (0, 10, "source_review_0"),
+        (1, 10, "source_review_10"),
+        (3, 20, "source_review_20"),
+        (10, 10, "source_review_100"),
+        (30, 10, "source_review_100"),
+    ],
+)
+def test_source_review_progress_is_coarse_and_bounded(
+    completed: int, total: int, expected: str
+) -> None:
+    assert source_review_progress_stage(completed, total) == expected
 
 
 @pytest.mark.parametrize(

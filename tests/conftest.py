@@ -36,6 +36,11 @@ def _default_config(**overrides: Any) -> ScreenerConfig:
         "http_timeout_seconds": 5.0,
         "policy_manifest_file": None,
         "review_journal_file": None,
+        "source_review_api_key_file": None,
+        "source_review_model": "openai/gpt-5.6-luna",
+        "source_review_base_url": "https://openrouter.ai/api/v1",
+        "source_review_timeout_seconds": 180.0,
+        "source_review_max_steps": 10,
     }
     base.update(overrides)
     return ScreenerConfig(**base)

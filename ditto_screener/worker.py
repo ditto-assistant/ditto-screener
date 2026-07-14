@@ -27,7 +27,11 @@ from ditto_screener.heartbeat import (
     ScreenerRuntimeState,
 )
 from ditto_screener.signing import sign_heartbeat, sign_verdict
-from ditto_screening_protocol import SCREENING_POLICY_VERSION, ScreenerQueueItem
+from ditto_screening_protocol import (
+    SCREENING_POLICY_VERSION,
+    ScreenerQueueItem,
+    ScreenResultOutcome,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -226,7 +230,10 @@ class ScreenerWorker:
                 download_url=str(artifact.download_url),
                 progress=self._set_progress,
             )
-            if not result.submits_verdict:
+            submits_result = (
+                result.submits_verdict or result.outcome.value == "quarantine"
+            )
+            if not submits_result:
                 logger.warning(
                     "screening agent_id=%s outcome=%s manifest=%s; "
                     "no public verdict submitted and lease remains authoritative",
@@ -236,28 +243,50 @@ class ScreenerWorker:
                 )
                 return
             self._set_progress("submitting")
+            typed_outcome = ScreenResultOutcome(result.outcome.value)
+            passed = typed_outcome == ScreenResultOutcome.PASS
+            is_quarantine = typed_outcome == ScreenResultOutcome.QUARANTINE
+            reason_code = (
+                result.evidence[-1].code if is_quarantine and result.evidence else None
+            )
+            finding_digest = (
+                next(
+                    (item.digest for item in reversed(result.evidence) if item.digest),
+                    None,
+                )
+                if is_quarantine
+                else None
+            )
             signature = sign_verdict(
                 self._keypair,
                 screener_hotkey=self._config.screener_hotkey,
                 agent_id=agent_id,
-                passed=result.passed,
+                passed=passed,
                 policy_version=policy_version,
                 attempt_id=item.attempt_id,
+                outcome=typed_outcome if is_quarantine else None,
+                manifest_digest=result.manifest_digest if is_quarantine else None,
+                finding_digest=finding_digest,
+                reason_code=reason_code,
             )
             resp = await self._platform.submit_result(
                 agent_id,
                 signature=signature,
-                passed=result.passed,
+                passed=passed,
                 policy_version=policy_version,
                 detail=result.detail,
                 attempt_id=item.attempt_id,
+                outcome=typed_outcome if is_quarantine else None,
+                manifest_digest=result.manifest_digest if is_quarantine else None,
+                finding_digest=finding_digest,
+                reason_code=reason_code,
             )
             logger.info(
                 "screened agent_id=%s miner=%s outcome=%s passed=%s -> %s%s",
                 agent_id,
                 item.miner_hotkey,
                 result.outcome,
-                result.passed,
+                passed,
                 resp.status,
                 f" detail={result.detail!r}" if result.detail else "",
             )

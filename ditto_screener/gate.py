@@ -61,7 +61,10 @@ from uuid import UUID
 import httpx
 
 from ditto_screener.fake_gateway import LOCKED_HARNESS_MODEL
-from ditto_screener.heartbeat import ScreenerProgressStage
+from ditto_screener.heartbeat import (
+    ScreenerProgressStage,
+    source_review_progress_stage,
+)
 from ditto_screener.policy import (
     ChallengeObservation,
     PolicyContext,
@@ -71,6 +74,7 @@ from ditto_screener.policy import (
     ScreeningOutcome,
     core_decision,
 )
+from ditto_screener.source_review import OpenRouterSourceReviewAgent
 
 if TYPE_CHECKING:
     from ditto_screener.config import ScreenerConfig
@@ -111,6 +115,15 @@ class _StageResult:
             raise ValueError("a passing stage result cannot be retryable")
 
 
+@dataclass(frozen=True)
+class _AuditRuntime:
+    """Ephemeral values used only while a selected private audit runs."""
+
+    harness_base: str
+    gateway_response_token: str
+    gateway_state_file: str
+
+
 def dockerfile_at_root(member_names: list[str]) -> bool:
     """Whether the tar has a ``Dockerfile`` at its root.
 
@@ -119,6 +132,33 @@ def dockerfile_at_root(member_names: list[str]) -> bool:
     Dockerfile only in a subdirectory does not satisfy the gate.
     """
     return any(name in ("Dockerfile", "./Dockerfile") for name in member_names)
+
+
+def _rust_diagnostic(code: str, message: str, help_text: str) -> str:
+    """Return a rustc-style contract diagnostic without source excerpts."""
+    return f"error[{code}]: {message}\n\nhelp: {help_text}"
+
+
+def _gateway_call_count(path: str) -> int:
+    """Count bounded call markers written by one isolated fake gateway."""
+    try:
+        data = Path(path).read_bytes()
+    except FileNotFoundError:
+        return 0
+    if len(data) > 64 * 1024:
+        raise ValueError("fake gateway call state exceeded safety cap")
+    return data.count(b"1\n")
+
+
+def _contains_string(value: object, needle: str) -> bool:
+    """Whether a JSON value contains the exact ephemeral gateway token."""
+    if isinstance(value, str):
+        return needle in value
+    if isinstance(value, list):
+        return any(_contains_string(item, needle) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_string(item, needle) for item in value.values())
+    return False
 
 
 def _log_tail(text: str) -> str:
@@ -161,6 +201,13 @@ class BuildGate:
         self._client = client
         self._policy = policy
         self._journal = journal
+        self._source_reviewer = OpenRouterSourceReviewAgent(
+            api_key_file=config.source_review_api_key_file,
+            model=config.source_review_model,
+            base_url=config.source_review_base_url,
+            timeout_seconds=config.source_review_timeout_seconds,
+            max_steps=config.source_review_max_steps,
+        )
 
     async def screen(
         self,
@@ -252,7 +299,7 @@ class BuildGate:
 
             report("starting")
             started = asyncio.get_running_loop().time()
-            serve_result, harness_base = await self._run_and_probe(
+            serve_result, audit_runtime = await self._run_and_probe(
                 tag,
                 container,
                 gateway_container=gateway_container,
@@ -282,8 +329,8 @@ class BuildGate:
                     else "container did not satisfy the health contract",
                     detail=f"{prefix}: {serve_result.detail}",
                 )
-            if harness_base is None:
-                raise RuntimeError("healthy harness has no isolated base URL")
+            if audit_runtime is None:
+                raise RuntimeError("healthy harness has no isolated audit runtime")
 
             async def run_challenge(
                 challenge_id: str, request: Mapping[str, object], timeout: float
@@ -292,8 +339,19 @@ class BuildGate:
                     challenge_id,
                     request,
                     timeout,
-                    harness_base=harness_base,
+                    harness_base=audit_runtime.harness_base,
                     probe_container=gateway_container,
+                    gateway_response_token=audit_runtime.gateway_response_token,
+                    gateway_state_file=audit_runtime.gateway_state_file,
+                )
+
+            async def review_source():  # type: ignore[no-untyped-def]
+                return await self._source_reviewer.review(
+                    tmp_path,
+                    artifact_sha256=sha256.lower(),
+                    progress=lambda completed, total: report(
+                        source_review_progress_stage(completed, total)
+                    ),
                 )
 
             context = PolicyContext(
@@ -306,6 +364,7 @@ class BuildGate:
                 build_elapsed_ms=build_elapsed_ms,
                 health_elapsed_ms=health_elapsed_ms,
                 run_challenge=run_challenge,
+                review_source=review_source,
             )
             report("validating")
             decision = await self._policy.evaluate(context)
@@ -387,40 +446,87 @@ class BuildGate:
                         or (path.parts and path.parts[0].endswith(":"))
                         or ".." in path.parts
                     ):
-                        return "contract failed: unsafe archive path"
+                        return _rust_diagnostic(
+                            "SCR-RUST-001",
+                            "archive contains an unsafe path",
+                            "remove absolute paths, parent traversals, backslashes, "
+                            "and drive-prefixed entries",
+                        )
                     if name in members:
-                        return "contract failed: duplicate archive path"
+                        return _rust_diagnostic(
+                            "SCR-RUST-002",
+                            "archive contains a duplicate path",
+                            "package each path exactly once",
+                        )
                     if not (member.isfile() or member.isdir()):
-                        return "contract failed: links and special files are forbidden"
+                        return _rust_diagnostic(
+                            "SCR-RUST-003",
+                            "archive contains a link or special file",
+                            "package only regular files and directories",
+                        )
                     unpacked += member.size
                     if unpacked > _MAX_UNPACKED_BYTES:
-                        return "contract failed: archive expands beyond the safety cap"
+                        return _rust_diagnostic(
+                            "SCR-RUST-004",
+                            "archive expands beyond the safety limit",
+                            "remove generated assets and build output before packaging",
+                        )
                     members[name] = member
 
                 if "Dockerfile" not in members or not members["Dockerfile"].isfile():
-                    return "contract failed: no Dockerfile at tarball root"
+                    return _rust_diagnostic(
+                        "SCR-RUST-005",
+                        "Dockerfile is missing from the archive root",
+                        "package the crate contents so Dockerfile is at the top level",
+                    )
                 manifest_member = members.get("Cargo.toml")
                 if manifest_member is None or not manifest_member.isfile():
-                    return "contract failed: no Cargo.toml at tarball root"
+                    return _rust_diagnostic(
+                        "SCR-RUST-006",
+                        "Cargo.toml is missing from the archive root",
+                        "package the crate contents, not the directory containing "
+                        "the crate",
+                    )
                 if not any(
                     name.startswith("src/") and name.endswith(".rs") and member.isfile()
                     for name, member in members.items()
                 ):
-                    return "contract failed: no Rust source under src/"
+                    return _rust_diagnostic(
+                        "SCR-RUST-007",
+                        "no Rust source file was found under src/",
+                        "include at least one .rs source file below src/",
+                    )
 
                 manifest_file = tar.extractfile(manifest_member)
                 if manifest_file is None:
-                    return "contract failed: Cargo.toml is unreadable"
+                    return _rust_diagnostic(
+                        "SCR-RUST-008",
+                        "Cargo.toml could not be read",
+                        "recreate the archive from a readable UTF-8 crate manifest",
+                    )
                 try:
                     manifest = tomllib.loads(manifest_file.read().decode("utf-8"))
                 except (UnicodeDecodeError, tomllib.TOMLDecodeError):
-                    return "contract failed: Cargo.toml is invalid"
+                    return _rust_diagnostic(
+                        "SCR-RUST-009",
+                        "Cargo.toml is not valid UTF-8 TOML",
+                        "run cargo metadata locally and fix the first manifest error",
+                    )
                 if not isinstance(manifest.get("package"), dict):
-                    return "contract failed: Cargo.toml has no package"
+                    return _rust_diagnostic(
+                        "SCR-RUST-010",
+                        "Cargo.toml has no [package] table",
+                        "submit a runnable Rust package rather than a virtual "
+                        "workspace",
+                    )
                 return None
         except (tarfile.TarError, OSError) as e:
             logger.warning("could not read tar %s: %s", tar_path, e)
-            return "contract failed: archive is unreadable"
+            return _rust_diagnostic(
+                "SCR-RUST-011",
+                "archive is not a readable gzip-compressed tar",
+                "recreate it as a .tar.gz archive and retry",
+            )
 
     def _source_metadata(self, tar_path: str) -> tuple[str, tuple[str, ...]]:
         """Return a canonical content digest and bounded normalized path list."""
@@ -473,7 +579,7 @@ class BuildGate:
         network: str,
         gateway_state_dir: str,
         progress: Callable[[ScreenerProgressStage], None] | None = None,
-    ) -> tuple[_StageResult, str | None]:
+    ) -> tuple[_StageResult, _AuditRuntime | None]:
         """Run the image and await health against the isolated fake gateway."""
         port = self._config.container_port
         response_text = f"ditto-fake-gateway-{secrets.token_hex(16)}"
@@ -550,7 +656,14 @@ class BuildGate:
             )
         # Production v6 intentionally stops here. No synthetic POST /run is
         # issued unless a private policy selector explicitly chooses an audit.
-        return _StageResult(True, ""), harness_base
+        return (
+            _StageResult(True, ""),
+            _AuditRuntime(
+                harness_base=harness_base,
+                gateway_response_token=response_text,
+                gateway_state_file=str(Path(gateway_state_dir) / "model-called"),
+            ),
+        )
 
     async def _start_fake_gateway(
         self,
@@ -655,12 +768,15 @@ class BuildGate:
         *,
         harness_base: str,
         probe_container: str,
+        gateway_response_token: str,
+        gateway_state_file: str,
     ) -> ChallengeObservation:
         """Run one selected private challenge and retain only bounded evidence.
 
         This is observational triage. A response shape or timing can route to
         review, but it is never interpreted as proof of causal model use.
         """
+        calls_before = _gateway_call_count(gateway_state_file)
         started = asyncio.get_running_loop().time()
         code, out = await self._request_from_sidecar(
             probe_container,
@@ -669,6 +785,7 @@ class BuildGate:
             timeout=min(timeout, self._config.run_timeout_seconds),
         )
         elapsed_ms = round((asyncio.get_running_loop().time() - started) * 1000)
+        gateway_calls = max(0, _gateway_call_count(gateway_state_file) - calls_before)
         if code != 0:
             return ChallengeObservation(
                 challenge_id=challenge_id,
@@ -676,6 +793,7 @@ class BuildGate:
                 response_digest=None,
                 elapsed_ms=elapsed_ms,
                 error_code="challenge-http-failure",
+                gateway_calls=gateway_calls,
             )
         body = out.encode()
         response_digest = hashlib.sha256(body).hexdigest()
@@ -688,6 +806,7 @@ class BuildGate:
                 response_digest=response_digest,
                 elapsed_ms=elapsed_ms,
                 error_code="challenge-invalid-json",
+                gateway_calls=gateway_calls,
             )
         if not isinstance(payload, dict):
             return ChallengeObservation(
@@ -696,6 +815,7 @@ class BuildGate:
                 response_digest=response_digest,
                 elapsed_ms=elapsed_ms,
                 error_code="challenge-invalid-shape",
+                gateway_calls=gateway_calls,
             )
         return ChallengeObservation(
             challenge_id=challenge_id,
@@ -703,6 +823,8 @@ class BuildGate:
             response_digest=response_digest,
             elapsed_ms=elapsed_ms,
             json_keys=tuple(sorted(str(key) for key in payload)[:64]),
+            gateway_calls=gateway_calls,
+            gateway_token_observed=_contains_string(payload, gateway_response_token),
         )
 
     async def _request_from_sidecar(

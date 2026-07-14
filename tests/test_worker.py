@@ -110,6 +110,7 @@ class _FakePlatform:
         policy_version,
         detail="",
         attempt_id,
+        **typed,
     ):
         if self.submit_error is not None:
             raise self.submit_error
@@ -121,6 +122,7 @@ class _FakePlatform:
                 "policy_version": policy_version,
                 "detail": detail,
                 "attempt_id": attempt_id,
+                **typed,
             }
         )
 
@@ -188,7 +190,7 @@ async def test_screen_one_retryable_failure_preserves_v6_screening_failed_verdic
     assert platform.verdicts[0]["detail"].startswith("screener error:")
 
 
-async def test_quarantine_submits_no_public_verdict(
+async def test_quarantine_submits_attempt_bound_typed_result(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
     platform = _FakePlatform([])
@@ -200,7 +202,12 @@ async def test_quarantine_submits_no_public_verdict(
     )
     worker = _worker(make_config(), platform, gate)
     await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
-    assert platform.verdicts == []
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    assert verdict["passed"] is False
+    assert verdict["outcome"].value == "quarantine"
+    assert verdict["manifest_digest"]
+    assert verdict["reason_code"] == "test"
 
 
 async def test_verdict_platform_error_swallowed(

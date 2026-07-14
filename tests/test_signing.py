@@ -12,7 +12,7 @@ from ditto_screener.signing import (
     sign_verdict,
     verdict_signing_message,
 )
-from ditto_screening_protocol import SCREENING_POLICY_VERSION
+from ditto_screening_protocol import SCREENING_POLICY_VERSION, ScreenResultOutcome
 
 _HOTKEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
 _AGENT = UUID("550e8400-e29b-41d4-a716-446655440000")
@@ -65,6 +65,27 @@ def test_attempt_signature_binds_exact_lease() -> None:
         == (
             "ditto-screen-verdict:v2:"
             f"{_HOTKEY}:{_AGENT}:{_ATTEMPT}:True:{SCREENING_POLICY_VERSION}"
+        ).encode()
+    )
+
+
+def test_typed_quarantine_signature_binds_private_evidence_digests() -> None:
+    message = verdict_signing_message(
+        screener_hotkey=_HOTKEY,
+        agent_id=_AGENT,
+        attempt_id=_ATTEMPT,
+        passed=False,
+        outcome=ScreenResultOutcome.QUARANTINE,
+        manifest_digest="12" * 32,
+        finding_digest="34" * 32,
+        reason_code="agentic-source-review-tripwire",
+    )
+    assert (
+        message
+        == (
+            "ditto-screen-result:v3:"
+            f"{_HOTKEY}:{_AGENT}:{_ATTEMPT}:quarantine:{SCREENING_POLICY_VERSION}:"
+            f"{'12' * 32}:{'34' * 32}:agentic-source-review-tripwire"
         ).encode()
     )
 

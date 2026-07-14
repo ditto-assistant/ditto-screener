@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCREENING_POLICY_VERSION = 6
 
@@ -22,12 +22,23 @@ class AgentStatus(StrEnum):
     SCREENING = "screening"
     SCREENING_PASSED = "screening_passed"
     SCREENING_FAILED = "screening_failed"
+    QUARANTINED = "quarantined"
     REJECTED = "rejected"
     EVALUATING = "evaluating"
     SCORED = "scored"
     LIVE = "live"
     ATH_PENDING_REVIEW = "ath_pending_review"
     BANNED = "banned"
+
+
+class ScreenResultOutcome(StrEnum):
+    """Typed screener result; non-verdict outcomes never become rejection."""
+
+    PASS = "pass"
+    DETERMINISTIC_REJECT = "deterministic_reject"
+    RETRYABLE_INFRA = "retryable_infra"
+    QUARANTINE = "quarantine"
+    INCONCLUSIVE = "inconclusive"
 
 
 class ArtifactResponse(BaseModel):
@@ -144,6 +155,12 @@ class ScreenResultRequest(BaseModel):
         bool,
         Field(description="True promotes to evaluating; False -> screening_failed."),
     ]
+    outcome: ScreenResultOutcome | None = None
+    manifest_digest: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
+    finding_digest: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
+    reason_code: Annotated[str | None, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")] = (
+        None
+    )
     policy_version: Annotated[
         int,
         Field(
@@ -175,6 +192,27 @@ class ScreenResultRequest(BaseModel):
             }
         }
     )
+
+    @model_validator(mode="after")
+    def validate_typed_outcome(self) -> ScreenResultRequest:
+        if self.outcome is None:
+            return self
+        if self.passed != (self.outcome == ScreenResultOutcome.PASS):
+            raise ValueError("passed must agree with outcome")
+        if (
+            self.outcome
+            in {
+                ScreenResultOutcome.QUARANTINE,
+                ScreenResultOutcome.INCONCLUSIVE,
+            }
+            and self.attempt_id is None
+        ):
+            raise ValueError("non-verdict outcome requires attempt_id")
+        if self.outcome == ScreenResultOutcome.QUARANTINE and (
+            self.manifest_digest is None or self.reason_code is None
+        ):
+            raise ValueError("quarantine requires manifest_digest and reason_code")
+        return self
 
 
 class ScreenResultResponse(BaseModel):

@@ -129,11 +129,25 @@ class ChallengeObservation:
     elapsed_ms: int
     json_keys: tuple[str, ...] = ()
     error_code: str | None = None
+    gateway_calls: int = 0
+    gateway_token_observed: bool = False
+
+
+@dataclass(frozen=True)
+class SourceReviewObservation:
+    """Sanitized result from the private read-only source-review agent."""
+
+    ok: bool
+    risk_level: str | None
+    finding_digest: str | None
+    categories: tuple[str, ...]
+    error_code: str | None = None
 
 
 ChallengeRunner = Callable[
     [str, Mapping[str, object], float], Awaitable[ChallengeObservation]
 ]
+SourceReviewRunner = Callable[[], Awaitable[SourceReviewObservation]]
 
 
 @dataclass(frozen=True)
@@ -149,6 +163,7 @@ class PolicyContext:
     build_elapsed_ms: int
     health_elapsed_ms: int
     run_challenge: ChallengeRunner
+    review_source: SourceReviewRunner | None = None
 
 
 @dataclass(frozen=True)
@@ -386,6 +401,60 @@ class SourceFingerprintTriageModule(_BaseModule):
 
 
 @dataclass(frozen=True)
+class AgenticSourceReviewModule(_BaseModule):
+    """Use private read-only source analysis as a quarantine selector only."""
+
+    async def evaluate(self, context: PolicyContext) -> ModuleResult:
+        if context.review_source is None:
+            return ModuleResult(
+                ModuleDisposition.RETRYABLE_INFRA,
+                (
+                    PolicyEvidence(
+                        self.module_id,
+                        "source-review-unavailable",
+                        "private source-review infrastructure was unavailable",
+                    ),
+                ),
+            )
+        observation = await context.review_source()
+        if not observation.ok:
+            return ModuleResult(
+                ModuleDisposition.RETRYABLE_INFRA,
+                (
+                    PolicyEvidence(
+                        self.module_id,
+                        observation.error_code or "source-review-inconclusive",
+                        "private source review did not produce a usable result",
+                    ),
+                ),
+            )
+        if observation.risk_level == "low":
+            return ModuleResult(ModuleDisposition.CLEAR)
+        if observation.risk_level not in {"medium", "high"}:
+            return ModuleResult(
+                ModuleDisposition.INCONCLUSIVE,
+                (
+                    PolicyEvidence(
+                        self.module_id,
+                        "source-review-invalid-risk",
+                        "private source review returned an invalid risk level",
+                    ),
+                ),
+            )
+        return ModuleResult(
+            ModuleDisposition.TRIPWIRE,
+            (
+                PolicyEvidence(
+                    self.module_id,
+                    "agentic-source-review-tripwire",
+                    "private source analysis selected a behavioral audit",
+                    observation.finding_digest,
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class BehavioralChallengePackModule(_BaseModule):
     """Run a rotating private black-box pack as observational evidence only."""
 
@@ -408,7 +477,14 @@ class BehavioralChallengePackModule(_BaseModule):
                 ),
             )
         evidence: list[PolicyEvidence] = []
-        for challenge_id, request, timeout, required_keys in challenges:
+        for (
+            challenge_id,
+            request,
+            timeout,
+            required_keys,
+            require_model_call,
+            require_gateway_token,
+        ) in challenges:
             observation = await context.run_challenge(challenge_id, request, timeout)
             if not observation.ok:
                 evidence.append(
@@ -419,6 +495,27 @@ class BehavioralChallengePackModule(_BaseModule):
                     )
                 )
                 return ModuleResult(ModuleDisposition.INCONCLUSIVE, tuple(evidence))
+            if require_model_call and observation.gateway_calls < 1:
+                evidence.append(
+                    PolicyEvidence(
+                        self.module_id,
+                        "challenge-model-call-missing",
+                        "private challenge returned without an observed model call",
+                        observation.response_digest,
+                    )
+                )
+                return ModuleResult(ModuleDisposition.QUARANTINE, tuple(evidence))
+            if require_gateway_token and not observation.gateway_token_observed:
+                evidence.append(
+                    PolicyEvidence(
+                        self.module_id,
+                        "challenge-gateway-token-missing",
+                        "private challenge response was not bound to the "
+                        "ephemeral model output",
+                        observation.response_digest,
+                    )
+                )
+                return ModuleResult(ModuleDisposition.QUARANTINE, tuple(evidence))
             missing = set(required_keys).difference(observation.json_keys)
             if missing:
                 evidence.append(
@@ -605,25 +702,35 @@ def _read_json(path: Path, *, max_bytes: int) -> Any:
 
 def _parse_challenges(
     pack: object,
-) -> tuple[tuple[str, Mapping[str, object], float, tuple[str, ...]], ...]:
+) -> tuple[tuple[str, Mapping[str, object], float, tuple[str, ...], bool, bool], ...]:
     if not isinstance(pack, dict) or set(pack) != {"challenges"}:
         raise ValueError("challenge pack has unexpected fields")
     raw = pack["challenges"]
     if not isinstance(raw, list) or not 1 <= len(raw) <= _MAX_CHALLENGES:
         raise ValueError("challenge pack size is invalid")
-    parsed: list[tuple[str, Mapping[str, object], float, tuple[str, ...]]] = []
+    parsed: list[
+        tuple[str, Mapping[str, object], float, tuple[str, ...], bool, bool]
+    ] = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) != {
+        required_fields = {
             "id",
             "request",
             "timeout_seconds",
             "required_response_keys",
-        }:
+        }
+        optional_fields = {"require_model_call", "require_gateway_token"}
+        if (
+            not isinstance(item, dict)
+            or not required_fields.issubset(item)
+            or not set(item).issubset(required_fields | optional_fields)
+        ):
             raise ValueError("challenge has unexpected fields")
         challenge_id = item["id"]
         request = item["request"]
         timeout = item["timeout_seconds"]
         required = item["required_response_keys"]
+        require_model_call = item.get("require_model_call", False)
+        require_gateway_token = item.get("require_gateway_token", False)
         if (
             not isinstance(challenge_id, str)
             or not 1 <= len(challenge_id) <= _MAX_ID
@@ -633,10 +740,20 @@ def _parse_challenges(
             or not 1 <= float(timeout) <= 60
             or not isinstance(required, list)
             or any(not isinstance(key, str) or not key for key in required)
+            or not isinstance(require_model_call, bool)
+            or not isinstance(require_gateway_token, bool)
+            or (require_gateway_token and not require_model_call)
         ):
             raise ValueError("challenge fields have invalid types")
         parsed.append(
-            (challenge_id, request, float(timeout), tuple(sorted(set(required))))
+            (
+                challenge_id,
+                request,
+                float(timeout),
+                tuple(sorted(set(required))),
+                require_model_call,
+                require_gateway_token,
+            )
         )
     return tuple(parsed)
 
@@ -686,6 +803,9 @@ def _build_module(spec: Mapping[str, object]) -> PolicyModule:
                 _string_list(spec, "suspicious_path_suffixes")
             ),
         )
+    if kind == "agentic_source_review":
+        _expect_keys(spec, {"kind", "id"})
+        return AgenticSourceReviewModule(module_id=module_id)
     if kind == "behavioral_challenge_pack":
         _expect_keys(spec, {"kind", "id", "pack_path"})
         return BehavioralChallengePackModule(
@@ -741,6 +861,7 @@ __all__ = [
     "PolicyEvidence",
     "PolicyManifest",
     "ReviewJournal",
+    "SourceReviewObservation",
     "ScreeningDecision",
     "ScreeningOutcome",
     "core_decision",

@@ -19,6 +19,7 @@ from ditto_screener.heartbeat import (
 )
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
+    ScreenResultOutcome,
     verdict_signing_message,
 )
 
@@ -63,6 +64,10 @@ def sign_verdict(
     passed: bool,
     policy_version: int = SCREENING_POLICY_VERSION,
     attempt_id: UUID | None = None,
+    outcome: ScreenResultOutcome | None = None,
+    manifest_digest: str | None = None,
+    finding_digest: str | None = None,
+    reason_code: str | None = None,
 ) -> str:
     """Return the hex sr25519 signature over the canonical verdict payload."""
     message = verdict_signing_message(
@@ -71,6 +76,10 @@ def sign_verdict(
         passed=passed,
         policy_version=policy_version,
         attempt_id=attempt_id,
+        outcome=outcome,
+        manifest_digest=manifest_digest,
+        finding_digest=finding_digest,
+        reason_code=reason_code,
     )
     signature: bytes = keypair.sign(message)
     return signature.hex()
