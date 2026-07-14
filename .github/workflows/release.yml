@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - run: git reset --hard "${{ github.sha }}"
+      - run: |
+          git config user.name github-actions
+          git config user.email actions@users.noreply.github.com
+
+      - name: Version, tag, and create the GitHub release
+        uses: python-semantic-release/python-semantic-release@8f4d8c4e3e4fcd2b8df16444b148aa49920cc4d3
+        with:
+          github_token: ${{ secrets.RELEASE_TOKEN }}
+          git_committer_name: github-actions
+          git_committer_email: actions@users.noreply.github.com
