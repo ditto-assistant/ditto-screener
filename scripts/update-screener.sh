@@ -15,6 +15,8 @@ SCREENER_CACHE_KEEP_STORAGE="${SCREENER_CACHE_KEEP_STORAGE:-12GB}"
 checkout="$SCREENER_ROOT/src"
 venv="$checkout/.venv"
 env_file="$SCREENER_ROOT/screener.env"
+unit_source="$checkout/deploy/ditto-screener.service"
+unit_file="/etc/systemd/system/${SCREENER_UNIT}.service"
 gc_state_dir="$SCREENER_ROOT/state"
 gc_marker="$gc_state_dir/last-cache-gc"
 
@@ -52,9 +54,15 @@ CURL_CONFIG
 }
 
 wait_for_health() {
+  local consecutive_healthy=0
   for attempt in $(seq 1 30); do
     if systemctl is-active --quiet "$SCREENER_UNIT" && probe_platform; then
-      return 0
+      consecutive_healthy=$((consecutive_healthy + 1))
+      if [[ "$consecutive_healthy" -ge 3 ]]; then
+        return 0
+      fi
+    else
+      consecutive_healthy=0
     fi
     if [[ "$attempt" -eq 30 ]]; then
       return 1
@@ -108,12 +116,40 @@ runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$resolved_sha"
 runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
   "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
 
+if [[ ! -f "$unit_source" ]]; then
+  echo "required screener unit is missing: $unit_source" >&2
+  runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$current_sha"
+  runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
+    "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+  exit 1
+fi
+
+unit_backup="$(mktemp)"
+unit_existed=false
+if [[ -f "$unit_file" ]]; then
+  cp "$unit_file" "$unit_backup"
+  unit_existed=true
+fi
+cleanup() {
+  rm -f "$unit_backup"
+}
+trap cleanup EXIT
+
+install -o root -g root -m 0644 "$unit_source" "$unit_file"
+systemctl daemon-reload
+
 systemctl restart "$SCREENER_UNIT"
 if ! wait_for_health; then
   echo "new screener failed health checks; rolling back to $current_sha" >&2
   runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$current_sha"
   runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
     "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+  if [[ "$unit_existed" == true ]]; then
+    install -o root -g root -m 0644 "$unit_backup" "$unit_file"
+  else
+    rm -f "$unit_file"
+  fi
+  systemctl daemon-reload
   systemctl restart "$SCREENER_UNIT"
   wait_for_health || systemctl status "$SCREENER_UNIT" --no-pager >&2 || true
   exit 1

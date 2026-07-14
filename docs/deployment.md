@@ -4,9 +4,10 @@ Production runs as the `ditto-screener` systemd unit on the isolated
 `ditto-screener-prod` VM. GitHub Actions authenticates to GCP with Workload
 Identity Federation, copies the updater over IAP, and deploys the exact tested
 commit. The updater keeps the old process running through fetch and dependency
-sync, restarts only after the checkout is ready, verifies systemd plus an
-authenticated read-only policy preflight, and rolls back if the new process is
-not healthy.
+sync, installs the repository-owned systemd unit, restarts only after the
+checkout is ready, verifies three consecutive systemd plus authenticated
+read-only policy preflight checks, and rolls back both the code and unit if the
+new process is not healthy.
 
 ## Required GitHub secrets
 
