@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-07-14)
+
+### Features
+
+- Activate policy v7 Luna screening ([#6](https://github.com/ditto-assistant/ditto-screener/pull/6),
+  [`8846b4a`](https://github.com/ditto-assistant/ditto-screener/commit/8846b4adc75d8426909281151e34b50cfa2cbeac))
+
+
 ## v0.3.0 (2026-07-14)
 
 ### Features
