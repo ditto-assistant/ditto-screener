@@ -42,35 +42,19 @@ the VM:
 Never place any secret value, private challenge, private risk rule, or raw
 artifact evidence in source, workflow arguments, logs, or PR text.
 
-## Backward-compatible v6 rollout
+## Policy v7 rollout
 
-This extraction does not bump policy, change signing bytes, migrate data, or
-repin production by itself. Keep production on release `v0.4.2` / policy 6 while
-the PRs are reviewed.
-
-1. Merge `ditto-screener` first. Configure its repository/environment secrets
-   and read-only deploy key. Keep `SCREENER_POLICY_MANIFEST_FILE` unset for the
-   first deployment so the worker runs the behavior-identical v6 build/health
-   core with the synthetic `/run` assertion disabled.
-2. Deploy the new v6 worker alongside the old v6 worker. The platform's atomic,
-   oldest-first lease claim and unique running-attempt constraint prevent a
-   submission from being claimed twice. Verify policy preflight, `attempt_id`
-   and deadline retention, signed pass, deterministic Rust-contract rejection,
-   retryable `screening_failed`, and unchanged public history/statuses.
-   Until the separate fleet-health platform PR lands, optional heartbeat 404s
-   are throttled and do not gate claims or verdicts.
-3. Merge and deploy `ditto-platform`. It consumes protocol package `0.6.1` from
-   the exact reviewed screener commit but keeps policy 6 and the existing state
-   machine. A mixed old/new worker fleet remains safe because both sign the
-   identical v2 canonical message.
-4. Stop the old subnet screener only after the extracted worker is healthy and
-   draining leases. Let any already-claimed old-worker lease finish or expire;
-   late/conflicting results remain rejected.
-5. Merge and release `ditto-subnet` last to remove the obsolete runtime and
-   deployment coupling. Miner submissions and validator behavior do not change.
-6. Enable a protected private manifest only as a separate, reversible operator
-   action. Timing/relay and random-control selectors may escalate to private
-   challenges; they never terminally reject on their own.
+1. Merge and deploy the platform protocol pin first. Existing v6 workers stop
+   claiming because the queue advertises required policy version 7. Existing
+   submissions and accepted validator scores are preserved.
+2. Deploy the v7 worker. The updater materializes `validator-openrouter-key`
+   from Secret Manager into a mode-0400 file and verifies that the platform
+   requires the installed worker policy before declaring deployment healthy.
+3. Verify a baseline pass, a quarantine path, signed results, heartbeats, and
+   cache maintenance. Let any old-worker lease finish or expire; late or
+   conflicting results remain rejected.
+4. A protected private manifest remains an optional, reversible operator
+   override. Timing and random-control selectors never terminally reject.
 
 At every step, late, expired, conflicting, wrong-policy, wrong-agent, and
 wrong-signer verdicts remain rejected. Existing waiting-validator/evaluating

@@ -18,13 +18,15 @@ Flow for one agent:
    ``build_timeout_seconds``.
 4. **Serve smoke.** Run the image detached with a memory + pids cap and poll
    ``GET /health`` until it returns 2xx.
-5. **Private policy.** The default v6 manifest stops after health. A rotating
+5. **Private policy.** The default v7 manifest performs bounded Luna source
+   review after health. A rotating
    private manifest may use timing, random-control, fingerprint, and behavioral
    audit modules. Those signals can only pass or route to review; they cannot
    produce a deterministic rejection.
 6. **Teardown.** The container + image are always removed.
 
-A pass is "built and served" under the default production-v6 manifest.
+A pass is "built, served, and cleared by bounded source review" under the
+default production-v7 manifest.
 Deterministic contract violations fail; infrastructure failures are retryable.
 Failures include a short ``detail``
 (response body, container-log tail, or failing stage) for the miner and operator.

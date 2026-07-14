@@ -17,7 +17,7 @@ import httpx
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.gate import BuildGate, _detail_tail, _log_tail, dockerfile_at_root
 from ditto_screener.policy import (
-    CORE_V6_MANIFEST,
+    CORE_ONLY_MANIFEST,
     PolicyEngine,
     ReviewJournal,
     ScreeningOutcome,
@@ -63,7 +63,7 @@ def _gate_with(
     gate = BuildGate(
         config,
         client,
-        policy=PolicyEngine(CORE_V6_MANIFEST),
+        policy=PolicyEngine(CORE_ONLY_MANIFEST),
         journal=ReviewJournal(None),
     )
     gate._run = run_stub  # type: ignore[method-assign]
@@ -112,7 +112,7 @@ async def test_default_v6_builds_and_health_checks_without_run(
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
 
     assert result.outcome == ScreeningOutcome.PASS
-    assert result.manifest_digest == CORE_V6_MANIFEST.digest
+    assert result.manifest_digest == CORE_ONLY_MANIFEST.digest
     assert any("http://harness:8080/health" in arg for call in calls for arg in call)
     assert not any("http://harness:8080/run" in arg for call in calls for arg in call)
 

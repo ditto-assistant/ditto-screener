@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 from ditto_screener.policy import (
-    CORE_V6_MANIFEST,
+    CORE_ONLY_MANIFEST,
     AgenticSourceReviewModule,
     BehavioralChallengePackModule,
     ChallengeObservation,
@@ -81,18 +81,42 @@ def _model_binding_engine(tmp_path: Path) -> PolicyEngine:
     return PolicyEngine(manifest, (selector, challenge))
 
 
-async def test_core_v6_pass_never_calls_run() -> None:
+async def test_core_only_pass_never_calls_run() -> None:
     calls = 0
 
     async def challenge(*_):  # type: ignore[no-untyped-def]
         nonlocal calls
         calls += 1
-        raise AssertionError("core-only v6 must not call /run")
+        raise AssertionError("core-only policy must not call /run")
 
-    decision = await PolicyEngine(CORE_V6_MANIFEST).evaluate(_context(challenge))
+    decision = await PolicyEngine(CORE_ONLY_MANIFEST).evaluate(_context(challenge))
     assert decision.outcome == ScreeningOutcome.PASS
     assert decision.submits_verdict and decision.passed
     assert calls == 0
+
+
+async def test_default_v7_runs_luna_review_and_passes_low_risk() -> None:
+    reviews = 0
+
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("default v7 must not call /run")
+
+    async def review() -> SourceReviewObservation:
+        nonlocal reviews
+        reviews += 1
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="low",
+            finding_digest=None,
+            categories=("none",),
+        )
+
+    engine = load_policy_engine(None)
+    decision = await engine.evaluate(_context(challenge, review))
+
+    assert engine.manifest.rotation_id == "v7-luna-source-review"
+    assert decision.outcome == ScreeningOutcome.PASS
+    assert reviews == 1
 
 
 async def test_timing_is_only_a_tripwire_and_routes_to_quarantine(
@@ -342,7 +366,7 @@ def test_manifest_rotation_changes_digest_not_policy_or_signature_contract(
     manifest.write_text(
         json.dumps(
             {
-                "policy_version": 6,
+                "policy_version": 7,
                 "rotation_id": "2026-07-14-private",
                 "modules": [
                     {
@@ -356,8 +380,8 @@ def test_manifest_rotation_changes_digest_not_policy_or_signature_contract(
         )
     )
     engine = load_policy_engine(str(manifest))
-    assert engine.manifest.policy_version == SCREENING_POLICY_VERSION == 6
-    assert engine.manifest.digest != CORE_V6_MANIFEST.digest
+    assert engine.manifest.policy_version == SCREENING_POLICY_VERSION == 7
+    assert engine.manifest.digest != CORE_ONLY_MANIFEST.digest
 
 
 def test_review_journal_is_bounded_private_and_mode_0600(tmp_path: Path) -> None:
@@ -385,7 +409,8 @@ def test_review_journal_is_bounded_private_and_mode_0600(tmp_path: Path) -> None
 def test_live_v6_snapshot_is_an_acceptance_fixture() -> None:
     fixture = Path(__file__).parent / "fixtures" / "production-v6-snapshot.json"
     snapshot = json.loads(fixture.read_text())
-    assert snapshot["screening_policy_version"] == SCREENING_POLICY_VERSION == 6
+    assert snapshot["screening_policy_version"] == 6
+    assert SCREENING_POLICY_VERSION == 7
     assert snapshot["queue"]["waiting_validator"] == 9
     assert snapshot["queue"]["evaluating"] == 1
     assert len(snapshot["rust_contract_rejections"]) == 6

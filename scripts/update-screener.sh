@@ -11,6 +11,8 @@ SCREENER_UV_BIN="${SCREENER_UV_BIN:-/usr/local/bin/uv}"
 SCREENER_REPOSITORY_URL="${SCREENER_REPOSITORY_URL:-git@github.com:ditto-assistant/ditto-screener.git}"
 SCREENER_CACHE_GC_INTERVAL_SECONDS="${SCREENER_CACHE_GC_INTERVAL_SECONDS:-21600}"
 SCREENER_CACHE_KEEP_STORAGE="${SCREENER_CACHE_KEEP_STORAGE:-12GB}"
+SCREENER_GCP_PROJECT="${SCREENER_GCP_PROJECT:-ditto-app-dev}"
+SCREENER_SOURCE_REVIEW_SECRET_ID="${SCREENER_SOURCE_REVIEW_SECRET_ID:-validator-openrouter-key}"
 
 checkout="$SCREENER_ROOT/src"
 venv="$checkout/.venv"
@@ -19,6 +21,8 @@ unit_source="$checkout/deploy/ditto-screener.service"
 unit_file="/etc/systemd/system/${SCREENER_UNIT}.service"
 gc_state_dir="$SCREENER_ROOT/state"
 gc_marker="$gc_state_dir/last-cache-gc"
+secret_dir="$SCREENER_ROOT/secrets"
+source_review_key="$secret_dir/source-review-openrouter.key"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "update-screener.sh must run as root" >&2
@@ -38,7 +42,7 @@ env_value() {
 }
 
 probe_platform() {
-  local platform_url api_token hotkey
+  local platform_url api_token hotkey response required supported
   platform_url="$(env_value SCREENER_PLATFORM_API_URL)"
   api_token="$(env_value SCREENER_API_TOKEN)"
   hotkey="$(env_value SCREENER_HOTKEY)"
@@ -46,11 +50,48 @@ probe_platform() {
   : "${api_token:?missing SCREENER_API_TOKEN}"
   : "${hotkey:?missing SCREENER_HOTKEY}"
 
-  curl --fail --silent --show-error --config - \
-    "$platform_url/api/v1/screener/queue?limit=1" >/dev/null <<CURL_CONFIG
+  response="$(curl --fail --silent --show-error --config - \
+    "$platform_url/api/v1/screener/queue?limit=1" <<CURL_CONFIG
 header = "Authorization: Bearer $api_token"
 header = "X-Screener-Hotkey: $hotkey"
 CURL_CONFIG
+  )"
+  required="$(printf '%s' "$response" | "$venv/bin/python" -c \
+    'import json,sys; print(json.load(sys.stdin)["required_policy_version"])')"
+  supported="$(runuser -u "$SCREENER_USER" -- "$venv/bin/python" -c \
+    'from ditto_screening_protocol import SCREENING_POLICY_VERSION; print(SCREENING_POLICY_VERSION)')"
+  if [[ "$required" != "$supported" ]]; then
+    echo "screening policy mismatch: platform requires $required, worker supports $supported" >&2
+    return 1
+  fi
+}
+
+upsert_env() {
+  local key="$1" value="$2" tmp
+  tmp="$(mktemp)"
+  grep -v "^${key}=" "$env_file" >"$tmp" || true
+  printf '%s=%s\n' "$key" "$value" >>"$tmp"
+  install -o root -g ditto -m 0640 "$tmp" "$env_file"
+  rm -f "$tmp"
+}
+
+materialize_source_review_key() {
+  local tmp
+  command -v gcloud >/dev/null || {
+    echo "gcloud is required to materialize the source review key" >&2
+    return 1
+  }
+  install -d -o "$SCREENER_USER" -g ditto -m 0750 "$secret_dir"
+  tmp="$(mktemp)"
+  if ! gcloud secrets versions access latest \
+    --project="$SCREENER_GCP_PROJECT" \
+    --secret="$SCREENER_SOURCE_REVIEW_SECRET_ID" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  install -o "$SCREENER_USER" -g ditto -m 0400 "$tmp" "$source_review_key"
+  rm -f "$tmp"
+  upsert_env SCREENER_SOURCE_REVIEW_API_KEY_FILE "$source_review_key"
 }
 
 wait_for_health() {
@@ -94,6 +135,10 @@ if [[ "$current_origin" != "$SCREENER_REPOSITORY_URL" ]]; then
   runuser -u "$SCREENER_USER" -- git -C "$checkout" remote set-url origin \
     "$SCREENER_REPOSITORY_URL"
 fi
+
+# Refresh the protected key on every scheduled deployment run so Secret Manager
+# rotation does not require an unrelated code change.
+materialize_source_review_key
 
 if [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
   systemctl is-active --quiet "$SCREENER_UNIT"; then

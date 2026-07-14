@@ -213,7 +213,11 @@ class PolicyManifest:
         return hashlib.sha256(canonical).hexdigest()
 
 
-CORE_V6_MANIFEST = PolicyManifest(rotation_id="v6-core-build-health-no-run")
+CORE_ONLY_MANIFEST = PolicyManifest(rotation_id="v7-core-build-health-no-run")
+DEFAULT_V7_MANIFEST = PolicyManifest(
+    rotation_id="v7-luna-source-review",
+    module_specs=({"kind": "agentic_source_review", "id": "luna-source-review"},),
+)
 
 
 def core_decision(
@@ -223,11 +227,11 @@ def core_decision(
     summary: str,
     detail: str,
 ) -> ScreeningDecision:
-    """Build an objective stable-core result under the v6 manifest."""
+    """Build an objective stable-core result under the current policy."""
     return ScreeningDecision(
         outcome=outcome,
         detail=detail,
-        manifest_digest=CORE_V6_MANIFEST.digest,
+        manifest_digest=CORE_ONLY_MANIFEST.digest,
         evidence=(PolicyEvidence("stable-core", code, summary),),
     )
 
@@ -607,9 +611,12 @@ class PolicyEngine:
 
 
 def load_policy_engine(manifest_path: str | None) -> PolicyEngine:
-    """Load a strict private manifest, or the behavior-identical v6 default."""
+    """Load a strict private manifest, or production v7 Luna source review."""
     if manifest_path is None:
-        return PolicyEngine(CORE_V6_MANIFEST)
+        return PolicyEngine(
+            DEFAULT_V7_MANIFEST,
+            (AgenticSourceReviewModule(module_id="luna-source-review"),),
+        )
     raw = _read_json(Path(manifest_path), max_bytes=_MAX_MANIFEST_BYTES)
     if not isinstance(raw, dict) or set(raw) != {
         "policy_version",
@@ -854,7 +861,8 @@ def _is_sha256(value: str) -> bool:
 
 
 __all__ = [
-    "CORE_V6_MANIFEST",
+    "CORE_ONLY_MANIFEST",
+    "DEFAULT_V7_MANIFEST",
     "ChallengeObservation",
     "PolicyContext",
     "PolicyEngine",

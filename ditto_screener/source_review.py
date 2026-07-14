@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import tarfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,6 +33,9 @@ _ALLOWED_CATEGORIES = frozenset(
         "none",
     }
 )
+_RETRY_DELAYS_SECONDS = (0.5, 1.0)
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
 You are a defensive source reviewer for an adversarial benchmark submission.
@@ -232,26 +237,7 @@ class OpenRouterSourceReviewAgent:
             transport=self._transport, timeout=self._timeout_seconds
         ) as client:
             for _step in range(self._max_steps):
-                response = await client.post(
-                    f"{self._base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "X-Title": "Ditto private source review",
-                    },
-                    json={
-                        "model": self._model,
-                        "messages": messages,
-                        "tools": _TOOLS,
-                        "tool_choice": "auto",
-                        "max_completion_tokens": 2200,
-                        "provider": {
-                            "zdr": True,
-                            "data_collection": "deny",
-                            "require_parameters": True,
-                        },
-                    },
-                )
-                response.raise_for_status()
+                response = await self._post_completion(client, api_key, messages)
                 payload = response.json()
                 message = _assistant_message(payload)
                 messages.append(message)
@@ -274,6 +260,59 @@ class OpenRouterSourceReviewAgent:
                 if progress is not None:
                     progress(_step + 1, self._max_steps)
         raise ValueError("source reviewer exceeded step budget")
+
+    async def _post_completion(
+        self,
+        client: httpx.AsyncClient,
+        api_key: str,
+        messages: list[dict[str, object]],
+    ) -> httpx.Response:
+        request = {
+            "model": self._model,
+            "messages": messages,
+            "tools": _TOOLS,
+            "tool_choice": "auto",
+            "max_completion_tokens": 2200,
+            "provider": {
+                "zdr": True,
+                "data_collection": "deny",
+                "require_parameters": True,
+            },
+        }
+        for attempt in range(len(_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                response = await client.post(
+                    f"{self._base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "X-Title": "Ditto private source review",
+                    },
+                    json=request,
+                )
+                if response.status_code != 429 and response.status_code < 500:
+                    response.raise_for_status()
+                    return response
+                response.raise_for_status()
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code
+                if status != 429 and status < 500:
+                    raise
+                if attempt >= len(_RETRY_DELAYS_SECONDS):
+                    raise
+                logger.warning(
+                    "source review request transiently failed; retrying attempt=%d",
+                    attempt + 2,
+                )
+                await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt])
+            except httpx.TransportError:
+                if attempt >= len(_RETRY_DELAYS_SECONDS):
+                    raise
+                logger.warning(
+                    "source review request transiently failed; retrying attempt=%d",
+                    attempt + 2,
+                )
+                await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt])
+        raise RuntimeError("unreachable")
 
 
 def _assistant_message(payload: object) -> dict[str, object]:

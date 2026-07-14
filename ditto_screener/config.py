@@ -99,7 +99,7 @@ class ScreenerConfig:
     """Per-request timeout for platform HTTP calls + artifact download."""
 
     policy_manifest_file: str | None
-    """Private rotating policy manifest. ``None`` is core-only production v6."""
+    """Private rotating policy manifest. ``None`` activates production v7."""
 
     review_journal_file: str | None
     """Mode-0600 append-only journal for quarantine/inconclusive outcomes."""
@@ -226,6 +226,10 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         )
     if len(config.api_token) < 32:
         raise ScreenerConfigError("SCREENER_API_TOKEN must be at least 32 characters")
+    if not config.source_review_api_key_file:
+        raise ScreenerConfigError(
+            "SCREENER_SOURCE_REVIEW_API_KEY_FILE is required by screening policy v7"
+        )
     if not 1 <= config.source_review_max_steps <= 20:
         raise ScreenerConfigError(
             "SCREENER_SOURCE_REVIEW_MAX_STEPS must be between 1 and 20"
