@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.3.0 (2026-07-14)
+
+### Features
+
+- Quarantine model-bypass audit anomalies
+  ([#4](https://github.com/ditto-assistant/ditto-screener/pull/4),
+  [`953b220`](https://github.com/ditto-assistant/ditto-screener/commit/953b2204839291195ca6cc2d468a8888f791b1b7))
+
+
 ## v0.2.0 (2026-07-14)
 
 ### Features
