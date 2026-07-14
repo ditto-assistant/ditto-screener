@@ -15,6 +15,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DockerHealthStatus = Literal["healthy", "degraded", "unavailable"]
 ScreenerRuntimeState = Literal["polling", "screening", "error", "paused"]
+ScreenerProgressStage = Literal[
+    "preparing",
+    "downloading",
+    "validating",
+    "building",
+    "starting",
+    "health_check",
+    "submitting",
+]
 _SS58_PATTERN = r"^[1-9A-HJ-NP-Za-km-z]{47,48}$"
 _SIGNATURE_HEX_PATTERN = r"^[0-9a-fA-F]{128}$"
 _SOFTWARE_VERSION_PATTERN = r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$"
@@ -57,6 +66,15 @@ class SystemMetrics(BaseModel):
     docker: DockerHealth
 
 
+class ScreenerProgress(BaseModel):
+    """Small, public-safe description of an active screening job."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    stage: ScreenerProgressStage
+    started_at: Annotated[int, Field(ge=0)]
+
+
 class ScreenerHeartbeatRequest(BaseModel):
     """Dedicated screener identity, work, and optional coarse host health."""
 
@@ -68,9 +86,24 @@ class ScreenerHeartbeatRequest(BaseModel):
     policy_version: Annotated[int, Field(ge=1, le=2**31 - 1)]
     state: ScreenerRuntimeState
     active_agent_id: UUID | None = None
+    progress: ScreenerProgress | None = None
     system_metrics: SystemMetrics | None = None
     timestamp: Annotated[int, Field(ge=0)]
     signature: Annotated[str, Field(pattern=_SIGNATURE_HEX_PATTERN)]
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> ScreenerHeartbeatRequest:
+        if self.progress is None:
+            return self
+        if self.protocol_version < 2:
+            raise ValueError("progress requires heartbeat protocol v2")
+        if self.state != "screening" or self.active_agent_id is None:
+            raise ValueError("progress requires active screening work")
+        if self.progress.started_at > self.timestamp:
+            raise ValueError("progress start cannot be after the heartbeat")
+        if self.timestamp - self.progress.started_at > 6 * 60 * 60:
+            raise ValueError("progress start is outside the bounded job window")
+        return self
 
 
 class ScreenerHeartbeatResponse(BaseModel):
@@ -95,6 +128,13 @@ def system_metrics_signing_token(metrics: SystemMetrics | None) -> str:
             docker.unhealthy_containers,
         )
     )
+
+
+def screener_progress_signing_token(progress: ScreenerProgress | None) -> str:
+    """Return the canonical v2 token for the optional progress allowlist."""
+    if progress is None:
+        return "-"
+    return f"{progress.stage},{progress.started_at}"
 
 
 def _coarse_percent(value: float) -> int:
@@ -182,8 +222,11 @@ __all__ = [
     "DockerHealth",
     "ScreenerHeartbeatRequest",
     "ScreenerHeartbeatResponse",
+    "ScreenerProgress",
+    "ScreenerProgressStage",
     "ScreenerRuntimeState",
     "SystemMetrics",
     "SystemMetricsCollector",
+    "screener_progress_signing_token",
     "system_metrics_signing_token",
 ]

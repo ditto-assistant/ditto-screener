@@ -10,8 +10,69 @@ from pydantic import ValidationError
 from ditto_screener.heartbeat import (
     DockerHealth,
     ScreenerHeartbeatRequest,
+    ScreenerProgress,
     SystemMetricsCollector,
 )
+
+_HOTKEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+_AGENT = "550e8400-e29b-41d4-a716-446655440000"
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "preparing",
+        "downloading",
+        "validating",
+        "building",
+        "starting",
+        "health_check",
+        "submitting",
+    ],
+)
+def test_v2_accepts_every_public_progress_stage(stage: str) -> None:
+    heartbeat = ScreenerHeartbeatRequest.model_validate(
+        {
+            "screener_hotkey": _HOTKEY,
+            "software_version": "0.2.0",
+            "protocol_version": 2,
+            "policy_version": 6,
+            "state": "screening",
+            "active_agent_id": _AGENT,
+            "progress": {"stage": stage, "started_at": 100},
+            "timestamp": 120,
+            "signature": "ab" * 64,
+        }
+    )
+    assert heartbeat.progress == ScreenerProgress(stage=stage, started_at=100)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"progress": {"stage": "docker_layer", "started_at": 100}},
+        {"progress": {"stage": "building", "started_at": 121}},
+        {"protocol_version": 1, "progress": {"stage": "building", "started_at": 100}},
+        {"state": "polling", "progress": {"stage": "building", "started_at": 100}},
+        {"active_agent_id": None, "progress": {"stage": "building", "started_at": 100}},
+        {"timestamp": 21602, "progress": {"stage": "building", "started_at": 1}},
+    ],
+)
+def test_progress_rejects_invalid_or_unbounded_fields(overrides: dict) -> None:
+    payload = {
+        "screener_hotkey": _HOTKEY,
+        "software_version": "0.2.0",
+        "protocol_version": 2,
+        "policy_version": 6,
+        "state": "screening",
+        "active_agent_id": _AGENT,
+        "progress": {"stage": "building", "started_at": 100},
+        "timestamp": 120,
+        "signature": "ab" * 64,
+    }
+    payload.update(overrides)
+    with pytest.raises(ValidationError):
+        ScreenerHeartbeatRequest.model_validate(payload)
 
 
 def test_collector_rounds_and_caches_without_identifying_metadata() -> None:

@@ -52,7 +52,7 @@ import shutil
 import tarfile
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -61,6 +61,7 @@ from uuid import UUID
 import httpx
 
 from ditto_screener.fake_gateway import LOCKED_HARNESS_MODEL
+from ditto_screener.heartbeat import ScreenerProgressStage
 from ditto_screener.policy import (
     ChallengeObservation,
     PolicyContext,
@@ -169,8 +170,17 @@ class BuildGate:
         miner_hotkey: str,
         sha256: str,
         download_url: str,
+        progress: Callable[[ScreenerProgressStage], None] | None = None,
     ) -> ScreeningDecision:
         """Screen one agent end-to-end; never raises."""
+
+        def report(stage: ScreenerProgressStage) -> None:
+            try:
+                if progress is not None:
+                    progress(stage)
+            except Exception:  # noqa: BLE001 - telemetry cannot affect screening
+                logger.warning("screener progress callback failed; screening continues")
+
         tag = f"ditto-screen/{agent_id}:latest"
         container = f"ditto-screen-{agent_id}"
         gateway_container = f"ditto-gateway-{agent_id}"
@@ -179,6 +189,7 @@ class BuildGate:
         os.chmod(gateway_state_dir, 0o755)
         tmp_path: str | None = None
         try:
+            report("downloading")
             tmp_path, dl_detail = await self._download_verified(download_url, sha256)
             if tmp_path is None:
                 outcome = (
@@ -201,6 +212,7 @@ class BuildGate:
                     else "artifact violated the bounded download contract",
                     detail=detail,
                 )
+            report("validating")
             contract_error = self._contract_error(tmp_path)
             if contract_error is not None:
                 return core_decision(
@@ -211,6 +223,7 @@ class BuildGate:
                 )
             source_digest, source_paths = self._source_metadata(tmp_path)
 
+            report("building")
             started = asyncio.get_running_loop().time()
             built, build_detail = await self._build(tmp_path, tag)
             build_elapsed_ms = round(
@@ -237,6 +250,7 @@ class BuildGate:
                     ),
                 )
 
+            report("starting")
             started = asyncio.get_running_loop().time()
             serve_result, harness_base = await self._run_and_probe(
                 tag,
@@ -244,6 +258,7 @@ class BuildGate:
                 gateway_container=gateway_container,
                 network=network,
                 gateway_state_dir=gateway_state_dir,
+                progress=report,
             )
             health_elapsed_ms = round(
                 (asyncio.get_running_loop().time() - started) * 1000
@@ -292,6 +307,7 @@ class BuildGate:
                 health_elapsed_ms=health_elapsed_ms,
                 run_challenge=run_challenge,
             )
+            report("validating")
             decision = await self._policy.evaluate(context)
             self._journal.record(context=context, decision=decision)
             return decision
@@ -456,6 +472,7 @@ class BuildGate:
         gateway_container: str,
         network: str,
         gateway_state_dir: str,
+        progress: Callable[[ScreenerProgressStage], None] | None = None,
     ) -> tuple[_StageResult, str | None]:
         """Run the image and await health against the isolated fake gateway."""
         port = self._config.container_port
@@ -514,6 +531,8 @@ class BuildGate:
             )
 
         harness_base = f"http://{_HARNESS_ALIAS}:{port}"
+        if progress is not None:
+            progress("health_check")
         healthy, detail = await self._wait_healthy(
             harness_base, probe_container=gateway_container
         )
