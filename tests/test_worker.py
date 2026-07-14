@@ -18,6 +18,7 @@ from ditto_screening_protocol import (
     ArtifactResponse,
     ScreenerQueueItem,
     ScreenerQueueResponse,
+    ScreenResultOutcome,
 )
 
 _MINER = "5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm"
@@ -154,6 +155,7 @@ async def test_screen_one_pass_posts_signed_pass_verdict(
     assert v["passed"] is True and v["signature"] == "cd" * 64 and v["detail"] == ""
     assert v["policy_version"] == SCREENING_POLICY_VERSION
     assert v["attempt_id"] is not None
+    assert v["outcome"] == ScreenResultOutcome.PASS
     assert platform.heartbeats[0].state == "screening"
     assert platform.heartbeats[0].progress.stage == "preparing"
     assert platform.heartbeats[-1].state == "polling"
@@ -171,6 +173,7 @@ async def test_screen_one_fail_forwards_detail(
     await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
     v = platform.verdicts[0]
     assert v["passed"] is False and "E0432" in v["detail"]
+    assert v["outcome"] == ScreenResultOutcome.DETERMINISTIC_REJECT
 
 
 async def test_screen_one_retryable_failure_preserves_v6_screening_failed_verdict(
@@ -188,6 +191,7 @@ async def test_screen_one_retryable_failure_preserves_v6_screening_failed_verdic
     assert len(platform.verdicts) == 1
     assert platform.verdicts[0]["passed"] is False
     assert platform.verdicts[0]["detail"].startswith("screener error:")
+    assert platform.verdicts[0]["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
 
 
 async def test_quarantine_submits_attempt_bound_typed_result(
