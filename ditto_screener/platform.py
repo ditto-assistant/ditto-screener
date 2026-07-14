@@ -22,6 +22,7 @@ from ditto_screener.heartbeat import (
 from ditto_screening_protocol import (
     ArtifactResponse,
     ScreenerQueueResponse,
+    ScreenResultOutcome,
     ScreenResultRequest,
     ScreenResultResponse,
 )
@@ -115,6 +116,10 @@ class PlatformClient:
         policy_version: int,
         detail: str = "",
         attempt_id: UUID,
+        outcome: ScreenResultOutcome | None = None,
+        manifest_digest: str | None = None,
+        finding_digest: str | None = None,
+        reason_code: str | None = None,
     ) -> ScreenResultResponse:
         """Report a signed pass/fail verdict for ``agent_id``."""
         url = f"{self._base}{_PREFIX}/agent/{agent_id}/result"
@@ -125,6 +130,10 @@ class PlatformClient:
             policy_version=policy_version,
             detail=detail,
             attempt_id=attempt_id,
+            outcome=outcome,
+            manifest_digest=manifest_digest,
+            finding_digest=finding_digest,
+            reason_code=reason_code,
         )
         try:
             resp = await self._client.post(

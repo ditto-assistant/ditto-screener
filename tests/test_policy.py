@@ -9,6 +9,7 @@ from uuid import UUID
 
 from ditto_screener.policy import (
     CORE_V6_MANIFEST,
+    AgenticSourceReviewModule,
     BehavioralChallengePackModule,
     ChallengeObservation,
     PolicyContext,
@@ -17,6 +18,7 @@ from ditto_screener.policy import (
     ReviewJournal,
     ScreeningOutcome,
     SourceFingerprintTriageModule,
+    SourceReviewObservation,
     TimingRelayRiskModule,
     core_decision,
     load_policy_engine,
@@ -30,6 +32,7 @@ _DIGEST = "de" * 32
 
 def _context(  # type: ignore[no-untyped-def]
     challenge,
+    review_source=None,
 ) -> PolicyContext:
     return PolicyContext(
         agent_id=_AGENT,
@@ -41,7 +44,41 @@ def _context(  # type: ignore[no-untyped-def]
         build_elapsed_ms=100,
         health_elapsed_ms=20,
         run_challenge=challenge,
+        review_source=review_source,
     )
+
+
+def _model_binding_engine(tmp_path: Path) -> PolicyEngine:
+    pack = tmp_path / "rotating-pack.json"
+    pack.write_text(
+        json.dumps(
+            {
+                "challenges": [
+                    {
+                        "id": "rotating-private-control",
+                        "request": {"case_id": "private-control"},
+                        "timeout_seconds": 10,
+                        "required_response_keys": ["final_text", "tool_calls"],
+                        "require_model_call": True,
+                        "require_gateway_token": True,
+                    }
+                ]
+            }
+        )
+    )
+    selector = SourceFingerprintTriageModule(
+        module_id="private-selector",
+        known_source_digests=frozenset({_DIGEST}),
+    )
+    challenge = BehavioralChallengePackModule(module_id="model-binding", pack_path=pack)
+    manifest = PolicyManifest(
+        rotation_id="private-control",
+        module_specs=(
+            {"kind": "source_fingerprint"},
+            {"kind": "behavioral_challenge_pack"},
+        ),
+    )
+    return PolicyEngine(manifest, (selector, challenge))
 
 
 async def test_core_v6_pass_never_calls_run() -> None:
@@ -77,6 +114,32 @@ async def test_timing_is_only_a_tripwire_and_routes_to_quarantine(
     assert decision.outcome == ScreeningOutcome.QUARANTINE
     assert not decision.submits_verdict
     assert all(item.code != "deterministic_reject" for item in decision.evidence)
+
+
+async def test_agentic_source_review_can_only_select_quarantine() -> None:
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("no behavioral pack is configured")
+
+    async def review() -> SourceReviewObservation:
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="high",
+            finding_digest="ab" * 32,
+            categories=("provider_bypass",),
+        )
+
+    module = AgenticSourceReviewModule(module_id="private-source-review")
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="source-review",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (module,),
+    )
+    decision = await engine.evaluate(_context(challenge, review))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert not decision.submits_verdict
+    assert decision.evidence[0].code == "agentic-source-review-tripwire"
 
 
 async def test_tripwire_plus_behavioral_shape_anomaly_stays_quarantine(
@@ -163,6 +226,113 @@ async def test_inconclusive_challenge_is_not_a_rejection(tmp_path: Path) -> None
     )
     assert decision.outcome == ScreeningOutcome.INCONCLUSIVE
     assert not decision.submits_verdict
+
+
+async def test_canonical_starter_control_clears_ephemeral_model_binding(
+    tmp_path: Path,
+) -> None:
+    """Model a canonical kit response that propagates the fake gateway output."""
+
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "rotating-private-control",
+            True,
+            "ab" * 32,
+            75,
+            json_keys=("final_text", "tool_calls"),
+            gateway_calls=1,
+            gateway_token_observed=True,
+        )
+
+    decision = await _model_binding_engine(tmp_path).evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.PASS
+    assert decision.submits_verdict and decision.passed
+
+
+async def test_benchmark_shortcut_fixture_is_quarantined_not_rejected(
+    tmp_path: Path,
+) -> None:
+    """A valid-looking hardcoded response without a model call is review evidence."""
+
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "rotating-private-control",
+            True,
+            "cd" * 32,
+            1,
+            json_keys=("final_text", "tool_calls"),
+            gateway_calls=0,
+            gateway_token_observed=False,
+        )
+
+    decision = await _model_binding_engine(tmp_path).evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert not decision.submits_verdict
+    assert any(
+        item.code == "challenge-model-call-missing" for item in decision.evidence
+    )
+
+
+async def test_dummy_model_call_without_dataflow_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "rotating-private-control",
+            True,
+            "ef" * 32,
+            2,
+            json_keys=("final_text", "tool_calls"),
+            gateway_calls=1,
+            gateway_token_observed=False,
+        )
+
+    decision = await _model_binding_engine(tmp_path).evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert any(
+        item.code == "challenge-gateway-token-missing" for item in decision.evidence
+    )
+
+
+async def test_shape_only_pack_preserves_non_model_harness_compatibility(
+    tmp_path: Path,
+) -> None:
+    """Legacy/private audits opt into model binding explicitly."""
+    pack = tmp_path / "shape-only.json"
+    pack.write_text(
+        json.dumps(
+            {
+                "challenges": [
+                    {
+                        "id": "shape",
+                        "request": {},
+                        "timeout_seconds": 5,
+                        "required_response_keys": ["final_text"],
+                    }
+                ]
+            }
+        )
+    )
+    selector = SourceFingerprintTriageModule(
+        module_id="selector", known_source_digests=frozenset({_DIGEST})
+    )
+    challenge = BehavioralChallengePackModule(module_id="shape", pack_path=pack)
+    engine = PolicyEngine(
+        PolicyManifest(rotation_id="shape", module_specs=({"a": 1}, {"b": 2})),
+        (selector, challenge),
+    )
+
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "shape",
+            True,
+            "12" * 32,
+            1,
+            json_keys=("final_text",),
+        )
+
+    decision = await engine.evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.PASS
 
 
 def test_manifest_rotation_changes_digest_not_policy_or_signature_contract(

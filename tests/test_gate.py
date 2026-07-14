@@ -218,7 +218,10 @@ async def test_rust_contract_failure_is_terminal_reject(
     async with gate._client:
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
     assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
-    assert result.detail == "contract failed: no Cargo.toml at tarball root"
+    assert result.detail.startswith(
+        "error[SCR-RUST-006]: Cargo.toml is missing from the archive root"
+    )
+    assert "help:" in result.detail
     assert not any(call[0] == "build" for call in calls)
 
 
@@ -321,3 +324,32 @@ async def test_failure_diagnostics_are_bounded(
     await gate._client.aclose()
     assert "harness error body" in detail
     assert "gateway request log" in detail
+
+
+async def test_private_challenge_observes_isolated_gateway_dataflow(
+    make_config: Callable[..., ScreenerConfig], tmp_path: Path
+) -> None:
+    gate = _gate_with(make_config(), _ok_run(), tarball=_valid_tar())
+    state = tmp_path / "gateway-calls"
+    token = "ephemeral-audit-output"
+
+    async def request(*_: Any, **__: Any) -> tuple[int, str]:
+        state.write_text("1\n")
+        return 0, '{"final_text":"prefix ephemeral-audit-output suffix"}'
+
+    gate._request_from_sidecar = request  # type: ignore[method-assign]
+    observation = await gate._run_private_challenge(
+        "rotating-control",
+        {"case_id": "private-control"},
+        5,
+        harness_base="http://harness:8080",
+        probe_container="probe",
+        gateway_response_token=token,
+        gateway_state_file=str(state),
+    )
+    await gate._client.aclose()
+
+    assert observation.ok
+    assert observation.gateway_calls == 1
+    assert observation.gateway_token_observed
+    assert observation.json_keys == ("final_text",)

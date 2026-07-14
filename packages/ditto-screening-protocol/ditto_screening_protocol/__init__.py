@@ -6,6 +6,7 @@ from ditto_screening_protocol.models import (
     ArtifactResponse,
     ScreenerQueueItem,
     ScreenerQueueResponse,
+    ScreenResultOutcome,
     ScreenResultRequest,
     ScreenResultResponse,
 )
@@ -19,5 +20,6 @@ __all__ = [
     "ScreenerQueueResponse",
     "ScreenResultRequest",
     "ScreenResultResponse",
+    "ScreenResultOutcome",
     "verdict_signing_message",
 ]

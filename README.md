@@ -67,6 +67,9 @@ Required values are supplied through the production host's protected
   for quarantine and inconclusive evidence.
 - `SCREENER_AUDIT_SEED`: secret seed read only when a configured random-control
   module names this environment variable.
+- `SCREENER_SOURCE_REVIEW_API_KEY_FILE`: optional mode-0400 OpenRouter key file
+  for the private read-only source reviewer. The default model is
+  `openai/gpt-5.6-luna`.
 
 See [docs/policy-modules.md](docs/policy-modules.md) for the private module
 boundary and [docs/deployment.md](docs/deployment.md) for deployment secrets,

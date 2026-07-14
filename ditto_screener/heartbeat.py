@@ -22,8 +22,32 @@ ScreenerProgressStage = Literal[
     "building",
     "starting",
     "health_check",
+    "source_review_0",
+    "source_review_10",
+    "source_review_20",
+    "source_review_30",
+    "source_review_40",
+    "source_review_50",
+    "source_review_60",
+    "source_review_70",
+    "source_review_80",
+    "source_review_90",
+    "source_review_100",
     "submitting",
 ]
+_SOURCE_REVIEW_PROGRESS_STAGES: tuple[ScreenerProgressStage, ...] = (
+    "source_review_0",
+    "source_review_10",
+    "source_review_20",
+    "source_review_30",
+    "source_review_40",
+    "source_review_50",
+    "source_review_60",
+    "source_review_70",
+    "source_review_80",
+    "source_review_90",
+    "source_review_100",
+)
 _SS58_PATTERN = r"^[1-9A-HJ-NP-Za-km-z]{47,48}$"
 _SIGNATURE_HEX_PATTERN = r"^[0-9a-fA-F]{128}$"
 _SOFTWARE_VERSION_PATTERN = r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$"
@@ -109,6 +133,17 @@ class ScreenerHeartbeatRequest(BaseModel):
 class ScreenerHeartbeatResponse(BaseModel):
     accepted: bool
     seen_at: datetime
+
+
+def source_review_progress_stage(
+    completed_steps: int, total_steps: int
+) -> ScreenerProgressStage:
+    """Map private reviewer turns to a coarse public-safe progress bucket."""
+    if total_steps <= 0:
+        raise ValueError("source review total_steps must be positive")
+    completed = min(total_steps, max(0, completed_steps))
+    bucket = min(10, (completed * 10 + total_steps - 1) // total_steps)
+    return _SOURCE_REVIEW_PROGRESS_STAGES[bucket]
 
 
 def system_metrics_signing_token(metrics: SystemMetrics | None) -> str:

@@ -104,6 +104,14 @@ class ScreenerConfig:
     review_journal_file: str | None
     """Mode-0600 append-only journal for quarantine/inconclusive outcomes."""
 
+    source_review_api_key_file: str | None
+    """Root-controlled OpenRouter key file for private source review."""
+
+    source_review_model: str
+    source_review_base_url: str
+    source_review_timeout_seconds: float
+    source_review_max_steps: int
+
     def signing_source_present(self) -> bool:
         """Whether a usable signing key source is configured."""
         return bool(self.screener_mnemonic) or bool(
@@ -197,6 +205,19 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         http_timeout_seconds=_parse_float("SCREENER_HTTP_TIMEOUT_SECONDS", "60"),
         policy_manifest_file=os.environ.get("SCREENER_POLICY_MANIFEST_FILE") or None,
         review_journal_file=os.environ.get("SCREENER_REVIEW_JOURNAL_FILE") or None,
+        source_review_api_key_file=(
+            os.environ.get("SCREENER_SOURCE_REVIEW_API_KEY_FILE") or None
+        ),
+        source_review_model=os.environ.get(
+            "SCREENER_SOURCE_REVIEW_MODEL", "openai/gpt-5.6-luna"
+        ),
+        source_review_base_url=os.environ.get(
+            "SCREENER_SOURCE_REVIEW_BASE_URL", "https://openrouter.ai/api/v1"
+        ),
+        source_review_timeout_seconds=_parse_float(
+            "SCREENER_SOURCE_REVIEW_TIMEOUT_SECONDS", "180"
+        ),
+        source_review_max_steps=_parse_int("SCREENER_SOURCE_REVIEW_MAX_STEPS", "10"),
     )
     if not config.signing_source_present():
         raise ScreenerConfigError(
@@ -205,4 +226,8 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         )
     if len(config.api_token) < 32:
         raise ScreenerConfigError("SCREENER_API_TOKEN must be at least 32 characters")
+    if not 1 <= config.source_review_max_steps <= 20:
+        raise ScreenerConfigError(
+            "SCREENER_SOURCE_REVIEW_MAX_STEPS must be between 1 and 20"
+        )
     return config
