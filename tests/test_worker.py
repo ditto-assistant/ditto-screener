@@ -282,13 +282,13 @@ async def test_policy_mismatch_does_not_claim(
     assert gate.calls == []
 
 
-async def test_policy_six_claims_and_signs_policy_six(
+async def test_current_policy_claims_and_signs_current_policy(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
     platform = _FakePlatform([[_item(uuid4())]])
-    platform.required_policy_version = 6
+    platform.required_policy_version = SCREENING_POLICY_VERSION
     gate = _FakeGate(_decision(ScreeningOutcome.PASS))
     worker = _worker(make_config(), platform, gate)
 
     assert await worker._sweep(asyncio.Event()) == 1
-    assert platform.verdicts[0]["policy_version"] == 6
+    assert platform.verdicts[0]["policy_version"] == SCREENING_POLICY_VERSION

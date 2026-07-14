@@ -161,3 +161,57 @@ async def test_malformed_or_unavailable_reviewer_is_retryable_not_reject(
     assert not observation.ok
     assert observation.risk_level is None
     assert observation.error_code == "source-review-oserror"
+
+
+async def test_transient_openrouter_failure_is_retried(
+    tmp_path: Path, monkeypatch
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, request=request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                _tool(
+                                    "submit-1",
+                                    "submit_review",
+                                    {
+                                        "risk_level": "low",
+                                        "confidence": 0.9,
+                                        "categories": ["none"],
+                                        "evidence": [],
+                                        "summary": "General model-backed path.",
+                                    },
+                                )
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr("ditto_screener.source_review.asyncio.sleep", no_sleep)
+    observation = await _agent(key, httpx.MockTransport(handler)).review(
+        str(_archive(tmp_path, "fn main() { call_model(); }")),
+        artifact_sha256=_SHA,
+    )
+
+    assert observation.ok
+    assert calls == 2

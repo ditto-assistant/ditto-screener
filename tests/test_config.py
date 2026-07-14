@@ -17,6 +17,7 @@ def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "SCREENER_API_TOKEN", "test-screener-token-at-least-32-characters"
     )
     monkeypatch.setenv("SCREENER_MNEMONIC", _MNEMONIC)
+    monkeypatch.setenv("SCREENER_SOURCE_REVIEW_API_KEY_FILE", "/run/secrets/luna")
     for k in (
         "SCREENER_WALLET_NAME",
         "SCREENER_WALLET_HOTKEY",
@@ -80,6 +81,13 @@ def test_missing_api_token_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     _base_env(monkeypatch)
     monkeypatch.delenv("SCREENER_API_TOKEN")
     with pytest.raises(ScreenerConfigError, match="SCREENER_API_TOKEN"):
+        parse_screener_config_from_env()
+
+
+def test_missing_source_review_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_env(monkeypatch)
+    monkeypatch.delenv("SCREENER_SOURCE_REVIEW_API_KEY_FILE")
+    with pytest.raises(ScreenerConfigError, match="required by screening policy v7"):
         parse_screener_config_from_env()
 
 

@@ -481,7 +481,7 @@ wheels = [
 
 [[package]]
 name = "ditto-screener"
-version = "0.1.1"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "bittensor" },
@@ -524,7 +524,7 @@ dev = [
 
 [[package]]
 name = "ditto-screening-protocol"
-version = "0.7.0"
+version = "0.8.0"
 source = { directory = "packages/ditto-screening-protocol" }
 dependencies = [
     { name = "pydantic" },

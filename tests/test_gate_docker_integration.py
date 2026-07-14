@@ -16,12 +16,13 @@ import pytest
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.gate import BuildGate
 from ditto_screener.policy import (
-    CORE_V6_MANIFEST,
+    CORE_ONLY_MANIFEST,
     BehavioralChallengePackModule,
     PolicyEngine,
     PolicyManifest,
     ReviewJournal,
     SourceFingerprintTriageModule,
+    load_policy_engine,
 )
 
 
@@ -59,7 +60,7 @@ async def test_current_starter_kit_builds_and_health_checks_without_run(
     gate = BuildGate(
         config,
         client,
-        policy=PolicyEngine(CORE_V6_MANIFEST),
+        policy=PolicyEngine(CORE_ONLY_MANIFEST),
         journal=ReviewJournal(None),
     )
     challenge_calls = 0
@@ -164,3 +165,56 @@ async def test_current_starter_kit_clears_model_binding_audit(
 
     assert result.passed, result.detail
     assert any(item.code == "challenge-observed" for item in result.evidence)
+
+
+@pytest.mark.integration
+async def test_current_starter_kit_passes_real_default_v7_luna_review(
+    make_config: Any, tmp_path: Path
+) -> None:
+    starter_dir_raw = os.environ.get("DITTO_STARTER_KIT_DIR")
+    key_file = os.environ.get("SCREENER_SOURCE_REVIEW_API_KEY_FILE")
+    if not starter_dir_raw or not key_file:
+        pytest.skip("set starter-kit directory and protected source-review key")
+    archive = tmp_path / "dittobench-starter-kit-v7.tar.gz"
+    with archive.open("wb") as output:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(Path(starter_dir_raw).resolve()),
+                "archive",
+                "--format=tar.gz",
+                "HEAD",
+            ],
+            check=True,
+            stdout=output,
+        )
+    tarball = archive.read_bytes()
+
+    def artifact(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL("https://artifact.test/starter-kit.tar.gz")
+        return httpx.Response(200, content=tarball)
+
+    config: ScreenerConfig = make_config(
+        build_timeout_seconds=1200.0,
+        run_timeout_seconds=120.0,
+        max_tarball_bytes=20 * 1024 * 1024,
+        source_review_api_key_file=key_file,
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(artifact))
+    gate = BuildGate(
+        config,
+        client,
+        policy=load_policy_engine(None),
+        journal=ReviewJournal(None),
+    )
+    async with client:
+        result = await gate.screen(
+            agent_id=uuid4(),
+            attempt_id=uuid4(),
+            miner_hotkey="5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm",
+            sha256=hashlib.sha256(tarball).hexdigest(),
+            download_url="https://artifact.test/starter-kit.tar.gz",
+        )
+
+    assert result.passed, result.detail
