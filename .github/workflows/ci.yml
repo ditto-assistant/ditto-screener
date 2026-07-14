@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --group dev
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - name: Type-check the minimum supported Python version
+        if: matrix.python-version == '3.11'
+        run: uv run mypy ditto_screener
+      - run: uv run pytest -m "not integration"
+      - run: docker build -t ditto-screener:${{ github.sha }} .
+
+  screener-canary-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out canonical DittoBench starter kit
+        uses: actions/checkout@v4
+        with:
+          repository: ditto-assistant/dittobench-starter-kit
+          ref: 959cd69a1a8d3b0defbfb8296518adb7d4f17c14
+          path: dittobench-starter-kit
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - run: uv python install 3.11
+      - run: uv sync --group dev
+
+      - name: Run real build, health, and hidden-response smoke
+        env:
+          DITTO_STARTER_KIT_DIR: ${{ github.workspace }}/dittobench-starter-kit
+        run: >-
+          uv run pytest -m integration
+          tests/test_gate_docker_integration.py -vv

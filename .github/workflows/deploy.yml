@@ -1,0 +1,60 @@
+name: Deploy production screener
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production-screener
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: prod
+    env:
+      GCP_PROJECT: ditto-app-dev
+      GCP_ZONE: us-central1-a
+      SCREENER_VM: ditto-screener-prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify deploy configuration
+        env:
+          WIF: ${{ secrets.GCP_WIF_PROVIDER }}
+          SA: ${{ secrets.GCP_SCREENER_DEPLOY_SA }}
+        run: |
+          : "${WIF:?GCP_WIF_PROVIDER repo secret is not set}"
+          : "${SA:?GCP_SCREENER_DEPLOY_SA repo secret is not set}"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SCREENER_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Copy updater to the isolated VM
+        run: |
+          gcloud compute scp scripts/update-screener.sh "$SCREENER_VM:/tmp/update-screener.sh" \
+            --project "$GCP_PROJECT" \
+            --zone "$GCP_ZONE" \
+            --tunnel-through-iap \
+            --quiet
+
+      - name: Deploy exact commit, verify, and maintain cache
+        run: |
+          gcloud compute ssh "$SCREENER_VM" \
+            --project "$GCP_PROJECT" \
+            --zone "$GCP_ZONE" \
+            --tunnel-through-iap \
+            --quiet \
+            --command "sudo chmod 700 /tmp/update-screener.sh; sudo SCREENER_EXPECTED_SHA=${{ github.sha }} /tmp/update-screener.sh; rc=\$?; sudo rm -f /tmp/update-screener.sh; exit \$rc"
