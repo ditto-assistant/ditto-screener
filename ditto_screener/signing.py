@@ -11,7 +11,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ditto_screener.errors import ScreenerConfigError
-from ditto_screener.heartbeat import SystemMetrics, system_metrics_signing_token
+from ditto_screener.heartbeat import (
+    ScreenerProgress,
+    SystemMetrics,
+    screener_progress_signing_token,
+    system_metrics_signing_token,
+)
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
     verdict_signing_message,
@@ -79,14 +84,25 @@ def heartbeat_signing_message(
     policy_version: int,
     state: str,
     active_agent_id: UUID | None,
+    progress: ScreenerProgress | None = None,
     system_metrics: SystemMetrics | None,
     timestamp: int,
 ) -> bytes:
-    """Build the dedicated heartbeat payload accepted by platform PR #74."""
+    """Build the versioned heartbeat payload mirrored by the platform."""
+    if protocol_version == 1:
+        if progress is not None:
+            raise ValueError("heartbeat protocol v1 cannot sign progress")
+        return (
+            "ditto-screener-heartbeat:v1:"
+            f"{screener_hotkey}:{software_version}:{protocol_version}:{policy_version}:"
+            f"{state}:{active_agent_id or ''}:"
+            f"{system_metrics_signing_token(system_metrics)}:{timestamp}"
+        ).encode()
     return (
-        "ditto-screener-heartbeat:v1:"
+        "ditto-screener-heartbeat:v2:"
         f"{screener_hotkey}:{software_version}:{protocol_version}:{policy_version}:"
         f"{state}:{active_agent_id or ''}:"
+        f"{screener_progress_signing_token(progress)}:"
         f"{system_metrics_signing_token(system_metrics)}:{timestamp}"
     ).encode()
 
@@ -100,6 +116,7 @@ def sign_heartbeat(
     policy_version: int,
     state: str,
     active_agent_id: UUID | None,
+    progress: ScreenerProgress | None = None,
     system_metrics: SystemMetrics | None,
     timestamp: int,
 ) -> str:
@@ -110,6 +127,7 @@ def sign_heartbeat(
         policy_version=policy_version,
         state=state,
         active_agent_id=active_agent_id,
+        progress=progress,
         system_metrics=system_metrics,
         timestamp=timestamp,
     )

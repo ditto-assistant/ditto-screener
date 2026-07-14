@@ -81,13 +81,16 @@ def _ok_run(calls: list[list[str]] | None = None) -> Callable[..., Any]:
     return run
 
 
-async def _screen(gate: BuildGate, sha256: str):  # type: ignore[no-untyped-def]
+async def _screen(  # type: ignore[no-untyped-def]
+    gate: BuildGate, sha256: str, *, progress=None
+):
     return await gate.screen(
         agent_id=_AGENT,
         attempt_id=_ATTEMPT,
         miner_hotkey=_MINER,
         sha256=sha256,
         download_url=_URL,
+        progress=progress,
     )
 
 
@@ -112,6 +115,47 @@ async def test_default_v6_builds_and_health_checks_without_run(
     assert result.manifest_digest == CORE_V6_MANIFEST.digest
     assert any("http://harness:8080/health" in arg for call in calls for arg in call)
     assert not any("http://harness:8080/run" in arg for call in calls for arg in call)
+
+
+async def test_reports_only_coarse_pipeline_stages(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    stages: list[str] = []
+    gate = _gate_with(make_config(), _ok_run(), tarball=tarball)
+    async with gate._client:
+        result = await _screen(
+            gate,
+            hashlib.sha256(tarball).hexdigest(),
+            progress=stages.append,
+        )
+    assert result.outcome == ScreeningOutcome.PASS
+    assert stages == [
+        "downloading",
+        "validating",
+        "building",
+        "starting",
+        "health_check",
+        "validating",
+    ]
+
+
+async def test_progress_callback_failure_does_not_change_screening(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    gate = _gate_with(make_config(), _ok_run(), tarball=tarball)
+
+    def fail_progress(_stage: str) -> None:
+        raise RuntimeError("telemetry unavailable")
+
+    async with gate._client:
+        result = await _screen(
+            gate,
+            hashlib.sha256(tarball).hexdigest(),
+            progress=fail_progress,
+        )
+    assert result.outcome == ScreeningOutcome.PASS
 
 
 async def test_fake_gateway_is_internal_and_resource_capped(

@@ -69,8 +69,11 @@ class _FakePlatform:
         self.required_policy_version = SCREENING_POLICY_VERSION
         self.claim_calls = 0
         self.heartbeats: list[Any] = []
+        self.heartbeat_error: Exception | None = None
 
     async def submit_heartbeat(self, request: Any) -> Any:
+        if self.heartbeat_error is not None:
+            raise self.heartbeat_error
         self.heartbeats.append(request)
         return object()
 
@@ -149,10 +152,10 @@ async def test_screen_one_pass_posts_signed_pass_verdict(
     assert v["passed"] is True and v["signature"] == "cd" * 64 and v["detail"] == ""
     assert v["policy_version"] == SCREENING_POLICY_VERSION
     assert v["attempt_id"] is not None
-    assert [heartbeat.state for heartbeat in platform.heartbeats] == [
-        "screening",
-        "polling",
-    ]
+    assert platform.heartbeats[0].state == "screening"
+    assert platform.heartbeats[0].progress.stage == "preparing"
+    assert platform.heartbeats[-1].state == "polling"
+    assert platform.heartbeats[-1].progress is None
 
 
 async def test_screen_one_fail_forwards_detail(
@@ -210,6 +213,21 @@ async def test_verdict_platform_error_swallowed(
     # Must not raise (a 409/late verdict is logged and skipped).
     await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
     assert platform.verdicts == []
+
+
+async def test_heartbeat_failure_never_blocks_screening_or_verdict(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    platform = _FakePlatform([])
+    platform.heartbeat_error = PlatformError("heartbeat unavailable")
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+    await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
+    assert len(platform.verdicts) == 1
+    assert gate.calls
+    assert worker._active_agent_id is None
+    assert worker._active_progress_stage is None
+    assert worker._job_started_at is None
 
 
 async def test_run_forever_drains_queue_then_stops(

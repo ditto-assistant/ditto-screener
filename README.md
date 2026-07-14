@@ -24,8 +24,12 @@ only the objective stable core can return `deterministic_reject`.
 The worker also sends the optional signed, privacy-bounded fleet heartbeat
 defined by the open platform fleet-health work. It reports only five-point
 CPU/memory/disk buckets, aggregate Docker health/counts, worker state, and the
-active agent ID. An older platform can reject the optional endpoint without
-blocking or changing screening.
+active agent ID. Heartbeat protocol v2 may also include one allowlisted stage
+(`preparing`, `downloading`, `validating`, `building`, `starting`,
+`health_check`, or `submitting`) and the current job's signed start time. It
+never includes artifact contents, build output, dependency or image metadata,
+policy internals, paths, prompts, evidence, or secrets. An older platform can
+reject the optional endpoint without blocking or changing screening.
 
 ## Local development
 

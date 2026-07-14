@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from ditto_screener.heartbeat import DockerHealth, SystemMetrics
+import pytest
+
+from ditto_screener.heartbeat import DockerHealth, ScreenerProgress, SystemMetrics
 from ditto_screener.signing import (
     heartbeat_signing_message,
     sign_verdict,
@@ -92,5 +94,38 @@ def test_heartbeat_signature_binds_allowlisted_coarse_metrics() -> None:
             "ditto-screener-heartbeat:v1:"
             f"{_HOTKEY}:0.1.0:1:6:screening:{_AGENT}:"
             "123,15,40,55,healthy,3,0:456"
+        ).encode()
+    )
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "preparing",
+        "downloading",
+        "validating",
+        "building",
+        "starting",
+        "health_check",
+        "submitting",
+    ],
+)
+def test_v2_heartbeat_signature_binds_each_stage_and_job_start(stage: str) -> None:
+    progress = ScreenerProgress(stage=stage, started_at=400)
+    assert (
+        heartbeat_signing_message(
+            screener_hotkey=_HOTKEY,
+            software_version="0.2.0",
+            protocol_version=2,
+            policy_version=6,
+            state="screening",
+            active_agent_id=_AGENT,
+            progress=progress,
+            system_metrics=None,
+            timestamp=456,
+        )
+        == (
+            "ditto-screener-heartbeat:v2:"
+            f"{_HOTKEY}:0.2.0:2:6:screening:{_AGENT}:{stage},400:-:456"
         ).encode()
     )

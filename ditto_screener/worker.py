@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 from ditto_screener import __version__
 from ditto_screener.errors import PlatformError
-from ditto_screener.heartbeat import ScreenerHeartbeatRequest, ScreenerRuntimeState
+from ditto_screener.heartbeat import (
+    ScreenerHeartbeatRequest,
+    ScreenerProgress,
+    ScreenerProgressStage,
+    ScreenerRuntimeState,
+)
 from ditto_screener.signing import sign_heartbeat, sign_verdict
 from ditto_screening_protocol import SCREENING_POLICY_VERSION, ScreenerQueueItem
 
@@ -34,7 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_HEARTBEAT_PROTOCOL_VERSION = 1
+_HEARTBEAT_PROTOCOL_VERSION = 2
 _HEARTBEAT_MIN_INTERVAL_SECONDS = 120.0
 _ACTIVE_HEARTBEAT_SECONDS = 120.0
 
@@ -57,9 +62,24 @@ class ScreenerWorker:
         self._keypair = keypair
         self._system_metrics = system_metrics
         self._active_agent_id: UUID | None = None
+        self._active_progress_stage: ScreenerProgressStage | None = None
+        self._job_started_at: int | None = None
         self._last_heartbeat_timestamp = 0
         self._last_heartbeat_monotonic = float("-inf")
         self._last_heartbeat_state: ScreenerRuntimeState | None = None
+        self._progress_heartbeat_tasks: set[asyncio.Task[None]] = set()
+
+    def _set_progress(self, stage: ScreenerProgressStage) -> None:
+        """Advance public-safe progress without waiting on telemetry I/O."""
+        if self._active_agent_id is None or self._job_started_at is None:
+            return
+        self._active_progress_stage = stage
+        progress = ScreenerProgress(stage=stage, started_at=self._job_started_at)
+        task = asyncio.create_task(
+            self._report_heartbeat("screening", force=True, progress_override=progress)
+        )
+        self._progress_heartbeat_tasks.add(task)
+        task.add_done_callback(self._progress_heartbeat_tasks.discard)
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         """Sweep until ``stop`` is set, sleeping when the queue is empty."""
@@ -81,7 +101,11 @@ class ScreenerWorker:
         logger.info("screener worker stopped")
 
     async def _report_heartbeat(
-        self, state: ScreenerRuntimeState, *, force: bool = False
+        self,
+        state: ScreenerRuntimeState,
+        *,
+        force: bool = False,
+        progress_override: ScreenerProgress | None = None,
     ) -> None:
         """Publish privacy-bounded fleet health without gating screening."""
         now_monotonic = time.monotonic()
@@ -94,9 +118,22 @@ class ScreenerWorker:
             return
         try:
             timestamp = max(int(time.time()), self._last_heartbeat_timestamp + 1)
+            # Allocate before network I/O so concurrent best-effort stage reports
+            # remain strictly ordered even if they arrive out of order.
+            self._last_heartbeat_timestamp = timestamp
             metrics = (
                 self._system_metrics.collect()
                 if self._system_metrics is not None
+                else None
+            )
+            progress = progress_override or (
+                ScreenerProgress(
+                    stage=self._active_progress_stage,
+                    started_at=self._job_started_at,
+                )
+                if state == "screening"
+                and self._active_progress_stage is not None
+                and self._job_started_at is not None
                 else None
             )
             signature = sign_heartbeat(
@@ -107,6 +144,7 @@ class ScreenerWorker:
                 policy_version=SCREENING_POLICY_VERSION,
                 state=state,
                 active_agent_id=self._active_agent_id,
+                progress=progress,
                 system_metrics=metrics,
                 timestamp=timestamp,
             )
@@ -117,12 +155,12 @@ class ScreenerWorker:
                 policy_version=SCREENING_POLICY_VERSION,
                 state=state,
                 active_agent_id=self._active_agent_id,
+                progress=progress,
                 system_metrics=metrics,
                 timestamp=timestamp,
                 signature=signature,
             )
             await self._platform.submit_heartbeat(request)
-            self._last_heartbeat_timestamp = timestamp
         except Exception as error:  # noqa: BLE001 - observability is best effort
             logger.warning("screener heartbeat failed (screening continues): %s", error)
         finally:
@@ -172,7 +210,8 @@ class ScreenerWorker:
             logger.error("claimed agent_id=%s without a screening attempt id", agent_id)
             return
         self._active_agent_id = agent_id
-        await self._report_heartbeat("screening", force=True)
+        self._job_started_at = int(time.time())
+        self._set_progress("preparing")
         heartbeat_stop = asyncio.Event()
         heartbeat_task = asyncio.create_task(
             self._heartbeat_while_active(heartbeat_stop)
@@ -185,6 +224,7 @@ class ScreenerWorker:
                 miner_hotkey=item.miner_hotkey,
                 sha256=item.sha256,
                 download_url=str(artifact.download_url),
+                progress=self._set_progress,
             )
             if not result.submits_verdict:
                 logger.warning(
@@ -195,6 +235,7 @@ class ScreenerWorker:
                     result.manifest_digest,
                 )
                 return
+            self._set_progress("submitting")
             signature = sign_verdict(
                 self._keypair,
                 screener_hotkey=self._config.screener_hotkey,
@@ -226,7 +267,14 @@ class ScreenerWorker:
         finally:
             heartbeat_stop.set()
             await heartbeat_task
+            progress_tasks = tuple(self._progress_heartbeat_tasks)
+            for task in progress_tasks:
+                task.cancel()
+            await asyncio.gather(*progress_tasks, return_exceptions=True)
+            self._progress_heartbeat_tasks.clear()
             self._active_agent_id = None
+            self._active_progress_stage = None
+            self._job_started_at = None
             await self._report_heartbeat("polling", force=True)
 
     async def _sleep_or_stop(self, stop: asyncio.Event, seconds: float) -> None:
