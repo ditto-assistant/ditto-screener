@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v0.5.5 (2026-07-15)
+
+### Bug Fixes
+
+- Send a contract-complete RunRequest from the behavioral oracle
+  ([#18](https://github.com/ditto-assistant/ditto-screener/pull/18),
+  [`2d53c89`](https://github.com/ditto-assistant/ditto-screener/commit/2d53c898c414aabdc41598b8583cb74dec5c97d1))
+
+### Code Style
+
+- Ruff format ([#18](https://github.com/ditto-assistant/ditto-screener/pull/18),
+  [`2d53c89`](https://github.com/ditto-assistant/ditto-screener/commit/2d53c898c414aabdc41598b8583cb74dec5c97d1))
+
+
 ## v0.5.4 (2026-07-15)
 
 ### Bug Fixes
