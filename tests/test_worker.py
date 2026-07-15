@@ -386,7 +386,7 @@ async def test_quarantine_without_finding_keeps_last_evidence_digest(
         manifest_digest="ab" * 32,
         evidence=(
             PolicyEvidence(
-                "v7-behavioral-oracle",
+                "v8-behavioral-oracle",
                 "behavioral-oracle-wrong-answer",
                 "behavioral oracle final answer did not match the "
                 "gateway-encoded value",
@@ -401,4 +401,4 @@ async def test_quarantine_without_finding_keeps_last_evidence_digest(
     verdict = platform.verdicts[0]
     assert verdict["finding"] is None
     assert verdict["finding_digest"] == "cd" * 32
-    assert verdict["evidence"][0].module_id == "v7-behavioral-oracle"
+    assert verdict["evidence"][0].module_id == "v8-behavioral-oracle"

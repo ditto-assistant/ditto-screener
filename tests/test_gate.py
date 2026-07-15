@@ -480,7 +480,7 @@ async def test_private_challenge_scores_the_gateway_encoded_oracle(
 
     gate._request_from_sidecar = two_turn  # type: ignore[method-assign]
     observation = await gate._run_private_challenge(
-        "v7-behavioral-oracle",
+        "v8-behavioral-oracle",
         {"protocol": "gateway_round_trip"},
         5,
         harness_base="http://harness:8080",
@@ -508,7 +508,7 @@ async def test_private_challenge_flags_wrong_oracle_answer(
 
     gate._request_from_sidecar = table  # type: ignore[method-assign]
     observation = await gate._run_private_challenge(
-        "v7-behavioral-oracle",
+        "v8-behavioral-oracle",
         {"protocol": "gateway_round_trip"},
         5,
         harness_base="http://harness:8080",

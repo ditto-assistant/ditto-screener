@@ -251,12 +251,12 @@ class PolicyManifest:
         return hashlib.sha256(canonical).hexdigest()
 
 
-CORE_ONLY_MANIFEST = PolicyManifest(rotation_id="v7-core-build-health-no-run")
-DEFAULT_V7_MANIFEST = PolicyManifest(
-    rotation_id="v7-luna-source-review-behavioral-oracle",
+CORE_ONLY_MANIFEST = PolicyManifest(rotation_id="v8-core-build-health-no-run")
+DEFAULT_V8_MANIFEST = PolicyManifest(
+    rotation_id="v8-luna-source-review-behavioral-oracle",
     module_specs=(
         {"kind": "agentic_source_review", "id": "luna-source-review"},
-        {"kind": "behavioral_oracle", "id": "v7-behavioral-oracle"},
+        {"kind": "behavioral_oracle", "id": "v8-behavioral-oracle"},
     ),
 )
 
@@ -593,7 +593,7 @@ class BehavioralOracleModule(_BaseModule):
     """Always-on gateway-encoded correctness oracle with timing thresholds.
 
     Unlike the selector-gated packs, this challenge runs on every submission.
-    It is built in (no external pack file), so it works in the default v7
+    It is built in (no external pack file), so it works in the default v8
     manifest out of the box. The oracle is objective and reproducible: the
     isolated fake gateway returns a per-container nonce, and the harness can
     only surface the gateway's ``oracle_answer`` by feeding that nonce back
@@ -616,7 +616,7 @@ class BehavioralOracleModule(_BaseModule):
     """
 
     phase: str = field(init=False, default="challenge")
-    challenge_id: str = "v7-behavioral-oracle"
+    challenge_id: str = "v8-behavioral-oracle"
     timeout_seconds: float = 20.0
     min_gateway_calls: int = 2
     min_elapsed_ms: int = 250
@@ -793,13 +793,13 @@ class PolicyEngine:
 
 
 def load_policy_engine(manifest_path: str | None) -> PolicyEngine:
-    """Load a strict private manifest, or production v7 Luna source review."""
+    """Load a strict private manifest, or production v8 Luna source review."""
     if manifest_path is None:
         return PolicyEngine(
-            DEFAULT_V7_MANIFEST,
+            DEFAULT_V8_MANIFEST,
             (
                 AgenticSourceReviewModule(module_id="luna-source-review"),
-                BehavioralOracleModule(module_id="v7-behavioral-oracle"),
+                BehavioralOracleModule(module_id="v8-behavioral-oracle"),
             ),
         )
     raw = _read_json(Path(manifest_path), max_bytes=_MAX_MANIFEST_BYTES)
@@ -1074,7 +1074,7 @@ def _is_sha256(value: str) -> bool:
 
 __all__ = [
     "CORE_ONLY_MANIFEST",
-    "DEFAULT_V7_MANIFEST",
+    "DEFAULT_V8_MANIFEST",
     "ChallengeObservation",
     "PolicyContext",
     "PolicyEngine",

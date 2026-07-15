@@ -2,7 +2,7 @@
 
 Platform-operated screening worker for Ditto SN118 submissions.
 
-The stable v7 core leases one submission at a time from `ditto-platform`,
+The stable v8 core leases one submission at a time from `ditto-platform`,
 downloads and verifies its tarball, enforces safe archive and root Rust package
 rules, builds the Docker image, starts it with resource caps and an internal fake
 gateway, waits for `/health`, then performs a bounded, read-only Luna source
@@ -19,7 +19,7 @@ application packages.
 
 Private modules can rotate timing and relay tripwires, randomized controls,
 source/fingerprint triage, and behavioral challenge packs without changing the
-v7 protocol or signing bytes. No private signal proves causal model use.
+v8 protocol or signing bytes. No private signal proves causal model use.
 Modules can pass or route to `retryable_infra`, `quarantine`, or `inconclusive`;
 only the objective stable core can return `deterministic_reject`.
 
@@ -64,7 +64,7 @@ Required values are supplied through the production host's protected
 - `SCREENER_GH_TOKEN_FILE`: optional path to a read-only token used only as a
   BuildKit secret for a private harness dependency.
 - `SCREENER_POLICY_MANIFEST_FILE`: optional protected private manifest. When
-  absent, the worker runs the production v7 Luna policy with no `/run` call.
+  absent, the worker runs the production v8 Luna policy with no `/run` call.
 - `SCREENER_REVIEW_JOURNAL_FILE`: optional protected append-only journal path
   for quarantine and inconclusive evidence.
 - `SCREENER_AUDIT_SEED`: secret seed read only when a configured random-control

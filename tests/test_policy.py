@@ -105,7 +105,7 @@ async def test_default_v7_runs_luna_review_and_behavioral_oracle_and_passes() ->
     async def challenge(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
         nonlocal challenges
         challenges += 1
-        assert challenge_id == "v7-behavioral-oracle"
+        assert challenge_id == "v8-behavioral-oracle"
         return ChallengeObservation(
             challenge_id=challenge_id,
             ok=True,
@@ -128,7 +128,7 @@ async def test_default_v7_runs_luna_review_and_behavioral_oracle_and_passes() ->
     engine = load_policy_engine(None)
     decision = await engine.evaluate(_context(challenge, review))
 
-    assert engine.manifest.rotation_id == "v7-luna-source-review-behavioral-oracle"
+    assert engine.manifest.rotation_id == "v8-luna-source-review-behavioral-oracle"
     assert decision.outcome == ScreeningOutcome.PASS
     assert reviews == 1
     # The always-on oracle runs even though source review cleared (no tripwire).
@@ -442,7 +442,7 @@ async def test_shape_only_pack_preserves_non_model_harness_compatibility(
 
 
 def _oracle_engine() -> PolicyEngine:
-    """Default-v7-style engine: no selector tripwire, always-on oracle only."""
+    """Default-v8-style engine: no selector tripwire, always-on oracle only."""
     manifest = PolicyManifest(
         rotation_id="oracle-only",
         module_specs=({"kind": "behavioral_oracle"},),
@@ -466,7 +466,7 @@ async def test_behavioral_oracle_runs_without_any_tripwire() -> None:
         )
 
     decision = await _oracle_engine().evaluate(_context(observe))
-    assert seen == ["v7-behavioral-oracle"]
+    assert seen == ["v8-behavioral-oracle"]
     assert decision.outcome == ScreeningOutcome.PASS
     assert decision.submits_verdict and decision.passed
 
@@ -474,7 +474,7 @@ async def test_behavioral_oracle_runs_without_any_tripwire() -> None:
 async def test_reasoning_harness_passes_the_oracle() -> None:
     async def observe(*_):  # type: ignore[no-untyped-def]
         return ChallengeObservation(
-            "v7-behavioral-oracle",
+            "v8-behavioral-oracle",
             True,
             "ab" * 32,
             elapsed_ms=1200,
@@ -492,7 +492,7 @@ async def test_reasoning_harness_passes_the_oracle() -> None:
 async def test_single_call_table_harness_fails_the_oracle() -> None:
     async def observe(*_):  # type: ignore[no-untyped-def]
         return ChallengeObservation(
-            "v7-behavioral-oracle",
+            "v8-behavioral-oracle",
             True,
             "cd" * 32,
             elapsed_ms=900,
@@ -512,7 +512,7 @@ async def test_single_call_table_harness_fails_the_oracle() -> None:
 async def test_wrong_nonce_table_harness_fails_the_oracle() -> None:
     async def observe(*_):  # type: ignore[no-untyped-def]
         return ChallengeObservation(
-            "v7-behavioral-oracle",
+            "v8-behavioral-oracle",
             True,
             "ef" * 32,
             elapsed_ms=900,
@@ -530,7 +530,7 @@ async def test_wrong_nonce_table_harness_fails_the_oracle() -> None:
 async def test_too_fast_round_trip_trips_the_timing_floor() -> None:
     async def observe(*_):  # type: ignore[no-untyped-def]
         return ChallengeObservation(
-            "v7-behavioral-oracle",
+            "v8-behavioral-oracle",
             True,
             "01" * 32,
             elapsed_ms=3,
@@ -549,7 +549,7 @@ async def test_too_fast_round_trip_trips_the_timing_floor() -> None:
 async def test_inconclusive_oracle_is_not_a_rejection() -> None:
     async def observe(*_):  # type: ignore[no-untyped-def]
         return ChallengeObservation(
-            "v7-behavioral-oracle",
+            "v8-behavioral-oracle",
             False,
             None,
             elapsed_ms=10,
@@ -568,7 +568,7 @@ def test_manifest_rotation_changes_digest_not_policy_or_signature_contract(
     manifest.write_text(
         json.dumps(
             {
-                "policy_version": 7,
+                "policy_version": 8,
                 "rotation_id": "2026-07-14-private",
                 "modules": [
                     {
@@ -582,7 +582,7 @@ def test_manifest_rotation_changes_digest_not_policy_or_signature_contract(
         )
     )
     engine = load_policy_engine(str(manifest))
-    assert engine.manifest.policy_version == SCREENING_POLICY_VERSION == 7
+    assert engine.manifest.policy_version == SCREENING_POLICY_VERSION == 8
     assert engine.manifest.digest != CORE_ONLY_MANIFEST.digest
 
 
@@ -612,7 +612,7 @@ def test_live_v6_snapshot_is_an_acceptance_fixture() -> None:
     fixture = Path(__file__).parent / "fixtures" / "production-v6-snapshot.json"
     snapshot = json.loads(fixture.read_text())
     assert snapshot["screening_policy_version"] == 6
-    assert SCREENING_POLICY_VERSION == 7
+    assert SCREENING_POLICY_VERSION == 8
     assert snapshot["queue"]["waiting_validator"] == 9
     assert snapshot["queue"]["evaluating"] == 1
     assert len(snapshot["rust_contract_rejections"]) == 6

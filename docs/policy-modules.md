@@ -1,6 +1,6 @@
 # Private policy modules
 
-The policy boundary separates stable public-v7 enforcement from rotating
+The policy boundary separates stable public-v8 enforcement from rotating
 private triage. Daily rotations replace a protected JSON manifest and restart
 the worker. They do not change `SCREENING_POLICY_VERSION`.
 
