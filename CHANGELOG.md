@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.4 (2026-07-15)
+
+### Bug Fixes
+
+- Target the production screener zone
+  ([#12](https://github.com/ditto-assistant/ditto-screener/pull/12),
+  [`4a528dd`](https://github.com/ditto-assistant/ditto-screener/commit/4a528ddccea8bd35cd972825ec1e8cbf37518b9f))
+
+
 ## v0.4.3 (2026-07-15)
 
 ### Bug Fixes
