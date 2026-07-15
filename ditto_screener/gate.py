@@ -111,6 +111,12 @@ _DOCKER_INFRASTRUCTURE_MARKERS = (
     "docker command exited with signal",
     "signal sigterm",
     "signal sigkill",
+    # A build the daemon or worker was restarted out from under (deploy /
+    # `systemctl restart docker`) aborts with BuildKit's cancellation marker.
+    # That is our own interruption, never the miner's crate failing to compile,
+    # so it must requeue as retryable-infra rather than terminally reject.
+    "context canceled",
+    "context cancelled",
     "buildkit",
     "snapshotter",
     "failed to mount",

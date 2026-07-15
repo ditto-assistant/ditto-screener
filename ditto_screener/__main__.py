@@ -25,6 +25,10 @@ from ditto_screener.worker import ScreenerWorker
 
 logger = logging.getLogger(__name__)
 
+# The screener package (``ditto_screener``), whose logger tree bittensor clamps
+# to WARNING on init and which ``_apply_ditto_logging`` must un-clamp.
+_PACKAGE_ROOT = __name__.split(".")[0]
+
 
 def _install_signal_handlers(
     loop: asyncio.AbstractEventLoop, stop: asyncio.Event
@@ -37,6 +41,9 @@ def _install_signal_handlers(
 async def _amain() -> int:
     config = parse_screener_config_from_env()
     keypair = load_screener_keypair(config)
+    # load_screener_keypair imports bittensor, which clamps our loggers to
+    # WARNING; re-assert immediately so the startup lines below are not lost.
+    _apply_ditto_logging()
     logger.info(
         "screener worker starting hotkey=%s netuid=%d platform=%s",
         config.screener_hotkey,
@@ -72,27 +79,32 @@ async def _amain() -> int:
 
 
 def _apply_ditto_logging() -> None:
-    """Give the ``ditto`` logger tree its own INFO handler and undo any clamp.
+    """Give the screener's logger tree its own INFO handler and undo any clamp.
 
-    bittensor clamps existing loggers to WARNING when it initialises; mirror the
-    validator's fix so the screener's INFO lines (sweeps, per-agent verdicts)
-    stay visible. Overridable via ``SCREENER_LOG_LEVEL``. Idempotent.
+    bittensor clamps every existing logger to WARNING when it initialises (which
+    happens lazily during ``load_screener_keypair``); mirror the validator's fix
+    so the screener's INFO lines (sweeps, per-agent verdicts) stay visible. The
+    clamp lands on this package's tree — ``ditto_screener.*`` — so that is the
+    tree we must re-assert; targeting a bare ``ditto`` tree (the validator's
+    package name) silently no-ops here and leaves INFO suppressed. Overridable
+    via ``SCREENER_LOG_LEVEL``. Idempotent.
     """
     level_name = os.environ.get("SCREENER_LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
     log_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
     fmt = logging.Formatter(log_format)
     logging.basicConfig(level=level, format=log_format)
-    ditto_logger = logging.getLogger("ditto")
-    ditto_logger.setLevel(level)
-    ditto_logger.propagate = False
-    if not any(getattr(h, "_ditto_handler", False) for h in ditto_logger.handlers):
+    package_logger = logging.getLogger(_PACKAGE_ROOT)
+    package_logger.setLevel(level)
+    package_logger.propagate = False
+    if not any(getattr(h, "_ditto_handler", False) for h in package_logger.handlers):
         handler = logging.StreamHandler()
         handler.setFormatter(fmt)
         handler._ditto_handler = True  # type: ignore[attr-defined]
-        ditto_logger.addHandler(handler)
+        package_logger.addHandler(handler)
+    child_prefix = f"{_PACKAGE_ROOT}."
     for name, child in logging.Logger.manager.loggerDict.items():
-        if name.startswith("ditto.") and isinstance(child, logging.Logger):
+        if name.startswith(child_prefix) and isinstance(child, logging.Logger):
             child.setLevel(logging.NOTSET)
             child.disabled = False
 
