@@ -24,7 +24,7 @@ from ditto_screening_protocol import (
 _MINER = "5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm"
 
 
-def _item(agent_id: UUID) -> ScreenerQueueItem:
+def _item(agent_id: UUID, **overrides: Any) -> ScreenerQueueItem:
     return ScreenerQueueItem(
         agent_id=agent_id,
         miner_hotkey=_MINER,
@@ -34,6 +34,7 @@ def _item(agent_id: UUID) -> ScreenerQueueItem:
         created_at=datetime.now(UTC),
         attempt_id=uuid4(),
         lease_deadline=datetime.now(UTC),
+        **overrides,
     )
 
 
@@ -71,6 +72,7 @@ class _FakePlatform:
         self.claim_calls = 0
         self.heartbeats: list[Any] = []
         self.heartbeat_error: Exception | None = None
+        self.artifact_calls: list[UUID] = []
 
     async def submit_heartbeat(self, request: Any) -> Any:
         if self.heartbeat_error is not None:
@@ -95,6 +97,7 @@ class _FakePlatform:
         )
 
     async def get_artifact(self, agent_id: UUID) -> ArtifactResponse:
+        self.artifact_calls.append(agent_id)
         return ArtifactResponse(
             agent_id=agent_id,
             sha256="de" * 32,
@@ -174,6 +177,32 @@ async def test_screen_one_fail_forwards_detail(
     v = platform.verdicts[0]
     assert v["passed"] is False and "E0432" in v["detail"]
     assert v["outcome"] == ScreenResultOutcome.DETERMINISTIC_REJECT
+
+
+async def test_exact_cross_miner_duplicate_skips_artifact_and_private_gate(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    agent_id = uuid4()
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.QUARANTINE))
+    worker = _worker(make_config(), platform, gate)
+
+    await worker._screen_one(
+        _item(
+            agent_id,
+            precheck_reason_code="exact-cross-miner-duplicate",
+            duplicate_of=uuid4(),
+        ),
+        policy_version=SCREENING_POLICY_VERSION,
+    )
+
+    assert platform.artifact_calls == []
+    assert gate.calls == []
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    assert verdict["outcome"] == ScreenResultOutcome.DETERMINISTIC_REJECT
+    assert verdict["reason_code"] == "exact-cross-miner-duplicate"
+    assert verdict["detail"] == "exact cross-miner duplicate"
 
 
 async def test_screen_one_retryable_failure_preserves_v6_screening_failed_verdict(
