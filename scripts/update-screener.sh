@@ -135,6 +135,14 @@ maintain_cache() {
   touch "$gc_marker"
 }
 
+build_in_flight() {
+  # A screening build in progress under the worker. A restart of docker (or the
+  # worker) aborts it; the killed build now requeues as retryable-infra rather
+  # than terminally rejecting the miner, but a requeue still throws away a full
+  # rebuild, so disruptive maintenance defers to an idle run.
+  pgrep -f "build -t ditto-screen" >/dev/null 2>&1
+}
+
 maintain_daemon_config() {
   # Repository-owned Docker daemon config: BuildKit's own GC enforces the
   # cache budget continuously (per build), so the disk stays bounded even
@@ -150,6 +158,10 @@ maintain_daemon_config() {
   if ! dockerd --validate --config-file "$source"; then
     echo "deploy/daemon.json failed dockerd validation; keeping current config" >&2
     return 1
+  fi
+  if build_in_flight; then
+    echo "deferring daemon.json apply: a screening build is in flight" >&2
+    return 0
   fi
   install -o root -g root -m 0644 "$source" "$target"
   systemctl restart docker
@@ -204,6 +216,12 @@ if [[ "$resolved_sha" != "$SCREENER_EXPECTED_SHA" ]]; then
 fi
 
 runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$resolved_sha"
+# git reset --hard leaves untracked files in place. Pre-extraction the worker
+# shipped a ``ditto/screener`` namespace; a leftover ``ditto`` tree keeps
+# shadowing the import path (``python -m ditto.screener`` half-resolves against
+# it). Drop it so the checkout matches the commit. Scoped to ``ditto`` so the
+# ignored ``.venv`` and sibling state/secret dirs are never touched.
+runuser -u "$SCREENER_USER" -- git -C "$checkout" clean -fd -- ditto
 runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
   "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
 

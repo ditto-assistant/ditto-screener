@@ -385,6 +385,10 @@ async def test_docker_daemon_build_failure_is_retryable_infrastructure(
         "TLS handshake timeout fetching registry layer",
         "secret gh_token: not found",
         "process was killed: out of memory",
+        # Build aborted by a deploy / `systemctl restart docker` under the
+        # worker: BuildKit reports a cancellation, which must requeue, not
+        # terminally reject the miner's crate.
+        "ERROR: failed to build: failed to solve: Canceled: context canceled",
     ],
 )
 async def test_transient_build_failures_are_retryable_infrastructure(

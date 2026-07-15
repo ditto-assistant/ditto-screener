@@ -32,3 +32,22 @@ def test_updater_installs_and_rolls_back_the_repository_owned_unit() -> None:
     assert "SCREENER_SOURCE_REVIEW_API_KEY_FILE" in updater
     assert "required_policy_version" in updater
     assert "SCREENING_POLICY_VERSION" in updater
+
+
+def test_updater_drops_the_stale_pre_extraction_namespace() -> None:
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+
+    # git reset --hard leaves the untracked ``ditto/`` namespace behind, which
+    # keeps shadowing the ``ditto_screener`` import path.
+    assert 'git -C "$checkout" clean -fd -- ditto' in updater
+
+
+def test_updater_defers_daemon_restart_during_an_active_build() -> None:
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+
+    assert "build_in_flight" in updater
+    assert 'pgrep -f "build -t ditto-screen"' in updater
+    # The guard must sit before the disruptive docker restart.
+    guard = updater.index("deferring daemon.json apply")
+    restart = updater.index("systemctl restart docker")
+    assert guard < restart
