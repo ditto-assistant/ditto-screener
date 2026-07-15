@@ -233,7 +233,7 @@ async def test_screen_one_retryable_failure_preserves_v6_screening_failed_verdic
     assert platform.verdicts[0]["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
 
 
-async def test_inconclusive_submits_retryable_instead_of_expiring_lease(
+async def test_inconclusive_submits_nothing_and_lets_the_lease_expire(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
     platform = _FakePlatform([])
@@ -242,13 +242,11 @@ async def test_inconclusive_submits_retryable_instead_of_expiring_lease(
     )
     worker = _worker(make_config(), platform, gate)
     await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
-    # Previously an inconclusive screen submitted nothing and let the lease
-    # expire; it must now re-queue promptly via a retryable verdict.
-    assert len(platform.verdicts) == 1
-    verdict = platform.verdicts[0]
-    assert verdict["passed"] is False
-    assert verdict["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
-    assert verdict["reason_code"] == "screening-inconclusive"
+    # INCONCLUSIVE is a non-verdict: the platform rejects a submitted inconclusive
+    # outcome and expects the worker to post nothing and let the lease expire as
+    # the backoff. Reporting retryable_infra would hot-loop as a mislabeled
+    # "Screening infrastructure error", so no verdict must be submitted.
+    assert platform.verdicts == []
 
 
 async def test_screen_passes_lease_deadline_budget_to_gate(
