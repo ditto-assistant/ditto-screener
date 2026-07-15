@@ -51,7 +51,9 @@ jobs:
           version: latest
 
       - name: Package the checkout for baking
-        run: tar czf /tmp/src.tgz .
+        # Keep .git (bake records the SHA; runtime fetches by it); drop local
+        # venv/caches so the bake syncs a clean, arch-correct venv.
+        run: tar czf /tmp/src.tgz --exclude=.venv --exclude=__pycache__ --exclude='*.pyc' --exclude=.pytest_cache --exclude=.ruff_cache .
 
       - name: Build the golden image
         run: |

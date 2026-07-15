@@ -63,6 +63,13 @@ variable "src_tarball" {
   type        = string
 }
 
+variable "access_token" {
+  description = "Optional pre-minted OAuth access token. Leave empty in CI (WIF provides ADC). Set for local runs where interactive ADC needs reauth: -var access_token=$(gcloud auth application-default print-access-token)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "subnetwork" {
   description = "Subnetwork for the temporary build VM. Use the platform subnet so egress rides Cloud NAT with no external IP."
   type        = string
@@ -72,19 +79,20 @@ variable "subnetwork" {
 variable "ssh_tag" {
   description = "Network tag granting IAP-SSH to the build VM (the platform network's ssh target tag)."
   type        = string
-  default     = "allow-iap-ssh"
+  default     = "ssh"
 }
 
 source "googlecompute" "screener" {
-  project_id           = var.project_id
-  zone                 = var.zone
-  source_image_family  = var.source_image_family
-  source_image_project = var.source_image_project
-  machine_type         = var.machine_type
+  project_id              = var.project_id
+  access_token            = var.access_token
+  zone                    = var.zone
+  source_image_family     = var.source_image_family
+  source_image_project_id = [var.source_image_project]
+  machine_type            = var.machine_type
 
   image_name        = "ditto-screener-fleet-{{timestamp}}"
   image_family      = var.image_family
-  image_description  = "SN118 prod screener fleet golden image: docker + uv + warm ditto-screener checkout/venv + IMDS guard. No baked secrets. See packer/screener-fleet.pkr.hcl."
+  image_description = "SN118 prod screener fleet golden image: docker + uv + warm ditto-screener checkout/venv + IMDS guard. No baked secrets. See packer/screener-fleet.pkr.hcl."
   image_labels = {
     role    = "screener-fleet"
     managed = "packer"
