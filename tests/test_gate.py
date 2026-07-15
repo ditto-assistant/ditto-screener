@@ -26,9 +26,12 @@ from ditto_screener.gate import (
 )
 from ditto_screener.policy import (
     CORE_ONLY_MANIFEST,
+    AgenticSourceReviewModule,
     PolicyEngine,
+    PolicyManifest,
     ReviewJournal,
     ScreeningOutcome,
+    SourceReviewObservation,
 )
 
 _AGENT = UUID("550e8400-e29b-41d4-a716-446655440000")
@@ -183,6 +186,101 @@ async def test_reports_only_coarse_pipeline_stages(
         "health_check",
         "validating",
     ]
+
+
+class _StubReviewer:
+    """Source-review stand-in that records lifecycle events."""
+
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        gate_event: asyncio.Event | None = None,
+    ) -> None:
+        self._events = events
+        self._gate_event = gate_event
+        self.cancelled = False
+
+    async def review(self, *_args: Any, **_kwargs: Any) -> SourceReviewObservation:
+        self._events.append("review_started")
+        try:
+            if self._gate_event is not None:
+                await self._gate_event.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        self._events.append("review_finished")
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="low",
+            finding_digest=None,
+            categories=("none",),
+        )
+
+
+def _review_engine() -> PolicyEngine:
+    return PolicyEngine(
+        PolicyManifest(
+            rotation_id="overlap-test",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="luna-source-review"),),
+    )
+
+
+async def test_source_review_overlaps_the_build(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    """The review must start before the build finishes, not after health."""
+    events: list[str] = []
+    review_may_finish = asyncio.Event()
+
+    async def run(args: list[str], *, stdin: Any = None, **_: Any) -> tuple[int, str]:
+        if args[0] == "build":
+            if stdin is not None:
+                stdin.read()
+            # Yield so the eagerly-created review task gets scheduled while
+            # the "build" is still in flight, then let the review finish.
+            await asyncio.sleep(0)
+            events.append("build_finished")
+            review_may_finish.set()
+        return 0, ""
+
+    tarball = _valid_tar()
+    gate = _gate_with(make_config(), run, tarball=tarball)
+    gate._policy = _review_engine()
+    gate._source_reviewer = _StubReviewer(events, gate_event=review_may_finish)  # type: ignore[assignment]
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.PASS
+    assert events.index("review_started") < events.index("build_finished")
+    assert events[-1] == "review_finished"
+
+
+async def test_review_task_is_cancelled_when_the_build_fails(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    events: list[str] = []
+    reviewer = _StubReviewer(events, gate_event=asyncio.Event())  # never set
+
+    async def run(args: list[str], *, stdin: Any = None, **_: Any) -> tuple[int, str]:
+        if args[0] == "build":
+            if stdin is not None:
+                stdin.read()
+            # Yield once so the eager review task has actually started
+            # before the build fails and the run is decided.
+            await asyncio.sleep(0)
+            return 1, "error[E0308]: mismatched types"
+        return 0, ""
+
+    tarball = _valid_tar()
+    gate = _gate_with(make_config(), run, tarball=tarball)
+    gate._policy = _review_engine()
+    gate._source_reviewer = reviewer  # type: ignore[assignment]
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
+    assert reviewer.cancelled, "review must stop once the run is decided"
 
 
 async def test_progress_callback_failure_does_not_change_screening(
