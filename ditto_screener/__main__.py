@@ -26,8 +26,12 @@ from ditto_screener.worker import ScreenerWorker
 logger = logging.getLogger(__name__)
 
 # The screener package (``ditto_screener``), whose logger tree bittensor clamps
-# to WARNING on init and which ``_apply_ditto_logging`` must un-clamp.
-_PACKAGE_ROOT = __name__.split(".")[0]
+# to WARNING on init and which ``_apply_ditto_logging`` must un-clamp. Resolve
+# from ``__package__`` rather than ``__name__``: under ``python -m ditto_screener``
+# (the documented entrypoint) ``__name__`` is ``"__main__"``, whereas
+# ``__package__`` stays ``"ditto_screener"`` in both that and the console-script
+# import path. The literal is only a last-resort fallback for direct-file exec.
+_PACKAGE_ROOT = (__package__ or "ditto_screener").split(".")[0]
 
 
 def _install_signal_handlers(
