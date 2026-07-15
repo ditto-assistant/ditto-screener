@@ -13,6 +13,7 @@ from ditto_screener.policy import (
     CORE_ONLY_MANIFEST,
     AgenticSourceReviewModule,
     BehavioralChallengePackModule,
+    BehavioralOracleModule,
     ChallengeObservation,
     PolicyContext,
     PolicyEngine,
@@ -25,7 +26,7 @@ from ditto_screener.policy import (
     core_decision,
     load_policy_engine,
 )
-from ditto_screening_protocol import SCREENING_POLICY_VERSION
+from ditto_screening_protocol import SCREENING_POLICY_VERSION, SourceReviewFinding
 
 _AGENT = UUID("4f2a1309-f763-4d40-9326-9eb7d13339e8")
 _ATTEMPT = UUID("7c5df3f9-3ea7-47ba-92d1-1bbcf4c5f300")
@@ -97,11 +98,22 @@ async def test_core_only_pass_never_calls_run() -> None:
     assert calls == 0
 
 
-async def test_default_v7_runs_luna_review_and_passes_low_risk() -> None:
+async def test_default_v7_runs_luna_review_and_behavioral_oracle_and_passes() -> None:
     reviews = 0
+    challenges = 0
 
-    async def challenge(*_):  # type: ignore[no-untyped-def]
-        raise AssertionError("default v7 must not call /run")
+    async def challenge(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        nonlocal challenges
+        challenges += 1
+        assert challenge_id == "v7-behavioral-oracle"
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=800,
+            gateway_calls=2,
+            oracle_answer_correct=True,
+        )
 
     async def review() -> SourceReviewObservation:
         nonlocal reviews
@@ -116,9 +128,11 @@ async def test_default_v7_runs_luna_review_and_passes_low_risk() -> None:
     engine = load_policy_engine(None)
     decision = await engine.evaluate(_context(challenge, review))
 
-    assert engine.manifest.rotation_id == "v7-luna-source-review"
+    assert engine.manifest.rotation_id == "v7-luna-source-review-behavioral-oracle"
     assert decision.outcome == ScreeningOutcome.PASS
     assert reviews == 1
+    # The always-on oracle runs even though source review cleared (no tripwire).
+    assert challenges == 1
 
 
 async def test_timing_is_only_a_tripwire_and_routes_to_quarantine(
@@ -427,6 +441,126 @@ async def test_shape_only_pack_preserves_non_model_harness_compatibility(
     assert decision.outcome == ScreeningOutcome.PASS
 
 
+def _oracle_engine() -> PolicyEngine:
+    """Default-v7-style engine: no selector tripwire, always-on oracle only."""
+    manifest = PolicyManifest(
+        rotation_id="oracle-only",
+        module_specs=({"kind": "behavioral_oracle"},),
+    )
+    return PolicyEngine(manifest, (BehavioralOracleModule(module_id="oracle"),))
+
+
+async def test_behavioral_oracle_runs_without_any_tripwire() -> None:
+    """The oracle challenge runs on every submission, not just on an audit."""
+    seen: list[str] = []
+
+    async def observe(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        seen.append(challenge_id)
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=900,
+            gateway_calls=2,
+            oracle_answer_correct=True,
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe))
+    assert seen == ["v7-behavioral-oracle"]
+    assert decision.outcome == ScreeningOutcome.PASS
+    assert decision.submits_verdict and decision.passed
+
+
+async def test_reasoning_harness_passes_the_oracle() -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "v7-behavioral-oracle",
+            True,
+            "ab" * 32,
+            elapsed_ms=1200,
+            gateway_calls=3,
+            oracle_answer_correct=True,
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.PASS
+    assert any(
+        item.code == "behavioral-oracle-passed" for item in decision.evidence
+    )
+
+
+async def test_single_call_table_harness_fails_the_oracle() -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "v7-behavioral-oracle",
+            True,
+            "cd" * 32,
+            elapsed_ms=900,
+            gateway_calls=1,
+            oracle_answer_correct=False,
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert not decision.submits_verdict
+    assert any(
+        item.code == "behavioral-oracle-insufficient-round-trips"
+        for item in decision.evidence
+    )
+
+
+async def test_wrong_nonce_table_harness_fails_the_oracle() -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "v7-behavioral-oracle",
+            True,
+            "ef" * 32,
+            elapsed_ms=900,
+            gateway_calls=2,
+            oracle_answer_correct=False,
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert any(
+        item.code == "behavioral-oracle-wrong-answer" for item in decision.evidence
+    )
+
+
+async def test_too_fast_round_trip_trips_the_timing_floor() -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "v7-behavioral-oracle",
+            True,
+            "01" * 32,
+            elapsed_ms=3,
+            gateway_calls=2,
+            oracle_answer_correct=True,
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert any(
+        item.code == "behavioral-oracle-implausibly-fast"
+        for item in decision.evidence
+    )
+
+
+async def test_inconclusive_oracle_is_not_a_rejection() -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "v7-behavioral-oracle",
+            False,
+            None,
+            elapsed_ms=10,
+            error_code="challenge-http-failure",
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe))
+    assert decision.outcome == ScreeningOutcome.INCONCLUSIVE
+    assert not decision.submits_verdict
+
+
 def test_manifest_rotation_changes_digest_not_policy_or_signature_contract(
     tmp_path: Path,
 ) -> None:
@@ -490,3 +624,75 @@ def test_live_v6_snapshot_is_an_acceptance_fixture() -> None:
         detail="contract failed: no Cargo.toml at tarball root",
     )
     assert decision.submits_verdict and not decision.passed
+
+
+def _finding_payload(risk: str) -> dict[str, object]:
+    return SourceReviewFinding(
+        artifact_sha256=_DIGEST,
+        prompt_revision="source-review-v2",
+        risk_level=risk,
+        confidence=0.9,
+        categories=["provider_bypass"] if risk != "low" else ["none"],
+        evidence=(
+            [{"path": "src/main.rs", "line": 7, "category": "provider_bypass"}]
+            if risk != "low"
+            else []
+        ),
+        summary="bounded operator summary",
+    ).model_dump(mode="json")
+
+
+async def test_source_review_finding_travels_to_quarantine_decision() -> None:
+    finding = _finding_payload("high")
+
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("no behavioral pack is configured")
+
+    async def review() -> SourceReviewObservation:
+        parsed = SourceReviewFinding.model_validate(finding)
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="high",
+            finding_digest=parsed.canonical_digest(),
+            categories=("provider_bypass",),
+            finding=finding,
+        )
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="source-review",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="private-source-review"),),
+    )
+    decision = await engine.evaluate(_context(challenge, review))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.finding == finding
+
+
+async def test_clean_review_finding_is_kept_when_oracle_quarantines() -> None:
+    """A low-risk source review is exculpatory context on an oracle quarantine."""
+    finding = _finding_payload("low")
+
+    async def challenge(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=800,
+            gateway_calls=1,
+        )
+
+    async def review() -> SourceReviewObservation:
+        parsed = SourceReviewFinding.model_validate(finding)
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="low",
+            finding_digest=parsed.canonical_digest(),
+            categories=("none",),
+            finding=finding,
+        )
+
+    decision = await load_policy_engine(None).evaluate(_context(challenge, review))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.finding == finding

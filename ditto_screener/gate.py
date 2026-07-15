@@ -49,6 +49,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -146,6 +147,7 @@ class _AuditRuntime:
 
     harness_base: str
     gateway_response_token: str
+    oracle_answer: str
     gateway_state_file: str
 
 
@@ -162,6 +164,74 @@ def dockerfile_at_root(member_names: list[str]) -> bool:
 def _rust_diagnostic(code: str, message: str, help_text: str) -> str:
     """Return a rustc-style contract diagnostic without source excerpts."""
     return f"error[{code}]: {message}\n\nhelp: {help_text}"
+
+
+# Rust/native build indicators. If none appear, the image cannot be compiling
+# the committed crate, so whatever it runs is not the reviewed source.
+_BUILD_STEP_RE = re.compile(r"\b(cargo|rustc|make|cmake)\b", re.IGNORECASE)
+
+
+def _dockerfile_instructions(text: str) -> list[tuple[str, str]]:
+    """Parse a Dockerfile into (INSTRUCTION, remainder) pairs.
+
+    Line continuations are joined and standalone comment lines are dropped.
+    This is a bounded static parse, not a full Dockerfile grammar.
+    """
+    logical: list[str] = []
+    buffer = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not buffer and (not stripped or stripped.startswith("#")):
+            continue
+        buffer = f"{buffer} {stripped}".strip() if buffer else stripped
+        if buffer.endswith("\\"):
+            buffer = buffer[:-1].rstrip()
+            continue
+        logical.append(buffer)
+        buffer = ""
+    if buffer:
+        logical.append(buffer)
+    instructions: list[tuple[str, str]] = []
+    for line in logical:
+        parts = line.split(None, 1)
+        if parts:
+            instructions.append((parts[0].upper(), parts[1] if len(parts) > 1 else ""))
+    return instructions
+
+
+def image_binding_error(dockerfile_text: str) -> str | None:
+    """Bind the built image to the reviewed crate, as far as static parse allows.
+
+    Objective, reproducible check: if the Dockerfile brings a file in from the
+    build context and runs an entrypoint but never compiles the committed crate
+    (no ``cargo``/``rustc``/``make``/``cmake`` build step), then the image runs
+    an opaque prebuilt artifact rather than the source that was reviewed. That
+    is a checkable contract violation, not a heuristic.
+
+    TODO(anti-gaming): this cannot yet cover every image/crate divergence, e.g.
+    a ``FROM <opaque prebuilt image>`` base that ships the real logic, or a
+    build step that compiles but the entrypoint runs a different committed
+    binary. Fully binding provenance needs the build to emit and the gate to
+    verify a hash of the entrypoint's origin against the reviewed crate.
+    """
+    has_build_step = False
+    has_context_copy = False
+    has_entrypoint = False
+    for keyword, rest in _dockerfile_instructions(dockerfile_text):
+        if keyword == "RUN" and _BUILD_STEP_RE.search(rest):
+            has_build_step = True
+        elif keyword in {"COPY", "ADD"} and "--from=" not in rest.casefold():
+            has_context_copy = True
+        elif keyword in {"ENTRYPOINT", "CMD"}:
+            has_entrypoint = True
+    if has_entrypoint and has_context_copy and not has_build_step:
+        return _rust_diagnostic(
+            "SCR-RUST-012",
+            "image runs a prebuilt binary instead of building the committed crate",
+            "compile the crate inside the image (for example, cargo build) rather "
+            "than COPYing an opaque prebuilt binary in as the entrypoint",
+        )
+    return None
 
 
 def _gateway_call_count(path: str) -> int:
@@ -367,6 +437,7 @@ class BuildGate:
                     harness_base=audit_runtime.harness_base,
                     probe_container=gateway_container,
                     gateway_response_token=audit_runtime.gateway_response_token,
+                    oracle_answer=audit_runtime.oracle_answer,
                     gateway_state_file=audit_runtime.gateway_state_file,
                 )
 
@@ -544,6 +615,20 @@ class BuildGate:
                         "submit a runnable Rust package rather than a virtual "
                         "workspace",
                     )
+
+                dockerfile_file = tar.extractfile(members["Dockerfile"])
+                if dockerfile_file is not None:
+                    try:
+                        dockerfile_text = dockerfile_file.read().decode("utf-8")
+                    except UnicodeDecodeError:
+                        return _rust_diagnostic(
+                            "SCR-RUST-012",
+                            "Dockerfile is not valid UTF-8 text",
+                            "commit a readable UTF-8 Dockerfile that builds the crate",
+                        )
+                    binding_error = image_binding_error(dockerfile_text)
+                    if binding_error is not None:
+                        return binding_error
                 return None
         except (tarfile.TarError, OSError) as e:
             logger.warning("could not read tar %s: %s", tar_path, e)
@@ -616,11 +701,17 @@ class BuildGate:
     ) -> tuple[_StageResult, _AuditRuntime | None]:
         """Run the image and await health against the isolated fake gateway."""
         port = self._config.container_port
-        response_text = f"ditto-fake-gateway-{secrets.token_hex(16)}"
+        # High-entropy, opaque tokens with no ``ditto``/``fake``/``screening``
+        # marker: the first is the per-container nonce the gateway returns, the
+        # second is the answer it returns only once the nonce is fed back on a
+        # second round-trip (the gateway-encoded correctness oracle).
+        response_text = secrets.token_hex(16)
+        oracle_answer = secrets.token_hex(16)
         started, detail = await self._start_fake_gateway(
             gateway_container=gateway_container,
             network=network,
             response_text=response_text,
+            oracle_answer=oracle_answer,
             state_dir=gateway_state_dir,
         )
         if not started:
@@ -695,6 +786,7 @@ class BuildGate:
             _AuditRuntime(
                 harness_base=harness_base,
                 gateway_response_token=response_text,
+                oracle_answer=oracle_answer,
                 gateway_state_file=str(Path(gateway_state_dir) / "model-called"),
             ),
         )
@@ -705,6 +797,7 @@ class BuildGate:
         gateway_container: str,
         network: str,
         response_text: str,
+        oracle_answer: str,
         state_dir: str,
     ) -> tuple[bool, str]:
         """Start the fake gateway beside the harness on an internal network."""
@@ -739,6 +832,8 @@ class BuildGate:
                 "32",
                 "-e",
                 f"DITTO_FAKE_GATEWAY_RESPONSE={response_text}",
+                "-e",
+                f"DITTO_FAKE_GATEWAY_ORACLE_ANSWER={oracle_answer}",
                 "-e",
                 "DITTO_FAKE_GATEWAY_STATE_FILE=/state/model-called",
                 "-v",
@@ -804,11 +899,14 @@ class BuildGate:
         probe_container: str,
         gateway_response_token: str,
         gateway_state_file: str,
+        oracle_answer: str | None = None,
     ) -> ChallengeObservation:
         """Run one selected private challenge and retain only bounded evidence.
 
-        This is observational triage. A response shape or timing can route to
-        review, but it is never interpreted as proof of causal model use.
+        Timing and gateway-call counts are objective, reproducible facts about
+        the isolated round-trip. ``oracle_answer_correct`` is likewise objective:
+        the harness can only surface ``oracle_answer`` by feeding the gateway
+        nonce back through a second turn, which a static table cannot do.
         """
         calls_before = _gateway_call_count(gateway_state_file)
         started = asyncio.get_running_loop().time()
@@ -859,6 +957,10 @@ class BuildGate:
             json_keys=tuple(sorted(str(key) for key in payload)[:64]),
             gateway_calls=gateway_calls,
             gateway_token_observed=_contains_string(payload, gateway_response_token),
+            oracle_answer_correct=(
+                oracle_answer is not None
+                and _contains_string(payload, oracle_answer)
+            ),
         )
 
     async def _request_from_sidecar(

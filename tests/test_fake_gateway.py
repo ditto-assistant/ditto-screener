@@ -22,17 +22,85 @@ async def test_chat_completion_is_counted_and_returns_offline_response(
             response = await client.post(
                 f"{local_url}/v1/chat/completions",
                 json={
-                    "model": "ignored",
+                    "model": "acme/reasoner-v3",
                     "messages": [{"role": "user", "content": "hello"}],
                 },
             )
         assert response.status_code == 200
-        assert (
-            response.json()["choices"][0]["message"]["content"] == gateway.response_text
-        )
+        body = response.json()
+        assert body["choices"][0]["message"]["content"] == gateway.response_text
+        # The response must echo the caller's model, use a random id, and a real
+        # timestamp so the container cannot fingerprint the screener.
+        assert body["model"] == "acme/reasoner-v3"
+        assert body["id"].startswith("chatcmpl-")
+        assert body["id"] != "chatcmpl-ditto-screening-fake"
+        assert body["created"] > 0
         assert gateway.model_calls == 1
         assert state.read_text() == "1\n"
         assert not state.stat().st_mode & 0o077
+
+
+async def test_no_screening_fingerprints_leak_in_any_response() -> None:
+    """No ``ditto``/``fake``/``screening``/locked-model tell reaches the container."""
+    async with FakeModelGateway() as gateway:
+        local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
+        async with httpx.AsyncClient() as client:
+            chat = await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={"model": "acme/x", "messages": []},
+            )
+            responses = await client.post(
+                f"{local_url}/v1/responses", json={"model": "acme/x", "input": "hi"}
+            )
+            not_found = await client.post(f"{local_url}/v1/unknown", json={})
+            bad = await client.post(
+                f"{local_url}/v1/chat/completions", content=b"{not-json"
+            )
+    for raw in (chat.text.lower(), responses.text.lower(), not_found.text.lower()):
+        assert "ditto" not in raw
+        assert "fake" not in raw
+        assert "screening" not in raw
+        assert "qwen" not in raw
+    # Even the 404/400 error bodies the container can probe must not tell.
+    assert "fake" not in bad.text.lower() and "ditto" not in bad.text.lower()
+
+
+async def test_model_round_trip_oracle_returns_answer_only_after_nonce() -> None:
+    """A second turn carrying the nonce yields the answer; a first turn does not."""
+    async with FakeModelGateway(
+        response_text="nonce-token-abc", oracle_answer="answer-token-xyz"
+    ) as gateway:
+        local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
+        async with httpx.AsyncClient() as client:
+            first = await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={"model": "m", "messages": [{"role": "user", "content": "go"}]},
+            )
+            second = await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "assistant", "content": "nonce-token-abc"},
+                        {"role": "user", "content": "return that value"},
+                    ],
+                },
+            )
+    assert first.json()["choices"][0]["message"]["content"] == "nonce-token-abc"
+    assert second.json()["choices"][0]["message"]["content"] == "answer-token-xyz"
+
+
+async def test_configured_latency_delays_a_model_call() -> None:
+    async with FakeModelGateway(latency_range=(0.05, 0.05)) as gateway:
+        local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
+        async with httpx.AsyncClient() as client:
+            start = asyncio.get_running_loop().time()
+            await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={"model": "m", "messages": []},
+            )
+            elapsed = asyncio.get_running_loop().time() - start
+    assert elapsed >= 0.05
 
 
 async def test_concurrent_gateways_keep_call_evidence_isolated(

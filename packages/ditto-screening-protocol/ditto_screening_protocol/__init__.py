@@ -6,9 +6,12 @@ from ditto_screening_protocol.models import (
     ArtifactResponse,
     ScreenerQueueItem,
     ScreenerQueueResponse,
+    ScreenEvidenceItem,
     ScreenResultOutcome,
     ScreenResultRequest,
     ScreenResultResponse,
+    SourceReviewEvidenceItem,
+    SourceReviewFinding,
 )
 from ditto_screening_protocol.signing import verdict_signing_message
 
@@ -18,8 +21,11 @@ __all__ = [
     "ArtifactResponse",
     "ScreenerQueueItem",
     "ScreenerQueueResponse",
+    "ScreenEvidenceItem",
     "ScreenResultRequest",
     "ScreenResultResponse",
     "ScreenResultOutcome",
+    "SourceReviewEvidenceItem",
+    "SourceReviewFinding",
     "verdict_signing_message",
 ]

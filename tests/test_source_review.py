@@ -15,6 +15,7 @@ from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
 )
+from ditto_screening_protocol import SourceReviewFinding
 
 _SHA = "ab" * 32
 
@@ -100,6 +101,49 @@ def _agent(
         max_steps=4,
         transport=transport,
     )
+
+
+def _archive_with(tmp_path: Path, extra: dict[str, bytes]) -> Path:
+    path = tmp_path / "agent.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        base = {
+            "Cargo.toml": b'[package]\nname="agent"\nversion="0.1.0"\n',
+            "Dockerfile": b"FROM scratch\n",
+            "src/main.rs": b"fn main() {}\n",
+        }
+        base.update(extra)
+        for name, raw in base.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(raw)
+            archive.addfile(member, io.BytesIO(raw))
+    return path
+
+
+def test_opaque_binary_blob_is_surfaced_in_inventory(tmp_path: Path) -> None:
+    blob = b"MZ\x90\x00\x03\x00\x00\x00" + b"\x00secret-string-table\x00" * 8
+    repo = TarSourceRepository(str(_archive_with(tmp_path, {"assets/table.bin": blob})))
+    inventory = json.loads(repo.inventory())
+    opaque = {entry["path"]: entry for entry in inventory["opaque_blobs"]}
+    assert "assets/table.bin" in opaque
+    assert opaque["assets/table.bin"]["reason"] == "non_utf8"
+    assert opaque["assets/table.bin"]["bytes"] == len(blob)
+    # A normal UTF-8 source file is not surfaced as opaque.
+    assert "src/main.rs" not in opaque
+
+
+def test_oversized_file_is_surfaced_as_opaque(tmp_path: Path) -> None:
+    big = b"a" * (2 * 1024 * 1024 + 16)
+    repo = TarSourceRepository(str(_archive_with(tmp_path, {"data/big.txt": big})))
+    opaque = json.loads(repo.inventory())["opaque_blobs"]
+    assert any(
+        entry["path"] == "data/big.txt" and entry["reason"] == "oversized"
+        for entry in opaque
+    )
+
+
+def test_utf8_only_crate_reports_no_opaque_blobs(tmp_path: Path) -> None:
+    repo = TarSourceRepository(str(_archive_with(tmp_path, {})))
+    assert json.loads(repo.inventory())["opaque_blobs"] == []
 
 
 async def test_benign_control_clears_with_zdr_and_read_only_tools(
@@ -249,6 +293,25 @@ async def test_sanitized_shortcut_fixture_produces_bounded_risk_digest(
     assert observation.categories == ("benchmark_emulation", "provider_bypass")
     assert observation.finding_digest is not None
     assert len(observation.finding_digest) == 64
+
+    # The bounded finding rides along for the operator console and hashes to
+    # the digest that the signed verdict binds.
+    assert observation.finding is not None
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert parsed.canonical_digest() == observation.finding_digest
+    assert parsed.risk_level == "high"
+    assert parsed.summary == final["summary"]
+    assert [item.model_dump() for item in parsed.evidence] == final["evidence"]
+    # Nothing beyond the sanitized, bounded fields is retained.
+    assert set(observation.finding) == {
+        "artifact_sha256",
+        "prompt_revision",
+        "risk_level",
+        "confidence",
+        "categories",
+        "evidence",
+        "summary",
+    }
 
 
 async def test_malformed_or_unavailable_reviewer_is_retryable_not_reject(

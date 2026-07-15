@@ -16,7 +16,13 @@ import httpx
 import pytest
 
 from ditto_screener.config import ScreenerConfig
-from ditto_screener.gate import BuildGate, _detail_tail, _log_tail, dockerfile_at_root
+from ditto_screener.gate import (
+    BuildGate,
+    _detail_tail,
+    _log_tail,
+    dockerfile_at_root,
+    image_binding_error,
+)
 from ditto_screener.policy import (
     CORE_ONLY_MANIFEST,
     PolicyEngine,
@@ -101,6 +107,40 @@ def test_root_and_log_helpers() -> None:
     assert not dockerfile_at_root(["sub/Dockerfile"])
     assert _log_tail("  hi  ") == "hi"
     assert len(_detail_tail("x" * 5000)) == 3900
+
+
+def test_image_binding_flags_prebuilt_entrypoint_without_build() -> None:
+    prebuilt = (
+        "FROM debian:bookworm-slim\n"
+        "COPY agent /usr/local/bin/agent\n"
+        'ENTRYPOINT ["/usr/local/bin/agent"]\n'
+    )
+    error = image_binding_error(prebuilt)
+    assert error is not None
+    assert error.startswith("error[SCR-RUST-012]")
+
+
+def test_image_binding_allows_multistage_cargo_build() -> None:
+    multistage = (
+        "FROM rust:1.79 AS builder\n"
+        "COPY . .\n"
+        "RUN cargo build --release\n"
+        "FROM debian:bookworm-slim\n"
+        "COPY --from=builder /target/release/agent /agent\n"
+        'ENTRYPOINT ["/agent"]\n'
+    )
+    assert image_binding_error(multistage) is None
+
+
+def test_image_binding_ignores_scratch_and_continuations() -> None:
+    assert image_binding_error("FROM scratch\n") is None
+    single_stage = (
+        "FROM rust:1.79\n"
+        "COPY . .\n"
+        "RUN cargo \\\n build --release\n"
+        'CMD ["./target/release/agent"]\n'
+    )
+    assert image_binding_error(single_stage) is None
 
 
 async def test_default_v6_builds_and_health_checks_without_run(
@@ -223,6 +263,25 @@ async def test_rust_contract_failure_is_terminal_reject(
         "error[SCR-RUST-006]: Cargo.toml is missing from the archive root"
     )
     assert "help:" in result.detail
+    assert not any(call[0] == "build" for call in calls)
+
+
+async def test_prebuilt_binary_entrypoint_is_terminal_reject(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar(
+        Dockerfile=(
+            b"FROM debian:bookworm-slim\n"
+            b"COPY agent /usr/local/bin/agent\n"
+            b'ENTRYPOINT ["/usr/local/bin/agent"]\n'
+        )
+    )
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
+    assert result.detail.startswith("error[SCR-RUST-012]")
     assert not any(call[0] == "build" for call in calls)
 
 
@@ -406,3 +465,60 @@ async def test_private_challenge_observes_isolated_gateway_dataflow(
     assert observation.gateway_calls == 1
     assert observation.gateway_token_observed
     assert observation.json_keys == ("final_text",)
+
+
+async def test_private_challenge_scores_the_gateway_encoded_oracle(
+    make_config: Callable[..., ScreenerConfig], tmp_path: Path
+) -> None:
+    """A harness that surfaces the second-turn answer clears the objective oracle."""
+    gate = _gate_with(make_config(), _ok_run(), tarball=_valid_tar())
+    state = tmp_path / "gateway-calls"
+
+    async def two_turn(*_: Any, **__: Any) -> tuple[int, str]:
+        state.write_text("1\n1\n")  # two observed gateway round-trips
+        return 0, '{"final_text":"the model returned oracle-answer-token"}'
+
+    gate._request_from_sidecar = two_turn  # type: ignore[method-assign]
+    observation = await gate._run_private_challenge(
+        "v7-behavioral-oracle",
+        {"protocol": "gateway_round_trip"},
+        5,
+        harness_base="http://harness:8080",
+        probe_container="probe",
+        gateway_response_token="nonce-token",
+        oracle_answer="oracle-answer-token",
+        gateway_state_file=str(state),
+    )
+    await gate._client.aclose()
+
+    assert observation.ok
+    assert observation.gateway_calls == 2
+    assert observation.oracle_answer_correct
+
+
+async def test_private_challenge_flags_wrong_oracle_answer(
+    make_config: Callable[..., ScreenerConfig], tmp_path: Path
+) -> None:
+    """A table that never makes the round-trip cannot surface the answer token."""
+    gate = _gate_with(make_config(), _ok_run(), tarball=_valid_tar())
+    state = tmp_path / "gateway-calls"
+
+    async def table(*_: Any, **__: Any) -> tuple[int, str]:
+        return 0, '{"final_text":"static precomputed answer"}'
+
+    gate._request_from_sidecar = table  # type: ignore[method-assign]
+    observation = await gate._run_private_challenge(
+        "v7-behavioral-oracle",
+        {"protocol": "gateway_round_trip"},
+        5,
+        harness_base="http://harness:8080",
+        probe_container="probe",
+        gateway_response_token="nonce-token",
+        oracle_answer="oracle-answer-token",
+        gateway_state_file=str(state),
+    )
+    await gate._client.aclose()
+
+    assert observation.ok
+    assert observation.gateway_calls == 0
+    assert not observation.oracle_answer_correct

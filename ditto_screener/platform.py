@@ -22,9 +22,11 @@ from ditto_screener.heartbeat import (
 from ditto_screening_protocol import (
     ArtifactResponse,
     ScreenerQueueResponse,
+    ScreenEvidenceItem,
     ScreenResultOutcome,
     ScreenResultRequest,
     ScreenResultResponse,
+    SourceReviewFinding,
 )
 
 if TYPE_CHECKING:
@@ -120,6 +122,8 @@ class PlatformClient:
         manifest_digest: str | None = None,
         finding_digest: str | None = None,
         reason_code: str | None = None,
+        evidence: list[ScreenEvidenceItem] | None = None,
+        finding: SourceReviewFinding | None = None,
     ) -> ScreenResultResponse:
         """Report a signed pass/fail verdict for ``agent_id``."""
         url = f"{self._base}{_PREFIX}/agent/{agent_id}/result"
@@ -134,6 +138,8 @@ class PlatformClient:
             manifest_digest=manifest_digest,
             finding_digest=finding_digest,
             reason_code=reason_code,
+            evidence=evidence,
+            finding=finding,
         )
         try:
             resp = await self._client.post(

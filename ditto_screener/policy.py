@@ -35,6 +35,7 @@ _MAX_CHALLENGES = 8
 _MAX_ID = 64
 _MAX_CODE = 64
 _MAX_SUMMARY = 240
+_MAX_FINDING_BYTES = 8 * 1024
 _SHA256_HEX = frozenset("0123456789abcdef")
 _PRIVATE_CHALLENGE_CATEGORIES = frozenset(
     {
@@ -113,6 +114,7 @@ class ScreeningDecision:
     manifest_digest: str
     evidence: tuple[PolicyEvidence, ...] = ()
     policy_version: int = SCREENING_POLICY_VERSION
+    finding: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.policy_version != SCREENING_POLICY_VERSION:
@@ -123,6 +125,10 @@ class ScreeningDecision:
             raise ValueError("manifest_digest must be lowercase SHA-256 hex")
         if len(self.evidence) > _MAX_EVIDENCE:
             raise ValueError("too many evidence entries")
+        if self.finding is not None and len(
+            json.dumps(self.finding, sort_keys=True, separators=(",", ":"))
+        ) > _MAX_FINDING_BYTES:
+            raise ValueError("finding exceeds bounded size")
 
     @property
     def submits_verdict(self) -> bool:
@@ -153,17 +159,26 @@ class ChallengeObservation:
     error_code: str | None = None
     gateway_calls: int = 0
     gateway_token_observed: bool = False
+    oracle_answer_correct: bool = False
 
 
 @dataclass(frozen=True)
 class SourceReviewObservation:
-    """Sanitized result from the private read-only source-review agent."""
+    """Sanitized result from the private read-only source-review agent.
+
+    ``finding`` is the bounded canonical payload (risk, confidence, categories,
+    flagged path/line evidence, and a generic summary) whose canonical JSON
+    hashes to ``finding_digest``. It never contains source text, prompts, or
+    fixtures; it exists so a quarantine reaches the operator with reviewable
+    context instead of a bare digest.
+    """
 
     ok: bool
     risk_level: str | None
     finding_digest: str | None
     categories: tuple[str, ...]
     error_code: str | None = None
+    finding: Mapping[str, object] | None = None
 
 
 ChallengeRunner = Callable[
@@ -192,6 +207,7 @@ class PolicyContext:
 class ModuleResult:
     disposition: ModuleDisposition
     evidence: tuple[PolicyEvidence, ...] = ()
+    finding: Mapping[str, object] | None = None
 
 
 class PolicyModule(Protocol):
@@ -237,8 +253,11 @@ class PolicyManifest:
 
 CORE_ONLY_MANIFEST = PolicyManifest(rotation_id="v7-core-build-health-no-run")
 DEFAULT_V7_MANIFEST = PolicyManifest(
-    rotation_id="v7-luna-source-review",
-    module_specs=({"kind": "agentic_source_review", "id": "luna-source-review"},),
+    rotation_id="v7-luna-source-review-behavioral-oracle",
+    module_specs=(
+        {"kind": "agentic_source_review", "id": "luna-source-review"},
+        {"kind": "behavioral_oracle", "id": "v7-behavioral-oracle"},
+    ),
 )
 
 
@@ -455,7 +474,9 @@ class AgenticSourceReviewModule(_BaseModule):
                 ),
             )
         if observation.risk_level == "low" and set(observation.categories) <= {"none"}:
-            return ModuleResult(ModuleDisposition.CLEAR)
+            # Keep the low-risk finding: if another module later quarantines,
+            # a clean source review is exculpatory context for the operator.
+            return ModuleResult(ModuleDisposition.CLEAR, finding=observation.finding)
         if observation.risk_level not in {"low", "medium", "high"}:
             return ModuleResult(
                 ModuleDisposition.INCONCLUSIVE,
@@ -478,6 +499,7 @@ class AgenticSourceReviewModule(_BaseModule):
                     observation.finding_digest,
                 ),
             ),
+            finding=observation.finding,
         )
 
 
@@ -566,6 +588,135 @@ class BehavioralChallengePackModule(_BaseModule):
         return ModuleResult(ModuleDisposition.CLEAR, tuple(evidence))
 
 
+@dataclass(frozen=True)
+class BehavioralOracleModule(_BaseModule):
+    """Always-on gateway-encoded correctness oracle with timing thresholds.
+
+    Unlike the selector-gated packs, this challenge runs on every submission.
+    It is built in (no external pack file), so it works in the default v7
+    manifest out of the box. The oracle is objective and reproducible: the
+    isolated fake gateway returns a per-container nonce, and the harness can
+    only surface the gateway's ``oracle_answer`` by feeding that nonce back
+    through a second gateway turn. A static lookup table that never performs
+    the round-trip cannot produce the right final answer, returns in ~1 call,
+    and answers in milliseconds.
+
+    TRUST-BOUNDARY NOTE: a wrong gateway-encoded answer and an implausibly
+    fast / single-call round-trip are objective, checkable facts, so they
+    *could* map to ``deterministic_reject``. The PolicyEngine deliberately
+    reserves terminal rejection to the stable core (see module docstring and
+    ``core_decision``); a private module cannot emit ``deterministic_reject``.
+    We therefore route objective failures to ``QUARANTINE``, which already
+    withholds the pass verdict (the cheater is not admitted) while keeping an
+    operator in the loop. TODO(anti-gaming): to promote these objective
+    failures to ``deterministic_reject``, run this oracle inside the stable
+    core in ``gate.py`` (which owns the container/gateway lifecycle and is the
+    only role permitted to reject), or add a sanctioned objective-reject
+    disposition to ``_module_terminal``.
+    """
+
+    phase: str = field(init=False, default="challenge")
+    challenge_id: str = "v7-behavioral-oracle"
+    timeout_seconds: float = 20.0
+    min_gateway_calls: int = 2
+    min_elapsed_ms: int = 250
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.min_gateway_calls < 1:
+            raise ValueError("min_gateway_calls must be at least 1")
+        if self.min_elapsed_ms < 0:
+            raise ValueError("min_elapsed_ms must be non-negative")
+        if not 1 <= self.timeout_seconds <= 60:
+            raise ValueError("timeout_seconds must be between 1 and 60")
+
+    async def evaluate(self, context: PolicyContext) -> ModuleResult:
+        # Shaped like a real benchmark case so a genuine agent naturally makes
+        # the two model turns the oracle scores. A static lookup keyed on the
+        # inputs cannot know the per-container nonce, so it cannot complete the
+        # round-trip regardless of how the prompt is worded.
+        request: Mapping[str, object] = {
+            "case_id": self.challenge_id,
+            "system_prompt": (
+                "You are an agent. First call the model to obtain a verification "
+                "token. Then call the model a second time, passing that exact "
+                "token back, and return the model's final response verbatim."
+            ),
+            "user_input": "Perform the two-step verification and return the value.",
+            "tools": [],
+        }
+        observation = await context.run_challenge(
+            self.challenge_id, request, self.timeout_seconds
+        )
+        if not observation.ok:
+            return ModuleResult(
+                ModuleDisposition.INCONCLUSIVE,
+                (
+                    PolicyEvidence(
+                        self.module_id,
+                        observation.error_code or "behavioral-oracle-inconclusive",
+                        "always-on behavioral oracle did not produce a usable result",
+                        observation.response_digest,
+                    ),
+                ),
+            )
+        if observation.gateway_calls < self.min_gateway_calls:
+            # Objective: a genuine multi-step harness makes the round-trip;
+            # a lookup answers with too few (often one) gateway calls.
+            return ModuleResult(
+                ModuleDisposition.QUARANTINE,
+                (
+                    PolicyEvidence(
+                        self.module_id,
+                        "behavioral-oracle-insufficient-round-trips",
+                        "behavioral oracle observed too few gateway round-trips",
+                        observation.response_digest,
+                    ),
+                ),
+            )
+        if not observation.oracle_answer_correct:
+            # Objective: the gateway-encoded answer is deterministically known
+            # to the screener; a wrong final answer is a checkable failure.
+            return ModuleResult(
+                ModuleDisposition.QUARANTINE,
+                (
+                    PolicyEvidence(
+                        self.module_id,
+                        "behavioral-oracle-wrong-answer",
+                        "behavioral oracle final answer did not match the "
+                        "gateway-encoded value",
+                        observation.response_digest,
+                    ),
+                ),
+            )
+        if observation.elapsed_ms < self.min_elapsed_ms:
+            # Objective: real model round-trips accrue latency; a table returns
+            # in milliseconds.
+            return ModuleResult(
+                ModuleDisposition.QUARANTINE,
+                (
+                    PolicyEvidence(
+                        self.module_id,
+                        "behavioral-oracle-implausibly-fast",
+                        "behavioral oracle round-trip returned faster than any "
+                        "genuine model call",
+                        observation.response_digest,
+                    ),
+                ),
+            )
+        return ModuleResult(
+            ModuleDisposition.CLEAR,
+            (
+                PolicyEvidence(
+                    self.module_id,
+                    "behavioral-oracle-passed",
+                    "behavioral oracle round-trip returned the gateway-encoded value",
+                    observation.response_digest,
+                ),
+            ),
+        )
+
+
 class PolicyEngine:
     """Evaluate selectors, optional challenges, and typed review routing."""
 
@@ -581,20 +732,30 @@ class PolicyEngine:
 
     async def evaluate(self, context: PolicyContext) -> ScreeningDecision:
         evidence: list[PolicyEvidence] = []
+        finding: Mapping[str, object] | None = None
         selected = False
         for module in (m for m in self.modules if m.phase == "selector"):
             result = await module.evaluate(context)
             evidence.extend(result.evidence)
+            finding = result.finding or finding
             terminal = _module_terminal(result.disposition)
             if terminal is not None:
-                return self._decision(terminal, evidence)
+                return self._decision(terminal, evidence, finding)
             selected = selected or result.disposition == ModuleDisposition.TRIPWIRE
 
-        if not selected:
-            return self._decision(ScreeningOutcome.PASS, evidence)
-
+        # Challenge-phase modules run on EVERY submission, decoupled from the
+        # selector tripwire. The always-on behavioral oracle lives here so a
+        # harness cannot behave only during a ~5% audit.
         challenges = tuple(m for m in self.modules if m.phase == "challenge")
-        if not challenges:
+        for module in challenges:
+            result = await module.evaluate(context)
+            evidence.extend(result.evidence)
+            finding = result.finding or finding
+            terminal = _module_terminal(result.disposition)
+            if terminal is not None:
+                return self._decision(terminal, evidence, finding)
+
+        if selected and not challenges:
             if not evidence:
                 evidence.append(
                     PolicyEvidence(
@@ -604,19 +765,15 @@ class PolicyEngine:
                         "is available",
                     )
                 )
-            return self._decision(ScreeningOutcome.QUARANTINE, evidence)
+            return self._decision(ScreeningOutcome.QUARANTINE, evidence, finding)
 
-        for module in challenges:
-            result = await module.evaluate(context)
-            evidence.extend(result.evidence)
-            terminal = _module_terminal(result.disposition)
-            if terminal is not None:
-                return self._decision(terminal, evidence)
-
-        return self._decision(ScreeningOutcome.PASS, evidence)
+        return self._decision(ScreeningOutcome.PASS, evidence, finding)
 
     def _decision(
-        self, outcome: ScreeningOutcome, evidence: Sequence[PolicyEvidence]
+        self,
+        outcome: ScreeningOutcome,
+        evidence: Sequence[PolicyEvidence],
+        finding: Mapping[str, object] | None = None,
     ) -> ScreeningDecision:
         bounded = tuple(evidence[:_MAX_EVIDENCE])
         detail = ""
@@ -631,6 +788,7 @@ class PolicyEngine:
             detail=detail,
             manifest_digest=self.manifest.digest,
             evidence=bounded,
+            finding=finding,
         )
 
 
@@ -639,7 +797,10 @@ def load_policy_engine(manifest_path: str | None) -> PolicyEngine:
     if manifest_path is None:
         return PolicyEngine(
             DEFAULT_V7_MANIFEST,
-            (AgenticSourceReviewModule(module_id="luna-source-review"),),
+            (
+                AgenticSourceReviewModule(module_id="luna-source-review"),
+                BehavioralOracleModule(module_id="v7-behavioral-oracle"),
+            ),
         )
     raw = _read_json(Path(manifest_path), max_bytes=_MAX_MANIFEST_BYTES)
     if not isinstance(raw, dict) or set(raw) != {
@@ -702,6 +863,7 @@ class ReviewJournal:
                 }
                 for item in decision.evidence
             ],
+            "finding": decision.finding,
         }
         encoded = (
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
@@ -865,6 +1027,9 @@ def _build_module(spec: Mapping[str, object]) -> PolicyModule:
         return BehavioralChallengePackModule(
             module_id=module_id, pack_path=Path(_string(spec, "pack_path"))
         )
+    if kind == "behavioral_oracle":
+        _expect_keys(spec, {"kind", "id"})
+        return BehavioralOracleModule(module_id=module_id)
     raise ValueError(f"unsupported policy module kind {kind!r}")
 
 

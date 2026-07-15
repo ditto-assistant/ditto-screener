@@ -12,7 +12,9 @@ import asyncio
 import contextlib
 import json
 import os
+import random
 import secrets
+import time
 from pathlib import Path
 from types import TracebackType
 
@@ -20,24 +22,47 @@ _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 1024 * 1024
 _EMBED_DIMENSIONS = 768
 LOCKED_HARNESS_MODEL = "qwen/qwen3-32b"
+# Fallback echoed only when a caller omits the ``model`` field. It is a common,
+# generic name so the container cannot fingerprint the screener from it.
+_DEFAULT_ECHO_MODEL = "gpt-4o-mini"
 
 
 class FakeModelGateway:
-    """Short-lived OpenAI-compatible HTTP server with observable call state."""
+    """Short-lived OpenAI-compatible HTTP server with observable call state.
+
+    Responses are intentionally indistinguishable from a real provider: the
+    ``id`` is random, ``created`` is a real timestamp, the requested ``model``
+    is echoed back, and the assistant content is a high-entropy opaque token
+    rather than any ``ditto``/``fake``/``screening`` marker. A harness cannot
+    fingerprint "I am being screened" from anything it can observe here.
+
+    A two-token correctness oracle makes model use checkable without any
+    heuristic: the gateway returns ``response_text`` (a per-container nonce) on
+    a first turn, and ``oracle_answer`` (a per-container transform) only once a
+    request body carries that nonce back. A static lookup table that never
+    performs the second gateway round-trip cannot produce ``oracle_answer``.
+    """
 
     def __init__(
         self,
         *,
         response_text: str | None = None,
+        oracle_answer: str | None = None,
         host: str = "0.0.0.0",
         port: int = 0,
         state_file: str | None = None,
+        latency_range: tuple[float, float] = (0.0, 0.0),
     ) -> None:
-        self.response_text = response_text or f"ditto-fake-{secrets.token_hex(16)}"
+        self.response_text = response_text or secrets.token_hex(16)
+        self._oracle_answer = oracle_answer
         self.model_calls = 0
         self._host = host
         self._port = port
         self._state_file = state_file
+        low, high = latency_range
+        if low < 0 or high < low:
+            raise ValueError("latency_range must be a non-negative (low, high) pair")
+        self._latency_range = (low, high)
         self._server: asyncio.Server | None = None
 
     @property
@@ -62,6 +87,39 @@ class FakeModelGateway:
                 os.write(fd, b"1\n")
             finally:
                 os.close(fd)
+
+    async def _simulate_latency(self) -> None:
+        """Sleep a jittered interval so a real model call is not instant.
+
+        A genuine multi-turn harness accumulates this latency across gateway
+        round-trips; a static lookup table answers in sub-millisecond time.
+        """
+        low, high = self._latency_range
+        if high > 0:
+            await asyncio.sleep(random.uniform(low, high))
+
+    def _response_content(self, body: bytes) -> str:
+        """Return the nonce, or the oracle answer once the nonce is fed back.
+
+        The screener knows both tokens, so the correct final answer of a
+        nonce round-trip is deterministically checkable without any heuristic.
+        """
+        if self._oracle_answer is not None and self.response_text in _as_text(body):
+            return self._oracle_answer
+        return self.response_text
+
+    @staticmethod
+    def _echo_model(body: bytes) -> str:
+        """Echo the caller's requested model so the reply carries no screener tell."""
+        try:
+            parsed = json.loads(body) if body else None
+        except (ValueError, UnicodeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            model = parsed.get("model")
+            if isinstance(model, str) and model:
+                return model
+        return _DEFAULT_ECHO_MODEL
 
     async def __aexit__(
         self,
@@ -101,8 +159,9 @@ class FakeModelGateway:
             # architectures, so tolerate body framing quirks here.
             # Drain a well-formed body when possible, but do not turn a body
             # framing quirk into a permanent miner rejection.
+            body = b""
             try:
-                await self._read_request_body(reader, headers)
+                body = await self._read_request_body(reader, headers)
             except (
                 TimeoutError,
                 ValueError,
@@ -119,17 +178,19 @@ class FakeModelGateway:
                 "/chat/completions",
             }:
                 self._record_model_call()
+                await self._simulate_latency()
+                content = self._response_content(body)
                 payload = {
-                    "id": "chatcmpl-ditto-screening-fake",
+                    "id": f"chatcmpl-{secrets.token_hex(12)}",
                     "object": "chat.completion",
-                    "created": 0,
-                    "model": LOCKED_HARNESS_MODEL,
+                    "created": int(time.time()),
+                    "model": self._echo_model(body),
                     "choices": [
                         {
                             "index": 0,
                             "message": {
                                 "role": "assistant",
-                                "content": self.response_text,
+                                "content": content,
                             },
                             "finish_reason": "stop",
                         }
@@ -145,21 +206,22 @@ class FakeModelGateway:
                 "/responses",
             }:
                 self._record_model_call()
+                await self._simulate_latency()
+                content = self._response_content(body)
                 payload = {
-                    "id": "resp_ditto_screening_fake",
+                    "id": f"resp_{secrets.token_hex(24)}",
                     "object": "response",
                     "status": "completed",
-                    "model": LOCKED_HARNESS_MODEL,
+                    "created_at": int(time.time()),
+                    "model": self._echo_model(body),
                     "output": [
                         {
                             "type": "message",
                             "role": "assistant",
-                            "content": [
-                                {"type": "output_text", "text": self.response_text}
-                            ],
+                            "content": [{"type": "output_text", "text": content}],
                         }
                     ],
-                    "output_text": self.response_text,
+                    "output_text": content,
                     "usage": {"input_tokens": 1, "output_tokens": 1},
                 }
             elif method == "POST" and path.rstrip("/") in {
@@ -170,13 +232,19 @@ class FakeModelGateway:
                 vector = [0.0] * _EMBED_DIMENSIONS
                 vector[0] = 1.0
                 payload = {
-                    "model": LOCKED_HARNESS_MODEL,
+                    "model": self._echo_model(body),
                     "embeddings": [vector],
                     "data": [{"index": 0, "embedding": vector}],
                 }
             else:
                 status = "404 Not Found"
-                payload = {"error": {"message": "unsupported fake gateway endpoint"}}
+                payload = {
+                    "error": {
+                        "message": "Unrecognized request URL.",
+                        "type": "invalid_request_error",
+                        "code": "unknown_url",
+                    }
+                }
         except (
             TimeoutError,
             ValueError,
@@ -187,7 +255,13 @@ class FakeModelGateway:
         ) as error:
             print(f"fake gateway rejected malformed request: {error}", flush=True)
             status = "400 Bad Request"
-            payload = {"error": {"message": "malformed fake gateway request"}}
+            payload = {
+                "error": {
+                    "message": "We could not parse the JSON body of your request.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_json",
+                }
+            }
 
         body = json.dumps(payload, separators=(",", ":")).encode()
         writer.write(
@@ -248,15 +322,38 @@ class FakeModelGateway:
                 raise ValueError("malformed chunk terminator")
 
 
+def _as_text(body: bytes) -> str:
+    """Decode a request body loosely for substring checks; never raises."""
+    return body.decode("utf-8", "replace")
+
+
+def _sidecar_latency_range() -> tuple[float, float]:
+    """Realistic model-latency jitter for the container sidecar."""
+    raw = os.environ.get("DITTO_FAKE_GATEWAY_LATENCY_RANGE")
+    if not raw:
+        return (0.2, 0.7)
+    try:
+        low_text, high_text = raw.split(",", 1)
+        low, high = float(low_text), float(high_text)
+    except ValueError:
+        return (0.2, 0.7)
+    if low < 0 or high < low:
+        return (0.2, 0.7)
+    return (low, high)
+
+
 async def _serve_sidecar() -> None:
     """Run the fixed-port server used by the isolated Docker sidecar."""
     response_text = os.environ["DITTO_FAKE_GATEWAY_RESPONSE"]
+    oracle_answer = os.environ.get("DITTO_FAKE_GATEWAY_ORACLE_ANSWER") or None
     state_file = os.environ.get("DITTO_FAKE_GATEWAY_STATE_FILE")
     async with FakeModelGateway(
         response_text=response_text,
+        oracle_answer=oracle_answer,
         host="0.0.0.0",
         port=8080,
         state_file=state_file,
+        latency_range=_sidecar_latency_range(),
     ):
         await asyncio.Event().wait()
 
