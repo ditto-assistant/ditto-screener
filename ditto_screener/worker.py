@@ -26,6 +26,7 @@ from ditto_screener.heartbeat import (
     ScreenerProgressStage,
     ScreenerRuntimeState,
 )
+from ditto_screener.policy import ScreeningOutcome, core_decision
 from ditto_screener.signing import sign_heartbeat, sign_verdict
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
     from ditto_screener.platform import PlatformClient
 
 logger = logging.getLogger(__name__)
+
+EXACT_CROSS_MINER_DUPLICATE = "exact-cross-miner-duplicate"
 
 _HEARTBEAT_PROTOCOL_VERSION = 2
 _HEARTBEAT_MIN_INTERVAL_SECONDS = 120.0
@@ -221,15 +224,28 @@ class ScreenerWorker:
             self._heartbeat_while_active(heartbeat_stop)
         )
         try:
-            artifact = await self._platform.get_artifact(agent_id)
-            result = await self._gate.screen(
-                agent_id=agent_id,
-                attempt_id=item.attempt_id,
-                miner_hotkey=item.miner_hotkey,
-                sha256=item.sha256,
-                download_url=str(artifact.download_url),
-                progress=self._set_progress,
-            )
+            if item.precheck_reason_code is not None:
+                if item.precheck_reason_code != EXACT_CROSS_MINER_DUPLICATE:
+                    raise PlatformError(
+                        "unsupported platform precheck disposition: "
+                        f"{item.precheck_reason_code}"
+                    )
+                result = core_decision(
+                    ScreeningOutcome.DETERMINISTIC_REJECT,
+                    code=EXACT_CROSS_MINER_DUPLICATE,
+                    summary="artifact is an exact cross-miner duplicate",
+                    detail="exact cross-miner duplicate",
+                )
+            else:
+                artifact = await self._platform.get_artifact(agent_id)
+                result = await self._gate.screen(
+                    agent_id=agent_id,
+                    attempt_id=item.attempt_id,
+                    miner_hotkey=item.miner_hotkey,
+                    sha256=item.sha256,
+                    download_url=str(artifact.download_url),
+                    progress=self._set_progress,
+                )
             submits_result = (
                 result.submits_verdict or result.outcome.value == "quarantine"
             )
@@ -246,9 +262,7 @@ class ScreenerWorker:
             typed_outcome = ScreenResultOutcome(result.outcome.value)
             passed = typed_outcome == ScreenResultOutcome.PASS
             is_quarantine = typed_outcome == ScreenResultOutcome.QUARANTINE
-            reason_code = (
-                result.evidence[-1].code if is_quarantine and result.evidence else None
-            )
+            reason_code = result.evidence[-1].code if result.evidence else None
             finding_digest = (
                 next(
                     (item.digest for item in reversed(result.evidence) if item.digest),

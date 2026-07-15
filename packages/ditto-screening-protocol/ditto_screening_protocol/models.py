@@ -89,6 +89,26 @@ class ScreenerQueueItem(BaseModel):
             ),
         ),
     ] = None
+    precheck_reason_code: Annotated[
+        str | None,
+        Field(
+            pattern=r"^[a-z0-9][a-z0-9-]{0,63}$",
+            description=(
+                "Platform-owned deterministic rejection discovered atomically "
+                "while leasing. The worker must not download the artifact when set."
+            ),
+        ),
+    ] = None
+    duplicate_of: Annotated[
+        UUID | None,
+        Field(description="Earlier usable cross-miner submission for an exact copy."),
+    ] = None
+
+    @model_validator(mode="after")
+    def validate_precheck(self) -> ScreenerQueueItem:
+        if (self.precheck_reason_code is None) != (self.duplicate_of is None):
+            raise ValueError("precheck reason and duplicate reference must be paired")
+        return self
 
 
 class ScreenerQueueResponse(BaseModel):
