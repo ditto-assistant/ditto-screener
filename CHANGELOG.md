@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.5.4 (2026-07-15)
+
+### Bug Fixes
+
+- Stop hot-looping inconclusive screens as infrastructure errors
+  ([#17](https://github.com/ditto-assistant/ditto-screener/pull/17),
+  [`f0c293f`](https://github.com/ditto-assistant/ditto-screener/commit/f0c293f3d0b09d3dcc3fc2e697d5e095f4fb6d6c))
+
+
 ## v0.5.3 (2026-07-15)
 
 ### Bug Fixes
