@@ -693,3 +693,58 @@ async def test_clean_review_finding_is_kept_when_oracle_quarantines() -> None:
     decision = await load_policy_engine(None).evaluate(_context(challenge, review))
     assert decision.outcome == ScreeningOutcome.QUARANTINE
     assert decision.finding == finding
+
+
+async def test_oracle_pass_does_not_clear_a_source_review_tripwire() -> None:
+    """A generic always-on challenge must never self-clear a flagged audit."""
+    finding = _finding_payload("high")
+
+    async def challenge(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=800,
+            gateway_calls=2,
+            oracle_answer_correct=True,
+        )
+
+    async def review() -> SourceReviewObservation:
+        parsed = SourceReviewFinding.model_validate(finding)
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="high",
+            finding_digest=parsed.canonical_digest(),
+            categories=("provider_bypass",),
+            finding=finding,
+        )
+
+    decision = await load_policy_engine(None).evaluate(_context(challenge, review))
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.finding == finding
+    assert any(item.digest is not None for item in decision.evidence)
+
+
+async def test_oracle_request_is_randomized_and_unfingerprintable() -> None:
+    seen: list[dict] = []
+
+    async def challenge(challenge_id, request, _timeout):  # type: ignore[no-untyped-def]
+        seen.append(dict(request))
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=800,
+            gateway_calls=2,
+            oracle_answer_correct=True,
+        )
+
+    module = BehavioralOracleModule(module_id="v8-behavioral-oracle")
+    await module.evaluate(_context(challenge))
+    await module.evaluate(_context(challenge))
+    first, second = seen
+    # No fixed marker a harness could branch on.
+    assert "protocol" not in first
+    assert first["case_id"] != second["case_id"]
+    assert first["user_input"] != second["user_input"]
+    assert module.challenge_id not in str(first.values())

@@ -169,3 +169,70 @@ async def test_chunked_chat_completion_is_accepted() -> None:
             == gateway.response_text
         )
         assert gateway.model_calls == 1
+
+
+async def test_tool_declaring_caller_gets_a_protocol_natural_round_trip() -> None:
+    """First turn is a tool call against the caller's own tools; the nonce is
+    inside its arguments, so an honest agent loop naturally feeds it back and
+    unlocks the oracle answer on the second turn."""
+    async with FakeModelGateway(oracle_answer="oracle-token-xyz") as gateway:
+        local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
+        async with httpx.AsyncClient() as client:
+            first = await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={
+                    "model": "acme/reasoner-v3",
+                    "messages": [{"role": "user", "content": "look this up"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {"name": "search_memory", "parameters": {}},
+                        }
+                    ],
+                },
+            )
+            message = first.json()["choices"][0]["message"]
+            assert message["content"] is None
+            call = message["tool_calls"][0]
+            assert call["function"]["name"] == "search_memory"
+            arguments = json.loads(call["function"]["arguments"])
+            assert gateway.response_text in arguments.values()
+            assert first.json()["choices"][0]["finish_reason"] == "tool_calls"
+
+            # The honest second turn carries the transcript (with the nonce).
+            second = await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={
+                    "model": "acme/reasoner-v3",
+                    "messages": [
+                        {"role": "user", "content": "look this up"},
+                        message,
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": "no results",
+                        },
+                    ],
+                },
+            )
+            final = second.json()["choices"][0]["message"]
+            assert final["content"] == "oracle-token-xyz"
+            assert second.json()["choices"][0]["finish_reason"] == "stop"
+        assert gateway.model_calls == 2
+
+
+async def test_text_only_caller_still_gets_a_plain_completion() -> None:
+    """No declared tools means no un-executable tool call is forced."""
+    async with FakeModelGateway(oracle_answer="oracle-token-xyz") as gateway:
+        local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={
+                    "model": "acme/reasoner-v3",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+        message = response.json()["choices"][0]["message"]
+        assert message["content"] == gateway.response_text
+        assert "tool_calls" not in message

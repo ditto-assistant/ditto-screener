@@ -21,7 +21,7 @@ from ditto_screener.gate import (
     _detail_tail,
     _log_tail,
     dockerfile_at_root,
-    image_binding_error,
+    image_binding_advisory,
 )
 from ditto_screener.policy import (
     CORE_ONLY_MANIFEST,
@@ -115,9 +115,12 @@ def test_image_binding_flags_prebuilt_entrypoint_without_build() -> None:
         "COPY agent /usr/local/bin/agent\n"
         'ENTRYPOINT ["/usr/local/bin/agent"]\n'
     )
-    error = image_binding_error(prebuilt)
-    assert error is not None
-    assert error.startswith("error[SCR-RUST-012]")
+    advisory = image_binding_advisory(prebuilt)
+    assert advisory is not None
+    # Advisory wording, not a rustc-style rejection: the heuristic routes to
+    # operator review because text matching cannot prove provenance.
+    assert "error[" not in advisory
+    assert "may not be the reviewed source" in advisory
 
 
 def test_image_binding_allows_multistage_cargo_build() -> None:
@@ -129,18 +132,18 @@ def test_image_binding_allows_multistage_cargo_build() -> None:
         "COPY --from=builder /target/release/agent /agent\n"
         'ENTRYPOINT ["/agent"]\n'
     )
-    assert image_binding_error(multistage) is None
+    assert image_binding_advisory(multistage) is None
 
 
 def test_image_binding_ignores_scratch_and_continuations() -> None:
-    assert image_binding_error("FROM scratch\n") is None
+    assert image_binding_advisory("FROM scratch\n") is None
     single_stage = (
         "FROM rust:1.79\n"
         "COPY . .\n"
         "RUN cargo \\\n build --release\n"
         'CMD ["./target/release/agent"]\n'
     )
-    assert image_binding_error(single_stage) is None
+    assert image_binding_advisory(single_stage) is None
 
 
 async def test_default_v6_builds_and_health_checks_without_run(
@@ -266,9 +269,16 @@ async def test_rust_contract_failure_is_terminal_reject(
     assert not any(call[0] == "build" for call in calls)
 
 
-async def test_prebuilt_binary_entrypoint_is_terminal_reject(
+async def test_prebuilt_binary_entrypoint_is_advisory_quarantine(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
+    """The provenance heuristic reviews, never rejects.
+
+    Text matching cannot prove the image skips the crate build (a wrapper
+    build script is legitimate; ``RUN echo cargo`` is not a build), so the
+    prebuilt-looking Dockerfile still builds and health-checks, then routes
+    to operator-reviewed quarantine with the advisory evidence attached.
+    """
     tarball = _valid_tar(
         Dockerfile=(
             b"FROM debian:bookworm-slim\n"
@@ -280,9 +290,13 @@ async def test_prebuilt_binary_entrypoint_is_terminal_reject(
     gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
     async with gate._client:
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
-    assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
-    assert result.detail.startswith("error[SCR-RUST-012]")
-    assert not any(call[0] == "build" for call in calls)
+    assert result.outcome == ScreeningOutcome.QUARANTINE
+    assert not result.submits_verdict
+    assert any(
+        item.code == "image-binding-heuristic" and item.module_id == "stable-core"
+        for item in result.evidence
+    )
+    assert any(call[0] == "build" for call in calls)
 
 
 async def test_build_and_health_failures_are_deterministic(

@@ -381,3 +381,57 @@ async def test_transient_openrouter_failure_is_retried(
 
     assert observation.ok
     assert calls == 2
+
+
+async def test_hallucinated_citations_are_dropped_before_digest_binding(
+    tmp_path: Path,
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    final = {
+        "risk_level": "high",
+        "confidence": 0.9,
+        "categories": ["benchmark_emulation"],
+        "evidence": [
+            # Real file, real line: kept.
+            {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            # Nonexistent file: dropped.
+            {"path": "src/ghost.rs", "line": 3, "category": "benchmark_emulation"},
+            # Real file, impossible line: dropped.
+            {"path": "src/main.rs", "line": 9999, "category": "benchmark_emulation"},
+        ],
+        "summary": "Deterministic shortcut bypasses the general provider path.",
+    }
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, "fn run() { fast_path(); }")), artifact_sha256=_SHA
+    )
+
+    assert observation.ok and observation.finding is not None
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert [(item.path, item.line) for item in parsed.evidence] == [("src/main.rs", 1)]
+    # The digest binds the VALIDATED evidence set.
+    assert parsed.canonical_digest() == observation.finding_digest
+
+
+def test_inventory_degrades_partially_with_truncation_metadata(
+    tmp_path: Path,
+) -> None:
+    # Many files with long names would previously collapse the whole
+    # inventory into a truncation error; now the listing shrinks but the
+    # counts and flags survive.
+    files = {
+        f"src/module_{index:04d}/{'x' * 120}.rs": b"fn f() {}\n" for index in range(700)
+    }
+    files["assets/table.bin"] = b"\xff\xfe\x00binary" * 4
+    repo = TarSourceRepository(str(_archive_files(tmp_path, files)))
+    inventory = json.loads(repo.inventory())
+
+    assert "error" not in inventory
+    assert inventory["file_count"] == len(files)
+    assert inventory["truncated"] is True
+    assert inventory["files_listed"] == len(inventory["largest_files"])
+    assert inventory["opaque_total"] == 1
+    assert inventory["opaque_blobs"][0]["path"] == "assets/table.bin"
+    encoded = json.dumps(inventory, sort_keys=True, separators=(",", ":"))
+    assert len(encoded) <= 48_000

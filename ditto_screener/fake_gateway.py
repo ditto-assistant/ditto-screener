@@ -108,6 +108,63 @@ class FakeModelGateway:
             return self._oracle_answer
         return self.response_text
 
+    def _first_declared_tool(self, body: bytes) -> str | None:
+        """Name of the first tool the caller itself declared, if any."""
+        try:
+            parsed = json.loads(body) if body else None
+        except (ValueError, UnicodeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        tools = parsed.get("tools")
+        if not isinstance(tools, list):
+            return None
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                return function["name"]
+            if isinstance(tool.get("name"), str):
+                return tool["name"]
+        return None
+
+    def _chat_message(self, body: bytes) -> dict[str, object]:
+        """Build the assistant message for one chat-completions turn.
+
+        The nonce round-trip is protocol-natural: when the caller declares
+        tools and has not yet echoed the nonce, the first turn is a normal
+        ``tool_calls`` completion (calling one of the CALLER'S OWN declared
+        tools with the nonce inside its arguments). Any honest agent loop
+        executes the tool and calls the model again with a transcript that
+        contains the nonce, which unlocks ``oracle_answer``. A single text
+        turn is only used when the caller declares no tools, so a genuine
+        text-only pipeline still gets a plain completion instead of an
+        un-executable tool call.
+        """
+        content = self._response_content(body)
+        tool_name = self._first_declared_tool(body)
+        if (
+            self._oracle_answer is not None
+            and content == self.response_text
+            and tool_name is not None
+        ):
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call_{secrets.token_hex(12)}",
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps({"query": content}),
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": content}
+
     @staticmethod
     def _echo_model(body: bytes) -> str:
         """Echo the caller's requested model so the reply carries no screener tell."""
@@ -179,7 +236,7 @@ class FakeModelGateway:
             }:
                 self._record_model_call()
                 await self._simulate_latency()
-                content = self._response_content(body)
+                message = self._chat_message(body)
                 payload = {
                     "id": f"chatcmpl-{secrets.token_hex(12)}",
                     "object": "chat.completion",
@@ -188,11 +245,10 @@ class FakeModelGateway:
                     "choices": [
                         {
                             "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": content,
-                            },
-                            "finish_reason": "stop",
+                            "message": message,
+                            "finish_reason": "tool_calls"
+                            if "tool_calls" in message
+                            else "stop",
                         }
                     ],
                     "usage": {

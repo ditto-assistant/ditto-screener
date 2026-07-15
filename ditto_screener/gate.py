@@ -73,6 +73,7 @@ from ditto_screener.policy import (
     ChallengeObservation,
     PolicyContext,
     PolicyEngine,
+    PolicyEvidence,
     ReviewJournal,
     ScreeningDecision,
     ScreeningOutcome,
@@ -199,20 +200,16 @@ def _dockerfile_instructions(text: str) -> list[tuple[str, str]]:
     return instructions
 
 
-def image_binding_error(dockerfile_text: str) -> str | None:
-    """Bind the built image to the reviewed crate, as far as static parse allows.
+def image_binding_advisory(dockerfile_text: str) -> str | None:
+    """Flag a Dockerfile that LOOKS like it ships a prebuilt binary.
 
-    Objective, reproducible check: if the Dockerfile brings a file in from the
-    build context and runs an entrypoint but never compiles the committed crate
-    (no ``cargo``/``rustc``/``make``/``cmake`` build step), then the image runs
-    an opaque prebuilt artifact rather than the source that was reviewed. That
-    is a checkable contract violation, not a heuristic.
-
-    TODO(anti-gaming): this cannot yet cover every image/crate divergence, e.g.
-    a ``FROM <opaque prebuilt image>`` base that ships the real logic, or a
-    build step that compiles but the entrypoint runs a different committed
-    binary. Fully binding provenance needs the build to emit and the gate to
-    verify a hash of the entrypoint's origin against the reviewed crate.
+    This is a bounded static text heuristic, so it is ADVISORY ONLY and routes
+    to operator-reviewed quarantine, never to a deterministic rejection: a
+    legitimate wrapper (``RUN ./build.sh`` that calls cargo) would otherwise
+    be falsely rejected, while ``RUN echo cargo`` would falsely pass — text
+    matching can neither prove nor disprove provenance. Fully binding
+    provenance needs the build to emit, and the gate to verify, a hash of the
+    entrypoint's origin against the reviewed crate.
     """
     has_build_step = False
     has_context_copy = False
@@ -225,13 +222,41 @@ def image_binding_error(dockerfile_text: str) -> str | None:
         elif keyword in {"ENTRYPOINT", "CMD"}:
             has_entrypoint = True
     if has_entrypoint and has_context_copy and not has_build_step:
-        return _rust_diagnostic(
-            "SCR-RUST-012",
-            "image runs a prebuilt binary instead of building the committed crate",
-            "compile the crate inside the image (for example, cargo build) rather "
-            "than COPYing an opaque prebuilt binary in as the entrypoint",
+        return (
+            "Dockerfile copies build-context files and sets an entrypoint "
+            "without a recognizable crate build step; the running image may "
+            "not be the reviewed source"
         )
     return None
+
+
+def _with_image_binding_advisory(
+    decision: ScreeningDecision, advisory: str | None
+) -> ScreeningDecision:
+    """Escalate a passing decision to operator review on a provenance warning.
+
+    The heuristic is text matching, so it can neither prove nor disprove that
+    the image runs the reviewed crate. It therefore never rejects: a PASS
+    becomes an operator-reviewed QUARANTINE and an existing QUARANTINE gains
+    the evidence item; terminal rejections and retryable failures are
+    untouched.
+    """
+    if advisory is None or decision.outcome not in {
+        ScreeningOutcome.PASS,
+        ScreeningOutcome.QUARANTINE,
+    }:
+        return decision
+    evidence = (
+        *decision.evidence[:15],
+        PolicyEvidence("stable-core", "image-binding-heuristic", advisory[:240]),
+    )
+    return ScreeningDecision(
+        outcome=ScreeningOutcome.QUARANTINE,
+        detail="private policy quarantine pending operator review",
+        manifest_digest=decision.manifest_digest,
+        evidence=evidence,
+        finding=decision.finding,
+    )
 
 
 def _gateway_call_count(path: str) -> int:
@@ -464,6 +489,9 @@ class BuildGate:
             )
             report("validating")
             decision = await self._policy.evaluate(context)
+            decision = _with_image_binding_advisory(
+                decision, self._image_binding_advisory(tmp_path)
+            )
             self._journal.record(context=context, decision=decision)
             return decision
         except Exception as e:  # noqa: BLE001 - the loop must never die on one agent
@@ -523,6 +551,24 @@ class BuildGate:
             if not keep_path:
                 with contextlib.suppress(OSError):
                     os.unlink(path)
+
+    def _image_binding_advisory(self, tar_path: str) -> str | None:
+        """Run the advisory image/crate binding heuristic over the Dockerfile."""
+        try:
+            with tarfile.open(tar_path, mode="r:gz") as tar:
+                for name in ("Dockerfile", "./Dockerfile"):
+                    try:
+                        member = tar.getmember(name)
+                    except KeyError:
+                        continue
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        return None
+                    text = extracted.read(1024 * 1024).decode("utf-8", "replace")
+                    return image_binding_advisory(text)
+        except (tarfile.TarError, OSError):
+            return None
+        return None
 
     def _contract_error(self, tar_path: str) -> str | None:
         """Validate the archive and Rust harness contract without extracting it."""
@@ -619,16 +665,16 @@ class BuildGate:
                 dockerfile_file = tar.extractfile(members["Dockerfile"])
                 if dockerfile_file is not None:
                     try:
-                        dockerfile_text = dockerfile_file.read().decode("utf-8")
+                        dockerfile_file.read().decode("utf-8")
                     except UnicodeDecodeError:
                         return _rust_diagnostic(
                             "SCR-RUST-012",
                             "Dockerfile is not valid UTF-8 text",
                             "commit a readable UTF-8 Dockerfile that builds the crate",
                         )
-                    binding_error = image_binding_error(dockerfile_text)
-                    if binding_error is not None:
-                        return binding_error
+                # Image/crate binding is a text heuristic, so it is applied as
+                # advisory quarantine evidence after policy evaluation (see
+                # _image_binding_advisory), never as a contract rejection.
                 return None
         except (tarfile.TarError, OSError) as e:
             logger.warning("could not read tar %s: %s", tar_path, e)
@@ -956,7 +1002,17 @@ class BuildGate:
             elapsed_ms=elapsed_ms,
             json_keys=tuple(sorted(str(key) for key in payload)[:64]),
             gateway_calls=gateway_calls,
-            gateway_token_observed=_contains_string(payload, gateway_response_token),
+            # Either token proves binding to THIS container's ephemeral
+            # gateway: with the tool-call first turn the nonce is consumed
+            # inside the transcript and the surfaced final text is the oracle
+            # answer, so both must count.
+            gateway_token_observed=(
+                _contains_string(payload, gateway_response_token)
+                or (
+                    oracle_answer is not None
+                    and _contains_string(payload, oracle_answer)
+                )
+            ),
             oracle_answer_correct=(
                 oracle_answer is not None and _contains_string(payload, oracle_answer)
             ),

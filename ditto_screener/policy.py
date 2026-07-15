@@ -18,11 +18,12 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 from uuid import UUID
 
 from ditto_screening_protocol import SCREENING_POLICY_VERSION
@@ -221,6 +222,9 @@ class PolicyModule(Protocol):
     @property
     def phase(self) -> str: ...
 
+    @property
+    def clears_selection(self) -> bool: ...
+
     async def evaluate(self, context: PolicyContext) -> ModuleResult: ...
 
 
@@ -283,6 +287,12 @@ def core_decision(
 class _BaseModule:
     module_id: str
     phase: str = field(init=False, default="selector")
+    # Whether a CLEAR from this module may release a selector tripwire.
+    # Only the dedicated, rotating private audit packs earn that power; a
+    # generic always-on challenge passing must never clear a medium/high
+    # source finding, or a harness that implements the generic exchange
+    # while cheating elsewhere silently self-clears its own audit.
+    clears_selection: ClassVar[bool] = False
 
     def __post_init__(self) -> None:
         if not 1 <= len(self.module_id) <= _MAX_ID:
@@ -511,6 +521,9 @@ class BehavioralChallengePackModule(_BaseModule):
 
     pack_path: Path = Path("/nonexistent")
     phase: str = field(init=False, default="challenge")
+    # Packs are rotated privately per suspicion class, so a full pack CLEAR
+    # is allowed to release the tripwire that selected the audit.
+    clears_selection: ClassVar[bool] = True
 
     async def evaluate(self, context: PolicyContext) -> ModuleResult:
         try:
@@ -633,19 +646,22 @@ class BehavioralOracleModule(_BaseModule):
             raise ValueError("timeout_seconds must be between 1 and 60")
 
     async def evaluate(self, context: PolicyContext) -> ModuleResult:
-        # Shaped like a real benchmark case so a genuine agent naturally makes
-        # the two model turns the oracle scores. A static lookup keyed on the
-        # inputs cannot know the per-container nonce, so it cannot complete the
-        # round-trip regardless of how the prompt is worded.
+        # Shaped like an ordinary benchmark case, with randomized identifiers
+        # and phrasing: no fixed case id and no protocol marker, so a harness
+        # cannot fingerprint the oracle request and behave honestly only for
+        # it. The correctness signal comes entirely from the per-container
+        # gateway nonce round-trip — the gateway's first turn is a normal
+        # tool_calls completion (against the harness's own declared tools)
+        # carrying the nonce, so any honest agent loop naturally makes the
+        # second model call the oracle scores, while a static lookup that
+        # skips the gateway cannot know the nonce and cannot answer.
+        subject = secrets.token_hex(4)
         request: Mapping[str, object] = {
-            "case_id": self.challenge_id,
-            "system_prompt": (
-                "You are an agent. First call the model to obtain a verification "
-                "token. Then call the model a second time, passing that exact "
-                "token back, and return the model's final response verbatim."
+            "case_id": secrets.token_hex(16),
+            "user_input": (
+                f"Look up what I previously noted about item {subject} "
+                "and summarize it in one sentence."
             ),
-            "user_input": "Perform the two-step verification and return the value.",
-            "tools": [],
         }
         observation = await context.run_challenge(
             self.challenge_id, request, self.timeout_seconds
@@ -749,6 +765,7 @@ class PolicyEngine:
         # selector tripwire. The always-on behavioral oracle lives here so a
         # harness cannot behave only during a ~5% audit.
         challenges = tuple(m for m in self.modules if m.phase == "challenge")
+        cleared = False
         for module in challenges:
             result = await module.evaluate(context)
             evidence.extend(result.evidence)
@@ -756,8 +773,16 @@ class PolicyEngine:
             terminal = _module_terminal(result.disposition)
             if terminal is not None:
                 return self._decision(terminal, evidence, finding)
+            cleared = cleared or (
+                module.clears_selection
+                and result.disposition == ModuleDisposition.CLEAR
+            )
 
-        if selected and not challenges:
+        # A selector tripwire (e.g. a medium/high source-review finding) is
+        # released only by a dedicated selected-audit pack CLEAR. Passing the
+        # generic always-on oracle proves one compliant exchange, not that the
+        # flagged behavior is absent, so it must not self-clear the audit.
+        if selected and not cleared:
             if not evidence:
                 evidence.append(
                     PolicyEvidence(
