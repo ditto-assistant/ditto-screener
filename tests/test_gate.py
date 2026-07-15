@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import os
@@ -335,6 +336,29 @@ async def test_build_and_health_failures_are_deterministic(
     assert "never healthy" in result.detail
 
 
+async def test_expired_lease_budget_short_circuits_before_download(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+    loop = asyncio.get_running_loop()
+    async with gate._client:
+        # A deadline already in the past: the gate must abandon the screen as
+        # retryable-infra without building (no docker calls at all).
+        result = await gate.screen(
+            agent_id=_AGENT,
+            attempt_id=_ATTEMPT,
+            miner_hotkey=_MINER,
+            sha256=hashlib.sha256(tarball).hexdigest(),
+            download_url=_URL,
+            deadline=loop.time() - 1.0,
+        )
+    assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
+    assert "lease budget exhausted" in result.detail
+    assert not any(args and args[0] == "build" for args in calls)
+
+
 async def test_gateway_start_failure_is_retryable_infrastructure(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
@@ -385,6 +409,10 @@ async def test_docker_daemon_build_failure_is_retryable_infrastructure(
         "TLS handshake timeout fetching registry layer",
         "secret gh_token: not found",
         "process was killed: out of memory",
+        # Build aborted by a deploy / `systemctl restart docker` under the
+        # worker: BuildKit reports a cancellation, which must requeue, not
+        # terminally reject the miner's crate.
+        "ERROR: failed to build: failed to solve: Canceled: context canceled",
     ],
 )
 async def test_transient_build_failures_are_retryable_infrastructure(

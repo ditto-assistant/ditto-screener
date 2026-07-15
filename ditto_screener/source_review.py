@@ -334,11 +334,14 @@ class OpenRouterSourceReviewAgent:
         *,
         artifact_sha256: str,
         progress: Callable[[int, int], None] | None = None,
+        deadline: float | None = None,
     ) -> SourceReviewObservation:
         try:
             api_key = self._read_api_key()
             repository = TarSourceRepository(archive_path)
-            result = await self._run(repository, api_key, progress=progress)
+            result = await self._run(
+                repository, api_key, progress=progress, deadline=deadline
+            )
             return _parse_review(
                 result, artifact_sha256=artifact_sha256, repository=repository
             )
@@ -368,6 +371,7 @@ class OpenRouterSourceReviewAgent:
         api_key: str,
         *,
         progress: Callable[[int, int], None] | None = None,
+        deadline: float | None = None,
     ) -> object:
         messages: list[dict[str, object]] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -386,7 +390,19 @@ class OpenRouterSourceReviewAgent:
             transport=self._transport, timeout=self._timeout_seconds
         ) as client:
             for _step in range(self._max_steps):
-                response = await self._post_completion(client, api_key, messages)
+                # The per-request timeout bounds one model turn; the lease
+                # deadline bounds the whole review across turns. Without the
+                # aggregate bound, max_steps slow turns could each run the full
+                # per-request timeout and outlive the screening lease.
+                request_timeout = self._timeout_seconds
+                if deadline is not None:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise ValueError("source reviewer exceeded lease budget")
+                    request_timeout = min(request_timeout, remaining)
+                response = await self._post_completion(
+                    client, api_key, messages, timeout=request_timeout
+                )
                 payload = response.json()
                 message = _assistant_message(payload)
                 messages.append(message)
@@ -415,6 +431,8 @@ class OpenRouterSourceReviewAgent:
         client: httpx.AsyncClient,
         api_key: str,
         messages: list[dict[str, object]],
+        *,
+        timeout: float | None = None,
     ) -> httpx.Response:
         request = {
             "model": self._model,
@@ -437,6 +455,7 @@ class OpenRouterSourceReviewAgent:
                         "X-Title": "Ditto private source review",
                     },
                     json=request,
+                    timeout=timeout if timeout is not None else self._timeout_seconds,
                 )
                 if response.status_code != 429 and response.status_code < 500:
                     response.raise_for_status()

@@ -91,6 +91,12 @@ _LOG_TAIL_BYTES = 2000
 _MAX_GATE_DETAIL_CHARS = 3900
 # How long to wait between /health probes while the container boots.
 _PROBE_INTERVAL_SECONDS = 1.0
+# Refuse to begin a screening stage that cannot plausibly finish and still leave
+# the worker time to sign and post a verdict before the lease deadline. A stage
+# entered with less than this many seconds of lease budget is abandoned as
+# retryable-infra so the platform re-queues promptly instead of the loop burning
+# the whole lease on work whose verdict would arrive after expiry.
+_LEASE_MIN_STAGE_SECONDS = 5.0
 _MAX_UNPACKED_BYTES = 64 * 1024 * 1024
 _MAX_CANARY_RESPONSE_BYTES = 64 * 1024
 _CANARY_IMAGE = (
@@ -111,6 +117,12 @@ _DOCKER_INFRASTRUCTURE_MARKERS = (
     "docker command exited with signal",
     "signal sigterm",
     "signal sigkill",
+    # A build the daemon or worker was restarted out from under (deploy /
+    # `systemctl restart docker`) aborts with BuildKit's cancellation marker.
+    # That is our own interruption, never the miner's crate failing to compile,
+    # so it must requeue as retryable-infra rather than terminally reject.
+    "context canceled",
+    "context cancelled",
     "buildkit",
     "snapshotter",
     "failed to mount",
@@ -338,8 +350,16 @@ class BuildGate:
         sha256: str,
         download_url: str,
         progress: Callable[[ScreenerProgressStage], None] | None = None,
+        deadline: float | None = None,
     ) -> ScreeningDecision:
-        """Screen one agent end-to-end; never raises."""
+        """Screen one agent end-to-end; never raises.
+
+        ``deadline`` is an optional monotonic-clock (``loop.time()``) bound for
+        the whole screen, derived by the worker from the platform's lease. When
+        set, each heavy stage is clamped to the remaining budget and refuses to
+        start once the budget is spent, so a slow build or source review can no
+        longer run past the lease and have its verdict rejected as expired.
+        """
 
         def report(stage: ScreenerProgressStage) -> None:
             try:
@@ -357,6 +377,8 @@ class BuildGate:
         tmp_path: str | None = None
         try:
             report("downloading")
+            if (exhausted := self._lease_exhausted(deadline, "download")) is not None:
+                return exhausted
             tmp_path, dl_detail = await self._download_verified(download_url, sha256)
             if tmp_path is None:
                 outcome = (
@@ -391,8 +413,16 @@ class BuildGate:
             source_digest, source_paths = self._source_metadata(tmp_path)
 
             report("building")
+            if (exhausted := self._lease_exhausted(deadline, "build")) is not None:
+                return exhausted
+            build_timeout = self._config.build_timeout_seconds
+            remaining = self._lease_remaining(deadline)
+            if remaining is not None:
+                build_timeout = min(build_timeout, remaining)
             started = asyncio.get_running_loop().time()
-            built, build_detail = await self._build(tmp_path, tag)
+            built, build_detail = await self._build(
+                tmp_path, tag, timeout=build_timeout
+            )
             build_elapsed_ms = round(
                 (asyncio.get_running_loop().time() - started) * 1000
             )
@@ -418,6 +448,9 @@ class BuildGate:
                 )
 
             report("starting")
+            exhausted = self._lease_exhausted(deadline, "serve check")
+            if exhausted is not None:
+                return exhausted
             started = asyncio.get_running_loop().time()
             serve_result, audit_runtime = await self._run_and_probe(
                 tag,
@@ -473,6 +506,7 @@ class BuildGate:
                     progress=lambda completed, total: report(
                         source_review_progress_stage(completed, total)
                     ),
+                    deadline=deadline,
                 )
 
             context = PolicyContext(
@@ -488,6 +522,9 @@ class BuildGate:
                 review_source=review_source,
             )
             report("validating")
+            exhausted = self._lease_exhausted(deadline, "policy review")
+            if exhausted is not None:
+                return exhausted
             decision = await self._policy.evaluate(context)
             decision = _with_image_binding_advisory(
                 decision, self._image_binding_advisory(tmp_path)
@@ -513,6 +550,35 @@ class BuildGate:
             if tmp_path is not None:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
+
+    # --- lease budget -----------------------------------------------------
+
+    @staticmethod
+    def _lease_remaining(deadline: float | None) -> float | None:
+        """Seconds of lease budget left, or ``None`` when no deadline is set."""
+        if deadline is None:
+            return None
+        return deadline - asyncio.get_running_loop().time()
+
+    def _lease_exhausted(
+        self, deadline: float | None, stage: str
+    ) -> ScreeningDecision | None:
+        """A retryable decision when too little lease remains to run ``stage``."""
+        remaining = self._lease_remaining(deadline)
+        if remaining is not None and remaining <= _LEASE_MIN_STAGE_SECONDS:
+            logger.warning(
+                "screening lease budget exhausted before %s (%.1fs left); "
+                "reporting retryable so the platform re-queues",
+                stage,
+                remaining,
+            )
+            return core_decision(
+                ScreeningOutcome.RETRYABLE_INFRA,
+                code="lease-budget-exhausted",
+                summary="screening lease budget exhausted before completion",
+                detail=f"screener error: lease budget exhausted before {stage}",
+            )
+        return None
 
     # --- stages -----------------------------------------------------------
 
@@ -709,8 +775,14 @@ class BuildGate:
                     paths.append(name)
         return digest.hexdigest(), tuple(paths)
 
-    async def _build(self, tar_path: str, tag: str) -> tuple[bool, str]:
-        """``docker build`` from the tarball-on-stdin; returns (ok, log_tail)."""
+    async def _build(
+        self, tar_path: str, tag: str, *, timeout: float | None = None
+    ) -> tuple[bool, str]:
+        """``docker build`` from the tarball-on-stdin; returns (ok, log_tail).
+
+        ``timeout`` overrides the configured build cap so the worker can clamp a
+        build to the remaining lease budget; it defaults to the full cap.
+        """
         args = ["build", "-t", tag, "-f", "Dockerfile"]
         env = dict(os.environ)
         env["DOCKER_BUILDKIT"] = "1"
@@ -718,10 +790,10 @@ class BuildGate:
         if gh_file and os.path.exists(gh_file):
             args += ["--secret", f"id=gh_token,src={gh_file}"]
         args.append("-")  # build context comes from stdin
+        if timeout is None:
+            timeout = self._config.build_timeout_seconds
         with open(tar_path, "rb") as stdin_f:
-            code, out = await self._run(
-                args, stdin=stdin_f, timeout=self._config.build_timeout_seconds, env=env
-            )
+            code, out = await self._run(args, stdin=stdin_f, timeout=timeout, env=env)
         if code == 0:
             return True, ""
         if code < 0:

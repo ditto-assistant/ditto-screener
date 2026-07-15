@@ -2,6 +2,50 @@
 
 <!-- version list -->
 
+## v0.5.4 (2026-07-15)
+
+### Bug Fixes
+
+- Stop hot-looping inconclusive screens as infrastructure errors
+  ([#17](https://github.com/ditto-assistant/ditto-screener/pull/17),
+  [`f0c293f`](https://github.com/ditto-assistant/ditto-screener/commit/f0c293f3d0b09d3dcc3fc2e697d5e095f4fb6d6c))
+
+
+## v0.5.3 (2026-07-15)
+
+### Bug Fixes
+
+- Default build cap to 45m to match the screening lease window
+  ([#16](https://github.com/ditto-assistant/ditto-screener/pull/16),
+  [`270d6dd`](https://github.com/ditto-assistant/ditto-screener/commit/270d6dd57942ad55c951f3ed4c2690a048e461d1))
+
+- Make screener lease-aware to stop screening-lease-expired loops
+  ([#16](https://github.com/ditto-assistant/ditto-screener/pull/16),
+  [`270d6dd`](https://github.com/ditto-assistant/ditto-screener/commit/270d6dd57942ad55c951f3ed4c2690a048e461d1))
+
+
+## v0.5.2 (2026-07-15)
+
+### Bug Fixes
+
+- Resolve _PACKAGE_ROOT from __package__ for python -m execution
+  ([#15](https://github.com/ditto-assistant/ditto-screener/pull/15),
+  [`3f29016`](https://github.com/ditto-assistant/ditto-screener/commit/3f290161e9dbc2a8455056547f310bb72565d032))
+
+- Restore screener log visibility and stop false rejects on canceled builds
+  ([#15](https://github.com/ditto-assistant/ditto-screener/pull/15),
+  [`3f29016`](https://github.com/ditto-assistant/ditto-screener/commit/3f290161e9dbc2a8455056547f310bb72565d032))
+
+
+## v0.5.1 (2026-07-15)
+
+### Bug Fixes
+
+- Bound screener disk growth continuously
+  ([#13](https://github.com/ditto-assistant/ditto-screener/pull/13),
+  [`637d1f8`](https://github.com/ditto-assistant/ditto-screener/commit/637d1f88bd41f9a1cc0f12a3e2787bfcc14b041b))
+
+
 ## v0.5.0 (2026-07-15)
 
 ### Bug Fixes
