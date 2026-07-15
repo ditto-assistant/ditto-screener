@@ -9,7 +9,7 @@ SCREENER_UNIT="${SCREENER_UNIT:-ditto-screener}"
 SCREENER_EXPECTED_SHA="${SCREENER_EXPECTED_SHA:?missing SCREENER_EXPECTED_SHA}"
 SCREENER_UV_BIN="${SCREENER_UV_BIN:-/usr/local/bin/uv}"
 SCREENER_REPOSITORY_URL="${SCREENER_REPOSITORY_URL:-git@github.com:ditto-assistant/ditto-screener.git}"
-SCREENER_CACHE_GC_INTERVAL_SECONDS="${SCREENER_CACHE_GC_INTERVAL_SECONDS:-21600}"
+SCREENER_CACHE_GC_INTERVAL_SECONDS="${SCREENER_CACHE_GC_INTERVAL_SECONDS:-3600}"
 SCREENER_CACHE_KEEP_STORAGE="${SCREENER_CACHE_KEEP_STORAGE:-12GB}"
 SCREENER_GCP_PROJECT="${SCREENER_GCP_PROJECT:-ditto-app-dev}"
 SCREENER_SOURCE_REVIEW_SECRET_ID="${SCREENER_SOURCE_REVIEW_SECRET_ID:-validator-openrouter-key}"
@@ -123,10 +123,54 @@ maintain_cache() {
   if (( now - last < SCREENER_CACHE_GC_INTERVAL_SECONDS )); then
     return 0
   fi
-  docker builder prune --force --filter until=24h \
-    --keep-storage "$SCREENER_CACHE_KEEP_STORAGE"
+  # keep-storage is the bound. No age filter: an age filter exempts cache
+  # created during a heavy screening burst (a policy-rescreen wave rebuilds
+  # every submission in one day), which is exactly when the cache blows past
+  # the budget. BuildKit prunes least-recently-used first and skips in-use
+  # records, so an active build is never disturbed. The Docker daemon's own
+  # builder GC (deploy/daemon.json) enforces the same budget continuously;
+  # this pass is the backstop.
+  docker builder prune --force --keep-storage "$SCREENER_CACHE_KEEP_STORAGE"
   docker image prune --force --filter until=168h
   touch "$gc_marker"
+}
+
+maintain_daemon_config() {
+  # Repository-owned Docker daemon config: BuildKit's own GC enforces the
+  # cache budget continuously (per build), so the disk stays bounded even
+  # between updater passes. Docker is only restarted when the config actually
+  # changes; a killed in-flight build reports retryable-infra and the lease
+  # requeues the submission.
+  local source="$checkout/deploy/daemon.json"
+  local target="/etc/docker/daemon.json"
+  [[ -f "$source" ]] || return 0
+  if cmp -s "$source" "$target" 2>/dev/null; then
+    return 0
+  fi
+  if ! dockerd --validate --config-file "$source"; then
+    echo "deploy/daemon.json failed dockerd validation; keeping current config" >&2
+    return 1
+  fi
+  install -o root -g root -m 0644 "$source" "$target"
+  systemctl restart docker
+  # Requires=docker.service can propagate the stop to the worker; make sure
+  # it is running again (no-op when the restart left it untouched).
+  systemctl start "$SCREENER_UNIT"
+}
+
+maintain_logs() {
+  # The unit appends to a plain log file forever; keep it bounded without
+  # restarting the service (in-place truncation preserves the O_APPEND fd).
+  local log_file="/opt/ditto/logs/${SCREENER_UNIT}.log"
+  local max_bytes=$((64 * 1024 * 1024))
+  [[ -f "$log_file" ]] || return 0
+  local size
+  size="$(stat -c %s "$log_file" 2>/dev/null || echo 0)"
+  if (( size > max_bytes )); then
+    local keep
+    keep="$(tail -c $((max_bytes / 4)) "$log_file")"
+    printf '%s\n' "$keep" >"$log_file"
+  fi
 }
 
 current_sha="$(runuser -u "$SCREENER_USER" -- git -C "$checkout" rev-parse HEAD)"
@@ -143,7 +187,9 @@ materialize_source_review_key
 if [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
   systemctl is-active --quiet "$SCREENER_UNIT"; then
   probe_platform
+  maintain_daemon_config
   maintain_cache
+  maintain_logs
   echo "healthy: $SCREENER_UNIT already at $current_sha"
   exit 0
 fi
@@ -205,5 +251,7 @@ if [[ "$actual_sha" != "$SCREENER_EXPECTED_SHA" ]]; then
   echo "healthy process is at unexpected commit $actual_sha" >&2
   exit 1
 fi
+maintain_daemon_config
 maintain_cache
+maintain_logs
 echo "healthy: $SCREENER_UNIT active at $actual_sha; platform preflight accepted"
