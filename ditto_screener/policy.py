@@ -36,6 +36,28 @@ _MAX_ID = 64
 _MAX_CODE = 64
 _MAX_SUMMARY = 240
 _SHA256_HEX = frozenset("0123456789abcdef")
+_PRIVATE_CHALLENGE_CATEGORIES = frozenset(
+    {
+        "benchmark_emulation",
+        "embedded_evaluator_logic",
+        "fabricated_tool_trajectory",
+        "hidden_value_leakage",
+        "provider_bypass",
+        "seed_state_shortcut",
+        "suspicious_static_tables",
+    }
+)
+_MALICIOUS_SOURCE_CATEGORIES = frozenset(
+    {
+        "credential_access",
+        "cross_user_access",
+        "data_exfiltration",
+        "embedded_secret",
+        "malicious_build",
+        "prompt_injection",
+    }
+)
+_ORIGINALITY_CATEGORIES = frozenset({"duplicate_submission"})
 
 
 class ScreeningOutcome(StrEnum):
@@ -432,9 +454,9 @@ class AgenticSourceReviewModule(_BaseModule):
                     ),
                 ),
             )
-        if observation.risk_level == "low":
+        if observation.risk_level == "low" and set(observation.categories) <= {"none"}:
             return ModuleResult(ModuleDisposition.CLEAR)
-        if observation.risk_level not in {"medium", "high"}:
+        if observation.risk_level not in {"low", "medium", "high"}:
             return ModuleResult(
                 ModuleDisposition.INCONCLUSIVE,
                 (
@@ -445,13 +467,14 @@ class AgenticSourceReviewModule(_BaseModule):
                     ),
                 ),
             )
+        code, summary = _source_review_reason(observation.categories)
         return ModuleResult(
             ModuleDisposition.TRIPWIRE,
             (
                 PolicyEvidence(
                     self.module_id,
-                    "agentic-source-review-tripwire",
-                    "private source analysis selected a behavioral audit",
+                    code,
+                    summary,
                     observation.finding_digest,
                 ),
             ),
@@ -572,14 +595,15 @@ class PolicyEngine:
 
         challenges = tuple(m for m in self.modules if m.phase == "challenge")
         if not challenges:
-            evidence.append(
-                PolicyEvidence(
-                    "policy-engine",
-                    "audit-awaiting-private-challenge",
-                    "tripwire selected quarantine until a private challenge "
-                    "is available",
+            if not evidence:
+                evidence.append(
+                    PolicyEvidence(
+                        "policy-engine",
+                        "audit-awaiting-private-challenge",
+                        "tripwire selected quarantine until a private challenge "
+                        "is available",
+                    )
                 )
-            )
             return self._decision(ScreeningOutcome.QUARANTINE, evidence)
 
         for module in challenges:
@@ -698,6 +722,29 @@ def _module_terminal(disposition: ModuleDisposition) -> ScreeningOutcome | None:
         ModuleDisposition.QUARANTINE: ScreeningOutcome.QUARANTINE,
         ModuleDisposition.INCONCLUSIVE: ScreeningOutcome.INCONCLUSIVE,
     }.get(disposition)
+
+
+def _source_review_reason(categories: Sequence[str]) -> tuple[str, str]:
+    category_set = set(categories)
+    if category_set & _MALICIOUS_SOURCE_CATEGORIES:
+        return (
+            "source-safety-malicious-risk",
+            "private source analysis found malicious-source safety risk",
+        )
+    if category_set & _PRIVATE_CHALLENGE_CATEGORIES:
+        return (
+            "source-safety-private-challenge-risk",
+            "private source analysis found private-challenge safety risk",
+        )
+    if category_set & _ORIGINALITY_CATEGORIES:
+        return (
+            "originality-duplicate-risk",
+            "cross-submission evidence found exact-artifact originality risk",
+        )
+    return (
+        "source-safety-behavioral-risk",
+        "private source analysis selected a bounded behavioral audit",
+    )
 
 
 def _read_json(path: Path, *, max_bytes: int) -> Any:

@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from uuid import UUID
 
+import pytest
+
 from ditto_screener.policy import (
     CORE_ONLY_MANIFEST,
     AgenticSourceReviewModule,
@@ -163,7 +165,73 @@ async def test_agentic_source_review_can_only_select_quarantine() -> None:
     decision = await engine.evaluate(_context(challenge, review))
     assert decision.outcome == ScreeningOutcome.QUARANTINE
     assert not decision.submits_verdict
-    assert decision.evidence[0].code == "agentic-source-review-tripwire"
+    assert decision.evidence[0].code == "source-safety-private-challenge-risk"
+
+
+@pytest.mark.parametrize(
+    ("category", "expected_code"),
+    [
+        ("hidden_value_leakage", "source-safety-private-challenge-risk"),
+        ("embedded_secret", "source-safety-malicious-risk"),
+        ("data_exfiltration", "source-safety-malicious-risk"),
+        ("malicious_build", "source-safety-malicious-risk"),
+        ("cross_user_access", "source-safety-malicious-risk"),
+        ("duplicate_submission", "originality-duplicate-risk"),
+    ],
+)
+async def test_adversarial_and_originality_risks_remain_quarantined(
+    category: str, expected_code: str
+) -> None:
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("no private challenge is required to retain the hold")
+
+    async def review() -> SourceReviewObservation:
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="high",
+            finding_digest="ab" * 32,
+            categories=(category,),
+        )
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="risk-domain-regression",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="private-source-review"),),
+    )
+    decision = await engine.evaluate(_context(challenge, review))
+
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.evidence[-1].code == expected_code
+    assert all(
+        item.code != "audit-awaiting-private-challenge" for item in decision.evidence
+    )
+
+
+async def test_low_risk_label_cannot_clear_a_malicious_category() -> None:
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError
+
+    async def review() -> SourceReviewObservation:
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="low",
+            finding_digest="ab" * 32,
+            categories=("embedded_secret",),
+        )
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="inconsistent-review-regression",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="private-source-review"),),
+    )
+    decision = await engine.evaluate(_context(challenge, review))
+
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.evidence[-1].code == "source-safety-malicious-risk"
 
 
 async def test_tripwire_plus_behavioral_shape_anomaly_stays_quarantine(
