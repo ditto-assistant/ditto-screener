@@ -18,12 +18,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     environment: prod
     env:
       GCP_PROJECT: ditto-app-dev
-      GCP_ZONE: us-central1-c
-      SCREENER_VM: ditto-screener-prod
     steps:
       - uses: actions/checkout@v4
 
@@ -42,19 +40,43 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Copy updater to the isolated VM
+      # Production screeners are discovered by label, not by name: the pet VM
+      # (role=screener) and every autoscaled fleet instance (role=screener-fleet)
+      # take the same exact-commit update. Instances younger than 15 minutes are
+      # skipped — they are still running first-boot bootstrap (which converges
+      # them to origin/main) and the next scheduled run picks them up.
+      - name: Discover production screener instances
         run: |
-          gcloud compute scp scripts/update-screener.sh "$SCREENER_VM:/tmp/update-screener.sh" \
+          cutoff="$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+          gcloud compute instances list \
             --project "$GCP_PROJECT" \
-            --zone "$GCP_ZONE" \
-            --tunnel-through-iap \
-            --quiet
+            --filter="status=RUNNING AND labels.env=prod AND (labels.role=screener OR labels.role=screener-fleet) AND creationTimestamp<'$cutoff'" \
+            --format="csv[no-heading](name,zone)" >instances.csv
+          echo "deploy targets:"
+          cat instances.csv
+          if [[ ! -s instances.csv ]]; then
+            echo "no eligible production screener instances found" >&2
+            exit 1
+          fi
 
-      - name: Deploy exact commit, verify, and maintain cache
+      - name: Deploy exact commit to every instance, verify, and maintain cache
         run: |
-          gcloud compute ssh "$SCREENER_VM" \
-            --project "$GCP_PROJECT" \
-            --zone "$GCP_ZONE" \
-            --tunnel-through-iap \
-            --quiet \
-            --command "sudo chmod 700 /tmp/update-screener.sh; sudo SCREENER_EXPECTED_SHA=${{ github.sha }} /tmp/update-screener.sh; rc=\$?; sudo rm -f /tmp/update-screener.sh; exit \$rc"
+          failed=""
+          while IFS=, read -r name zone; do
+            echo "::group::${name} (${zone})"
+            if gcloud compute scp scripts/update-screener.sh "${name}:/tmp/update-screener.sh" \
+                 --project "$GCP_PROJECT" --zone "$zone" --tunnel-through-iap --quiet \
+               && gcloud compute ssh "$name" \
+                 --project "$GCP_PROJECT" --zone "$zone" --tunnel-through-iap --quiet \
+                 --command "sudo chmod 700 /tmp/update-screener.sh; sudo SCREENER_EXPECTED_SHA=${{ github.sha }} /tmp/update-screener.sh; rc=\$?; sudo rm -f /tmp/update-screener.sh; exit \$rc"; then
+              echo "healthy: ${name}"
+            else
+              echo "FAILED: ${name}" >&2
+              failed="${failed} ${name}"
+            fi
+            echo "::endgroup::"
+          done <instances.csv
+          if [[ -n "$failed" ]]; then
+            echo "deployment failed on:${failed}" >&2
+            exit 1
+          fi
