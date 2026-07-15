@@ -371,7 +371,8 @@ class ScreenerWorker:
                 finding=finding,
             )
             logger.info(
-                "screened agent_id=%s miner=%s outcome=%s passed=%s elapsed_s=%d -> %s%s",
+                "screened agent_id=%s miner=%s outcome=%s passed=%s "
+                "elapsed_s=%d -> %s%s",
                 agent_id,
                 item.miner_hotkey,
                 result.outcome,

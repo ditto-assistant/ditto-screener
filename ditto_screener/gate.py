@@ -317,9 +317,7 @@ def _docker_infrastructure_failure(text: str) -> bool:
     return any(marker in normalized for marker in _DOCKER_INFRASTRUCTURE_MARKERS)
 
 
-def _format_stage_timings(
-    history: Sequence[tuple[str, float]], *, end: float
-) -> str:
+def _format_stage_timings(history: Sequence[tuple[str, float]], *, end: float) -> str:
     """Fold progress transitions into ``stage=<ms>`` pairs, in order.
 
     Each stage's duration runs until the next transition (the last until
@@ -329,9 +327,7 @@ def _format_stage_timings(
     durations: dict[str, int] = {}
     for index, (stage, entered) in enumerate(history):
         exited = history[index + 1][1] if index + 1 < len(history) else end
-        name = (
-            "source_review" if stage.startswith("source_review_") else str(stage)
-        )
+        name = "source_review" if stage.startswith("source_review_") else str(stage)
         durations[name] = durations.get(name, 0) + round(
             max(0.0, exited - entered) * 1000
         )
