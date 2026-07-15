@@ -287,22 +287,14 @@ class ScreenerWorker:
                         progress=self._set_progress,
                         deadline=screen_deadline,
                     )
-            if result.outcome == ScreeningOutcome.INCONCLUSIVE:
-                # An inconclusive screen used to submit nothing and let the lease
-                # expire, which re-queues the agent only after the full lease
-                # window and reads as a "lease expired" timeout. Report it as
-                # retryable-infra instead so the platform re-queues promptly.
-                logger.warning(
-                    "agent_id=%s screening inconclusive; reporting retryable_infra "
-                    "so the platform re-queues instead of waiting out the lease",
-                    agent_id,
-                )
-                result = core_decision(
-                    ScreeningOutcome.RETRYABLE_INFRA,
-                    code="screening-inconclusive",
-                    summary="screening was inconclusive and should be retried",
-                    detail=result.detail or "screener error: screening inconclusive",
-                )
+            # INCONCLUSIVE is a NON-verdict by platform contract: the result
+            # endpoint rejects a submitted inconclusive outcome and expects the
+            # worker to post nothing and let the lease expire as the backoff
+            # ("we could not tell; try again later"). Reporting it as
+            # retryable_infra instead re-queues the agent immediately and hot-
+            # loops as a mislabeled "Screening infrastructure error", so we honor
+            # the contract and stay silent. QUARANTINE is the only non-boolean
+            # outcome that still submits.
             submits_result = (
                 result.submits_verdict or result.outcome.value == "quarantine"
             )
