@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.5.3 (2026-07-15)
+
+### Bug Fixes
+
+- Default build cap to 45m to match the screening lease window
+  ([#16](https://github.com/ditto-assistant/ditto-screener/pull/16),
+  [`270d6dd`](https://github.com/ditto-assistant/ditto-screener/commit/270d6dd57942ad55c951f3ed4c2690a048e461d1))
+
+- Make screener lease-aware to stop screening-lease-expired loops
+  ([#16](https://github.com/ditto-assistant/ditto-screener/pull/16),
+  [`270d6dd`](https://github.com/ditto-assistant/ditto-screener/commit/270d6dd57942ad55c951f3ed4c2690a048e461d1))
+
+
 ## v0.5.2 (2026-07-15)
 
 ### Bug Fixes
