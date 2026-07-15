@@ -15,18 +15,38 @@ set -euo pipefail
 # screener.env, systemd unit) is byte-compatible with the hand-provisioned
 # ditto-screener-prod host, which is what makes the label-driven deploy
 # workflow able to treat pet and fleet instances identically.
+#
+# GOLDEN-IMAGE BAKE MODE (SCREENER_BAKE_ONLY=1): runs ONLY the slow,
+# secret-free provisioning — base packages, Docker, the IMDS guard, uv, the
+# service user/layout, a warm checkout + synced venv — then exits before any
+# secret is fetched or the worker is started. Packer snapshots the result into
+# the `ditto-screener-fleet` image family (see packer/screener-fleet.pkr.hcl).
+# A fleet instance booted from that image runs this same script in normal mode;
+# its idempotent guards skip everything already baked, so first boot goes
+# straight to fetching secrets + the fast updater — cutting time-to-first-claim
+# from ~5-10 min to ~1-2 min, which is what lets autoscaling relieve the pet VM
+# promptly during a burst. NO SECRET is ever written into the image: the deploy
+# key, mnemonic, and API token are all fetched at runtime only.
 
-SCREENER_GCP_PROJECT="${SCREENER_GCP_PROJECT:?missing SCREENER_GCP_PROJECT}"
-SCREENER_PLATFORM_API_URL="${SCREENER_PLATFORM_API_URL:?missing SCREENER_PLATFORM_API_URL}"
-SCREENER_HOTKEY="${SCREENER_HOTKEY:?missing SCREENER_HOTKEY}"
-NETUID="${NETUID:?missing NETUID}"
-SCREENER_MNEMONIC_SECRET="${SCREENER_MNEMONIC_SECRET:?missing SCREENER_MNEMONIC_SECRET}"
-SCREENER_API_TOKEN_SECRET="${SCREENER_API_TOKEN_SECRET:?missing SCREENER_API_TOKEN_SECRET}"
-SCREENER_DEPLOY_KEY_FILE="${SCREENER_DEPLOY_KEY_FILE:?missing SCREENER_DEPLOY_KEY_FILE}"
 SCREENER_REPOSITORY_URL="${SCREENER_REPOSITORY_URL:-git@github.com:ditto-assistant/ditto-screener.git}"
 # Readiness port for MIG autohealing (0/unset disables the server). Threaded
 # into screener.env below so the worker binds it.
 SCREENER_READINESS_PORT="${SCREENER_READINESS_PORT:-0}"
+# Bake mode (image build) vs normal first boot. Bake seeds the checkout from an
+# uploaded copy (SCREENER_BAKE_SRC) instead of cloning, so no key is needed.
+SCREENER_BAKE_ONLY="${SCREENER_BAKE_ONLY:-0}"
+SCREENER_BAKE_SRC="${SCREENER_BAKE_SRC:-}"
+
+# Runtime-only configuration. Not required (and not present) during a bake.
+if [[ "$SCREENER_BAKE_ONLY" != "1" ]]; then
+  SCREENER_GCP_PROJECT="${SCREENER_GCP_PROJECT:?missing SCREENER_GCP_PROJECT}"
+  SCREENER_PLATFORM_API_URL="${SCREENER_PLATFORM_API_URL:?missing SCREENER_PLATFORM_API_URL}"
+  SCREENER_HOTKEY="${SCREENER_HOTKEY:?missing SCREENER_HOTKEY}"
+  NETUID="${NETUID:?missing NETUID}"
+  SCREENER_MNEMONIC_SECRET="${SCREENER_MNEMONIC_SECRET:?missing SCREENER_MNEMONIC_SECRET}"
+  SCREENER_API_TOKEN_SECRET="${SCREENER_API_TOKEN_SECRET:?missing SCREENER_API_TOKEN_SECRET}"
+  SCREENER_DEPLOY_KEY_FILE="${SCREENER_DEPLOY_KEY_FILE:?missing SCREENER_DEPLOY_KEY_FILE}"
+fi
 
 SCREENER_ROOT=/opt/ditto/screener
 SCREENER_USER=deploy
@@ -44,19 +64,21 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-if [[ -f "$MARKER" ]]; then
-  echo "already bootstrapped ($MARKER exists)"
-  exit 0
-fi
-
-# Hold the deploy lock across the whole mutating body so a scheduled deploy
-# (update-screener.sh over SSH) landing mid-bootstrap serializes behind it
-# instead of racing the checkout / env / unit. We pass the held flag down to the
-# updater we invoke so it does not try to re-acquire (and deadlock).
-exec {lock_fd}>"$LOCK_FILE"
-if ! flock -w 2400 "$lock_fd"; then
-  echo "could not acquire deploy lock ($LOCK_FILE) within 40m" >&2
-  exit 1
+if [[ "$SCREENER_BAKE_ONLY" != "1" ]]; then
+  install -d -m 0755 /opt/ditto
+  if [[ -f "$MARKER" ]]; then
+    echo "already bootstrapped ($MARKER exists)"
+    exit 0
+  fi
+  # Hold the deploy lock across the whole mutating body so a scheduled deploy
+  # (update-screener.sh over SSH) landing mid-bootstrap serializes behind it
+  # instead of racing the checkout / env / unit. We pass the held flag down to
+  # the updater we invoke so it does not try to re-acquire (and deadlock).
+  exec {lock_fd}>"$LOCK_FILE"
+  if ! flock -w 2400 "$lock_fd"; then
+    echo "could not acquire deploy lock ($LOCK_FILE) within 40m" >&2
+    exit 1
+  fi
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -111,7 +133,10 @@ ExecStart=/usr/local/sbin/ditto-imds-guard
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now ditto-imds-guard.service
+systemctl enable ditto-imds-guard.service
+# Apply now only when docker is already running (a bake builder may lack the
+# DOCKER-USER chain until docker starts; the unit re-applies it on every boot).
+systemctl start ditto-imds-guard.service 2>/dev/null || true
 
 # gcloud ships on GCE Debian images; the updater needs it for Secret Manager.
 command -v gcloud >/dev/null || {
@@ -137,14 +162,43 @@ install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0755 "$SCREENER_ROOT"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$LOGS_DIR"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$SECRETS_DIR"
 
-# --- Deploy key: the deploy user fetches from the private repo on updates ----
+# github.com host key — needed for the deploy user's git-over-ssh fetches. Safe
+# to bake (a public host key, not a secret).
 ssh_dir="/home/$SCREENER_USER/.ssh"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0700 "$ssh_dir"
-install -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0600 \
-  "$SCREENER_DEPLOY_KEY_FILE" "$ssh_dir/id_ed25519"
 ssh-keyscan -t ed25519,rsa github.com 2>/dev/null >>"$ssh_dir/known_hosts"
 chown "$SCREENER_USER:$SCREENER_GROUP" "$ssh_dir/known_hosts"
 chmod 0644 "$ssh_dir/known_hosts"
+
+# --- Deploy key (runtime only): the deploy user fetches from the private repo
+# on updates. Never installed during a bake, so no key lands in the image.
+if [[ "$SCREENER_BAKE_ONLY" != "1" ]]; then
+  install -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0600 \
+    "$SCREENER_DEPLOY_KEY_FILE" "$ssh_dir/id_ed25519"
+fi
+
+# --- Checkout ----------------------------------------------------------------
+# Bake seeds it from an uploaded copy (no key needed); runtime clones with the
+# deploy key. On a golden image the checkout is already present, so first boot
+# skips this and the updater just fast-forwards to the deployed SHA.
+if [[ ! -d "$checkout/.git" ]]; then
+  if [[ "$SCREENER_BAKE_ONLY" == "1" && -n "$SCREENER_BAKE_SRC" ]]; then
+    cp -a "$SCREENER_BAKE_SRC/." "$checkout/"
+    chown -R "$SCREENER_USER:$SCREENER_GROUP" "$checkout"
+    runuser -u "$SCREENER_USER" -- git config --global --add safe.directory "$checkout"
+  else
+    runuser -u "$SCREENER_USER" -- git clone "$SCREENER_REPOSITORY_URL" "$checkout"
+  fi
+fi
+
+# --- Bake: warm the venv, then stop (no secrets, no worker) -------------------
+if [[ "$SCREENER_BAKE_ONLY" == "1" ]]; then
+  runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$checkout/.venv" \
+    /usr/local/bin/uv sync --frozen --project "$checkout"
+  baked_sha="$(runuser -u "$SCREENER_USER" -- git -C "$checkout" rev-parse HEAD)"
+  echo "bake complete: base + docker + uv + warm venv at $baked_sha"
+  exit 0
+fi
 
 # --- Secrets -> protected files / env (values never touch logs) --------------
 read_secret() {
@@ -184,10 +238,7 @@ install -o root -g "$SCREENER_GROUP" -m 0640 "$tmp" "$env_file"
 rm -f "$tmp"
 unset mnemonic api_token
 
-# --- Checkout + hand off to the exact-commit updater --------------------------
-if [[ ! -d "$checkout/.git" ]]; then
-  runuser -u "$SCREENER_USER" -- git clone "$SCREENER_REPOSITORY_URL" "$checkout"
-fi
+# --- Hand off to the exact-commit updater ------------------------------------
 target_sha="$(runuser -u "$SCREENER_USER" -- git -C "$checkout" rev-parse HEAD)"
 
 SCREENER_EXPECTED_SHA="$target_sha" \

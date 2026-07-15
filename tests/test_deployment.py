@@ -77,6 +77,30 @@ def test_bootstrap_blocks_metadata_and_mounts_no_build_credential() -> None:
     assert "--secret" not in gate
 
 
+def test_bootstrap_bake_mode_provisions_before_any_secret() -> None:
+    bootstrap = (ROOT / "scripts" / "bootstrap-screener.sh").read_text()
+
+    assert "SCREENER_BAKE_ONLY" in bootstrap
+    # Bake must exit before fetching any secret, so nothing sensitive is baked.
+    bake_exit = bootstrap.index('if [[ "$SCREENER_BAKE_ONLY" == "1" ]]; then\n  runuser')
+    first_secret = bootstrap.index('read_secret "$SCREENER_MNEMONIC_SECRET"')
+    assert bake_exit < first_secret
+    # The deploy key is installed only outside bake mode (never baked in).
+    assert 'if [[ "$SCREENER_BAKE_ONLY" != "1" ]]; then\n  install -o "$SCREENER_USER"' in bootstrap
+
+
+def test_golden_image_bake_pipeline_exists() -> None:
+    packer = (ROOT / "packer" / "screener-fleet.pkr.hcl").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "bake-image.yml").read_text()
+
+    assert 'image_family      = var.image_family' in packer
+    assert "ditto-screener-fleet" in packer
+    # Bakes via the same bootstrap script in bake mode; stores no secret.
+    assert "SCREENER_BAKE_ONLY=1" in packer
+    assert "environment: prod" in workflow
+    assert "GCP_SCREENER_BAKE_SA" in workflow
+
+
 def test_systemd_unit_runs_the_extracted_screener_entrypoint() -> None:
     unit = (ROOT / "deploy" / "ditto-screener.service").read_text()
 

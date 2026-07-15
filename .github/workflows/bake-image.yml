@@ -1,0 +1,62 @@
+name: Bake screener fleet image
+
+# Builds the golden image for the prod screener fleet (docker + uv + warm
+# checkout/venv + IMDS guard) into the `ditto-screener-fleet` image family. The
+# infra MIG points at the family, so new instances pick up the newest bake
+# (OPPORTUNISTIC rollout; force with a rolling-action when needed).
+#
+# Runs on demand and weekly so the image tracks main without a bake on every
+# push. NO SECRET is baked (the checkout is uploaded, not key-cloned).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bake-screener-fleet-image
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: prod # WIF binding is scoped to the prod GitHub environment
+    env:
+      GCP_PROJECT: ditto-app-dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify bake configuration
+        env:
+          WIF: ${{ secrets.GCP_WIF_PROVIDER }}
+          SA: ${{ secrets.GCP_SCREENER_BAKE_SA }}
+        run: |
+          : "${WIF:?GCP_WIF_PROVIDER repo secret is not set}"
+          : "${SA:?GCP_SCREENER_BAKE_SA repo secret is not set}"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SCREENER_BAKE_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: hashicorp/setup-packer@main
+        with:
+          version: latest
+
+      - name: Package the checkout for baking
+        run: tar czf /tmp/src.tgz .
+
+      - name: Build the golden image
+        run: |
+          packer init packer/
+          packer build \
+            -var "project_id=${GCP_PROJECT}" \
+            -var "src_tarball=/tmp/src.tgz" \
+            packer/screener-fleet.pkr.hcl
