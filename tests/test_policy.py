@@ -484,9 +484,7 @@ async def test_reasoning_harness_passes_the_oracle() -> None:
 
     decision = await _oracle_engine().evaluate(_context(observe))
     assert decision.outcome == ScreeningOutcome.PASS
-    assert any(
-        item.code == "behavioral-oracle-passed" for item in decision.evidence
-    )
+    assert any(item.code == "behavioral-oracle-passed" for item in decision.evidence)
 
 
 async def test_single_call_table_harness_fails_the_oracle() -> None:
@@ -541,8 +539,7 @@ async def test_too_fast_round_trip_trips_the_timing_floor() -> None:
     decision = await _oracle_engine().evaluate(_context(observe))
     assert decision.outcome == ScreeningOutcome.QUARANTINE
     assert any(
-        item.code == "behavioral-oracle-implausibly-fast"
-        for item in decision.evidence
+        item.code == "behavioral-oracle-implausibly-fast" for item in decision.evidence
     )
 
 

@@ -125,9 +125,11 @@ class ScreeningDecision:
             raise ValueError("manifest_digest must be lowercase SHA-256 hex")
         if len(self.evidence) > _MAX_EVIDENCE:
             raise ValueError("too many evidence entries")
-        if self.finding is not None and len(
-            json.dumps(self.finding, sort_keys=True, separators=(",", ":"))
-        ) > _MAX_FINDING_BYTES:
+        if (
+            self.finding is not None
+            and len(json.dumps(self.finding, sort_keys=True, separators=(",", ":")))
+            > _MAX_FINDING_BYTES
+        ):
             raise ValueError("finding exceeds bounded size")
 
     @property

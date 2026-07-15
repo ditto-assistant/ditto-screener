@@ -958,8 +958,7 @@ class BuildGate:
             gateway_calls=gateway_calls,
             gateway_token_observed=_contains_string(payload, gateway_response_token),
             oracle_answer_correct=(
-                oracle_answer is not None
-                and _contains_string(payload, oracle_answer)
+                oracle_answer is not None and _contains_string(payload, oracle_answer)
             ),
         )
 
