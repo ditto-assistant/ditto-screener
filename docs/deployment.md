@@ -62,8 +62,17 @@ rows, prior score receipts, screening history, and active leases are untouched.
 
 ## Cache and disk maintenance
 
-The scheduled deployment checks every five minutes. The updater performs
-bounded BuildKit and dangling-image garbage collection at most once every six
-hours, retaining 12 GB of recent build cache by default. Tunables are
-`SCREENER_CACHE_GC_INTERVAL_SECONDS` and `SCREENER_CACHE_KEEP_STORAGE`.
+Disk is bounded by two cooperating layers:
+
+1. **Docker daemon builder GC** (`deploy/daemon.json`, installed by the
+   updater; Docker restarts only when the file changes): BuildKit enforces the
+   12 GB cache budget continuously, per build, so a heavy screening burst (for
+   example a policy-rescreen wave that rebuilds every submission in a day)
+   cannot outrun the scheduled pass.
+2. **Updater backstop**: every scheduled run (five minutes) performs bounded
+   garbage collection at most once per hour — `docker builder prune
+   --keep-storage` with NO age filter (an age filter exempts exactly the
+   burst-created cache that overruns the budget), dangling-image pruning after
+   a week, and in-place truncation of the service log above 64 MB. Tunables
+   are `SCREENER_CACHE_GC_INTERVAL_SECONDS` and `SCREENER_CACHE_KEEP_STORAGE`.
 Running containers and referenced images are never pruned.
