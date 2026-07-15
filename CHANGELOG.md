@@ -2,6 +2,33 @@
 
 <!-- version list -->
 
+## v0.5.0 (2026-07-15)
+
+### Bug Fixes
+
+- Review-hardening for oracle, provenance, and finding integrity
+  ([#10](https://github.com/ditto-assistant/ditto-screener/pull/10),
+  [`9c81642`](https://github.com/ditto-assistant/ditto-screener/commit/9c816429a0823e85ef99cea787afdfa28b7b01f1))
+
+### Code Style
+
+- Apply ruff format ([#10](https://github.com/ditto-assistant/ditto-screener/pull/10),
+  [`9c81642`](https://github.com/ditto-assistant/ditto-screener/commit/9c816429a0823e85ef99cea787afdfa28b7b01f1))
+
+### Features
+
+- Behavioral oracle + quarantine review payloads (policy v8, protocol 0.9.0)
+  ([#10](https://github.com/ditto-assistant/ditto-screener/pull/10),
+  [`9c81642`](https://github.com/ditto-assistant/ditto-screener/commit/9c816429a0823e85ef99cea787afdfa28b7b01f1))
+
+- Bump screening policy to v8 ([#10](https://github.com/ditto-assistant/ditto-screener/pull/10),
+  [`9c81642`](https://github.com/ditto-assistant/ditto-screener/commit/9c816429a0823e85ef99cea787afdfa28b7b01f1))
+
+- **screener**: Behavioral challenge + unfingerprintable gateway
+  ([#10](https://github.com/ditto-assistant/ditto-screener/pull/10),
+  [`9c81642`](https://github.com/ditto-assistant/ditto-screener/commit/9c816429a0823e85ef99cea787afdfa28b7b01f1))
+
+
 ## v0.4.4 (2026-07-15)
 
 ### Bug Fixes
