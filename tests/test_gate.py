@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+import pytest
 
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.gate import BuildGate, _detail_tail, _log_tail, dockerfile_at_root
@@ -301,6 +302,58 @@ async def test_docker_daemon_build_failure_is_retryable_infrastructure(
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
     assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
     assert result.detail.startswith("screener error:")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "no space left on device",
+        "failed to solve: failed to mount buildkit snapshot",
+        "TLS handshake timeout fetching registry layer",
+        "secret gh_token: not found",
+        "process was killed: out of memory",
+    ],
+)
+async def test_transient_build_failures_are_retryable_infrastructure(
+    make_config: Callable[..., ScreenerConfig], failure: str
+) -> None:
+    tarball = _valid_tar()
+
+    async def transient_failure(
+        args: list[str], *, stdin: Any = None, **_: Any
+    ) -> tuple[int, str]:
+        if args[0] == "build":
+            if stdin is not None:
+                stdin.read()
+            return 1, failure
+        return 0, ""
+
+    gate = _gate_with(make_config(), transient_failure, tarball=tarball)
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
+    assert result.detail.startswith("screener error:")
+
+
+async def test_signal_interrupted_build_is_retryable_infrastructure(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+
+    async def interrupted(
+        args: list[str], *, stdin: Any = None, **_: Any
+    ) -> tuple[int, str]:
+        if args[0] == "build":
+            if stdin is not None:
+                stdin.read()
+            return -15, ""
+        return 0, ""
+
+    gate = _gate_with(make_config(), interrupted, tarball=tarball)
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
+    assert "SIGTERM" in result.detail
 
 
 async def test_failure_diagnostics_are_bounded(

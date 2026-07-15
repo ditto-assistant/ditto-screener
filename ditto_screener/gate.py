@@ -51,6 +51,7 @@ import logging
 import os
 import secrets
 import shutil
+import signal
 import tarfile
 import tempfile
 import tomllib
@@ -101,6 +102,28 @@ _DOCKER_INFRASTRUCTURE_MARKERS = (
     "error during connect",
     "docker daemon is not running",
     "connection refused",
+    "no space left on device",
+    "out of memory",
+    "cannot allocate memory",
+    "killed",
+    "docker command exited with signal",
+    "signal sigterm",
+    "signal sigkill",
+    "buildkit",
+    "snapshotter",
+    "failed to mount",
+    "secret gh_token",
+    "secret id=gh_token",
+    "temporary failure in name resolution",
+    "could not resolve host",
+    "tls handshake timeout",
+    "i/o timeout",
+    "connection reset by peer",
+    "unexpected eof",
+    "too many requests",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
 )
 
 
@@ -570,6 +593,15 @@ class BuildGate:
             )
         if code == 0:
             return True, ""
+        if code < 0:
+            signal_name = signal.Signals(-code).name
+            return False, (
+                f"docker command exited with signal {signal_name}: {_log_tail(out)}"
+            )
+        if code in {137, 143}:
+            return False, (
+                f"docker command exited after signal ({code}): {_log_tail(out)}"
+            )
         return False, _log_tail(out)
 
     async def _run_and_probe(
