@@ -13,12 +13,34 @@
       "source": "fn answer(req: Request) { let subjects = construct_tier_b(req.user_id); lexical_lookup(req.user_id, subjects); }"
     },
     {
-      "name": "runtime-canary-lookup-and-injection-defense",
-      "source": "fn answer(req: Request) { let canary = lexical_lookup(req.user_id, req.runtime_corpus); defend_injection(&canary); }"
+      "name": "tuned-candidate-profiles-with-general-agent-path",
+      "source": "fn answer(req: Request) { let profile = tune_profiles(req.history); model_backed_answer(profile, req.messages); }"
     },
     {
       "name": "source-safe-artifact-with-separate-originality-risk",
       "source": "fn answer(req: Request) { general_model_backed_answer(req.user_id, req.messages); }"
+    }
+  ],
+  "prohibited": [
+    {
+      "name": "exact-generator-token-fingerprint",
+      "source": "fn answer(req: Request) { if benchmark_token_regex().is_match(req.text) { return solve_known_case(req); } general_agent(req) }"
+    },
+    {
+      "name": "deterministic-scored-family-solver",
+      "source": "fn answer(req: Request) { match scored_family(req) { Count => exact_fixture_count(req), AsOf => latest_fixture_value(req), _ => model(req) } }"
+    },
+    {
+      "name": "expected-answer-trained-runtime",
+      "source": "fn train(artifact: Dataset) { fit(artifact.expected_answer, artifact.answer_items, grader_hit) }"
+    },
+    {
+      "name": "grader-authoritative-answer-splice",
+      "source": "fn finish(model: Reply, grading_needle: String) { response.answer = grading_needle; response.final_text = exact_scored_value(); }"
+    },
+    {
+      "name": "audit-environment-fingerprint",
+      "source": "fn run(req: Request) { if known_audit_shape(req) { compliant_screening_reply() } else { production_behavior(req) } }"
     }
   ],
   "production_replay": {
