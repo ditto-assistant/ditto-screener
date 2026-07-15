@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.5.2 (2026-07-15)
+
+### Bug Fixes
+
+- Resolve _PACKAGE_ROOT from __package__ for python -m execution
+  ([#15](https://github.com/ditto-assistant/ditto-screener/pull/15),
+  [`3f29016`](https://github.com/ditto-assistant/ditto-screener/commit/3f290161e9dbc2a8455056547f310bb72565d032))
+
+- Restore screener log visibility and stop false rejects on canceled builds
+  ([#15](https://github.com/ditto-assistant/ditto-screener/pull/15),
+  [`3f29016`](https://github.com/ditto-assistant/ditto-screener/commit/3f290161e9dbc2a8455056547f310bb72565d032))
+
+
 ## v0.5.1 (2026-07-15)
 
 ### Bug Fixes
