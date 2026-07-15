@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.3 (2026-07-15)
+
+### Bug Fixes
+
+- Reduce policy v7 source-review false positives
+  ([#9](https://github.com/ditto-assistant/ditto-screener/pull/9),
+  [`a611623`](https://github.com/ditto-assistant/ditto-screener/commit/a611623a426500af8e295760ed68d67b50206a2c))
+
+
 ## v0.4.2 (2026-07-15)
 
 ### Bug Fixes
