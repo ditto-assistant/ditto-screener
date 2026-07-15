@@ -22,17 +22,19 @@ SCREENER_HOTKEY="${SCREENER_HOTKEY:?missing SCREENER_HOTKEY}"
 NETUID="${NETUID:?missing NETUID}"
 SCREENER_MNEMONIC_SECRET="${SCREENER_MNEMONIC_SECRET:?missing SCREENER_MNEMONIC_SECRET}"
 SCREENER_API_TOKEN_SECRET="${SCREENER_API_TOKEN_SECRET:?missing SCREENER_API_TOKEN_SECRET}"
-SCREENER_GH_TOKEN_SECRET="${SCREENER_GH_TOKEN_SECRET:?missing SCREENER_GH_TOKEN_SECRET}"
 SCREENER_DEPLOY_KEY_FILE="${SCREENER_DEPLOY_KEY_FILE:?missing SCREENER_DEPLOY_KEY_FILE}"
 SCREENER_REPOSITORY_URL="${SCREENER_REPOSITORY_URL:-git@github.com:ditto-assistant/ditto-screener.git}"
+# Readiness port for MIG autohealing (0/unset disables the server). Threaded
+# into screener.env below so the worker binds it.
+SCREENER_READINESS_PORT="${SCREENER_READINESS_PORT:-0}"
 
 SCREENER_ROOT=/opt/ditto/screener
 SCREENER_USER=deploy
 SCREENER_GROUP=ditto
 LOGS_DIR=/opt/ditto/logs
 SECRETS_DIR=/opt/ditto/secrets
-GH_TOKEN_FILE="$SECRETS_DIR/screener-gh-token"
 MARKER=/opt/ditto/.screener-bootstrapped
+LOCK_FILE=/opt/ditto/.screener-deploy.lock
 
 checkout="$SCREENER_ROOT/src"
 env_file="$SCREENER_ROOT/screener.env"
@@ -45,6 +47,16 @@ fi
 if [[ -f "$MARKER" ]]; then
   echo "already bootstrapped ($MARKER exists)"
   exit 0
+fi
+
+# Hold the deploy lock across the whole mutating body so a scheduled deploy
+# (update-screener.sh over SSH) landing mid-bootstrap serializes behind it
+# instead of racing the checkout / env / unit. We pass the held flag down to the
+# updater we invoke so it does not try to re-acquire (and deadlock).
+exec {lock_fd}>"$LOCK_FILE"
+if ! flock -w 2400 "$lock_fd"; then
+  echo "could not acquire deploy lock ($LOCK_FILE) within 40m" >&2
+  exit 1
 fi
 
 export DEBIAN_FRONTEND=noninteractive
@@ -63,6 +75,43 @@ if ! command -v docker >/dev/null; then
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io
 fi
 systemctl enable --now docker
+
+# --- Metadata (IMDS) guard: block 169.254.169.254 from container/build networks
+# A submission-controlled Dockerfile builds and runs with network access. Left
+# open, a hostile RUN step reaches the GCE metadata server and mints the VM's
+# attached-SA token (the shared platform runtime SA), which can read platform /
+# validator secrets and administer agent objects. Docker container/build traffic
+# to the metadata IP traverses the FORWARD path (the DOCKER-USER chain), while
+# the host's own gcloud uses OUTPUT — so dropping metadata in DOCKER-USER blocks
+# every container and build without touching the host's Secret Manager access.
+# Installed as a oneshot that re-applies after docker/iptables restarts + reboot.
+apt-get install -y -qq iptables
+install -m 0755 /dev/stdin /usr/local/sbin/ditto-imds-guard <<'GUARD'
+#!/usr/bin/env bash
+set -euo pipefail
+# DOCKER-USER is created by dockerd; ensure it exists before inserting.
+iptables -N DOCKER-USER 2>/dev/null || true
+# Idempotent: drop any prior copy, then insert at the top of the chain.
+while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
+iptables -I DOCKER-USER 1 -d 169.254.169.254/32 -j DROP
+GUARD
+cat >/etc/systemd/system/ditto-imds-guard.service <<'UNIT'
+[Unit]
+Description=Block cloud metadata (IMDS) from Docker container/build networks
+After=docker.service
+Wants=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ditto-imds-guard
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now ditto-imds-guard.service
 
 # gcloud ships on GCE Debian images; the updater needs it for Secret Manager.
 command -v gcloud >/dev/null || {
@@ -103,11 +152,6 @@ read_secret() {
     --project="$SCREENER_GCP_PROJECT" --secret="$1"
 }
 
-tmp="$(mktemp)"
-read_secret "$SCREENER_GH_TOKEN_SECRET" >"$tmp"
-install -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0600 "$tmp" "$GH_TOKEN_FILE"
-rm -f "$tmp"
-
 mnemonic="$(read_secret "$SCREENER_MNEMONIC_SECRET")"
 api_token="$(read_secret "$SCREENER_API_TOKEN_SECRET")"
 
@@ -122,13 +166,17 @@ NETUID=$NETUID
 SCREENER_HOTKEY=$SCREENER_HOTKEY
 SCREENER_POLL_SECONDS=30
 SCREENER_QUEUE_LIMIT=20
+# Per-stage caps. The worker additionally clamps EVERY stage (build, serve, and
+# each source-review step) to the remaining platform lease and re-queues as
+# retryable if the budget runs out, so these caps are upper bounds, not a floor
+# that can overrun a 30-min lease into a rejected-because-late verdict.
 SCREENER_BUILD_TIMEOUT_SECONDS=1200
 SCREENER_RUN_TIMEOUT_SECONDS=120
 SCREENER_BUILD_MEMORY=2g
 SCREENER_PIDS_LIMIT=512
 # MUST stay >= the platform upload cap (DITTO_MAX_TARBALL_SIZE_BYTES, 20 MiB).
 SCREENER_MAX_TARBALL_BYTES=20971520
-SCREENER_GH_TOKEN_FILE=$GH_TOKEN_FILE
+SCREENER_READINESS_PORT=$SCREENER_READINESS_PORT
 SCREENER_MNEMONIC=$mnemonic
 SCREENER_API_TOKEN=$api_token
 EOF
@@ -145,6 +193,7 @@ target_sha="$(runuser -u "$SCREENER_USER" -- git -C "$checkout" rev-parse HEAD)"
 SCREENER_EXPECTED_SHA="$target_sha" \
   SCREENER_GCP_PROJECT="$SCREENER_GCP_PROJECT" \
   SCREENER_REPOSITORY_URL="$SCREENER_REPOSITORY_URL" \
+  SCREENER_DEPLOY_LOCK_HELD=1 \
   bash "$checkout/scripts/update-screener.sh"
 
 touch "$MARKER"

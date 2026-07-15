@@ -21,13 +21,43 @@ unit_source="$checkout/deploy/ditto-screener.service"
 unit_file="/etc/systemd/system/${SCREENER_UNIT}.service"
 gc_state_dir="$SCREENER_ROOT/state"
 gc_marker="$gc_state_dir/last-cache-gc"
+# SHA the currently-active, health-verified process is running. Written ONLY
+# after a restart passes health + the post-restart SHA check, so it is proof of
+# what is RUNNING — unlike git HEAD, which a run interrupted between `reset` and
+# a healthy restart leaves pointing at a not-yet-running commit.
+deployed_marker="$gc_state_dir/deployed-sha"
 secret_dir="$SCREENER_ROOT/secrets"
 source_review_key="$secret_dir/source-review-openrouter.key"
+lock_file="$(dirname "$SCREENER_ROOT")/.screener-deploy.lock"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "update-screener.sh must run as root" >&2
   exit 1
 fi
+
+# Serialize deploys against first-boot bootstrap and other deploy runs: both
+# mutate the same checkout / env / unit. bootstrap-screener.sh holds this lock
+# across its whole body and exports SCREENER_DEPLOY_LOCK_HELD=1 when it invokes
+# this script, so we don't re-lock (and deadlock) inside it.
+if [[ "${SCREENER_DEPLOY_LOCK_HELD:-}" != "1" ]]; then
+  exec {lock_fd}>"$lock_file"
+  if ! flock -w 2400 "$lock_fd"; then
+    echo "could not acquire deploy lock ($lock_file) within 40m" >&2
+    exit 1
+  fi
+fi
+
+ensure_enabled() {
+  # First boot restarts the unit but a reboot then short-circuits on the
+  # bootstrap marker, so the unit must be ENABLED to come back after a reboot.
+  systemctl is-enabled --quiet "$SCREENER_UNIT" 2>/dev/null \
+    || systemctl enable "$SCREENER_UNIT" >/dev/null 2>&1 || true
+}
+
+record_deployed_sha() {
+  mkdir -p "$gc_state_dir"
+  printf '%s\n' "$1" >"$deployed_marker"
+}
 
 for path in "$checkout/.git" "$env_file" "$SCREENER_UV_BIN"; do
   if [[ ! -e "$path" ]]; then
@@ -196,9 +226,16 @@ fi
 # rotation does not require an unrelated code change.
 materialize_source_review_key
 
-if [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
+deployed_sha=""
+[[ -f "$deployed_marker" ]] && deployed_sha="$(cat "$deployed_marker")"
+# Fast path gates on the RUNNING-verified SHA (marker), not git HEAD: a prior
+# run that reset HEAD to the new SHA but died before a healthy restart must not
+# be reported as deployed just because HEAD matches and the OLD process is up.
+if [[ -n "$deployed_sha" ]] && [[ "$deployed_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
+  [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
   systemctl is-active --quiet "$SCREENER_UNIT"; then
   probe_platform
+  ensure_enabled
   maintain_daemon_config
   maintain_cache
   maintain_logs
@@ -246,6 +283,7 @@ trap cleanup EXIT
 
 install -o root -g root -m 0644 "$unit_source" "$unit_file"
 systemctl daemon-reload
+ensure_enabled
 
 systemctl restart "$SCREENER_UNIT"
 if ! wait_for_health; then
@@ -269,6 +307,9 @@ if [[ "$actual_sha" != "$SCREENER_EXPECTED_SHA" ]]; then
   echo "healthy process is at unexpected commit $actual_sha" >&2
   exit 1
 fi
+# Only now is the new SHA proven running + healthy: record it so the next run's
+# fast path can trust it (and so an interrupted future run cannot be misread).
+record_deployed_sha "$actual_sha"
 maintain_daemon_config
 maintain_cache
 maintain_logs

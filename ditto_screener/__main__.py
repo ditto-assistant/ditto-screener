@@ -20,6 +20,7 @@ from ditto_screener.gate import BuildGate
 from ditto_screener.heartbeat import SystemMetricsCollector
 from ditto_screener.platform import PlatformClient
 from ditto_screener.policy import ReviewJournal, load_policy_engine
+from ditto_screener.readiness import ReadinessServer
 from ditto_screener.signing import load_screener_keypair
 from ditto_screener.worker import ScreenerWorker
 
@@ -58,6 +59,13 @@ async def _amain() -> int:
     stop = asyncio.Event()
     _install_signal_handlers(asyncio.get_running_loop(), stop)
 
+    # Optional readiness server for MIG autohealing (SCREENER_READINESS_PORT set
+    # by the fleet bootstrap; unset/0 on the pet VM disables it). Reports
+    # "starting" until the sweep loop is entered, then "ready".
+    readiness = _make_readiness_server()
+    if readiness is not None:
+        readiness.start()
+
     async with httpx.AsyncClient(timeout=config.http_timeout_seconds) as http:
         platform = PlatformClient(config, http)
         policy = load_policy_engine(config.policy_manifest_file)
@@ -77,9 +85,38 @@ async def _amain() -> int:
             system_metrics=SystemMetricsCollector(),
         )
         _apply_ditto_logging()  # re-assert after bittensor init (see validator)
-        await worker.run_forever(stop)
+        if readiness is not None:
+            readiness.set_ready()
+        try:
+            await worker.run_forever(stop)
+        finally:
+            if readiness is not None:
+                readiness.stop()
     logger.info("screener worker stopped")
     return 0
+
+
+def _make_readiness_server() -> ReadinessServer | None:
+    """Build the readiness server from SCREENER_READINESS_PORT, or None if unset.
+
+    Kept out of the config dataclass on purpose: it is an entrypoint/operational
+    concern, and a bad value must never block the worker from starting.
+    """
+    raw = os.environ.get("SCREENER_READINESS_PORT", "").strip()
+    if not raw:
+        return None
+    try:
+        port = int(raw)
+    except ValueError:
+        logger.warning("ignoring non-integer SCREENER_READINESS_PORT=%r", raw)
+        return None
+    if port <= 0:
+        return None
+    try:
+        return ReadinessServer(port)
+    except OSError as e:
+        logger.warning("could not bind readiness port %d: %s", port, e)
+        return None
 
 
 def _apply_ditto_logging() -> None:

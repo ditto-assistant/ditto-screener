@@ -786,9 +786,15 @@ class BuildGate:
         args = ["build", "-t", tag, "-f", "Dockerfile"]
         env = dict(os.environ)
         env["DOCKER_BUILDKIT"] = "1"
-        gh_file = self._config.gh_token_file
-        if gh_file and os.path.exists(gh_file):
-            args += ["--secret", f"id=gh_token,src={gh_file}"]
+        # No build-time credential is mounted. The build context (a
+        # submission-controlled Dockerfile) runs with network access, so any
+        # secret exposed here — a BuildKit secret, or the GCE metadata SA token
+        # reachable at 169.254.169.254 — is exfiltratable by a hostile RUN step.
+        # The only former consumer, the private ``ditto-harness`` dep, is now
+        # public and fetches over anonymous HTTPS, so the ``gh_token`` mount was
+        # removed. Metadata access is additionally blocked at the host firewall
+        # (see the IMDS guard in scripts/bootstrap-screener.sh) as defense in
+        # depth for the shared runtime SA.
         args.append("-")  # build context comes from stdin
         if timeout is None:
             timeout = self._config.build_timeout_seconds
