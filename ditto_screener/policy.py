@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
+import random
 import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -27,6 +29,8 @@ from typing import Any, ClassVar, Protocol
 from uuid import UUID
 
 from ditto_screening_protocol import SCREENING_POLICY_VERSION
+
+logger = logging.getLogger(__name__)
 
 _MAX_MANIFEST_BYTES = 128 * 1024
 _MAX_FEED_BYTES = 256 * 1024
@@ -603,6 +607,21 @@ class BehavioralChallengePackModule(_BaseModule):
         return ModuleResult(ModuleDisposition.CLEAR, tuple(evidence))
 
 
+# Generic, benchmark-plausible system prompts for the oracle's RunRequest.
+# Several phrasings (picked per request) so no single fixed string becomes a
+# fingerprint, while each reads like an ordinary validator case.
+_ORACLE_SYSTEM_PROMPTS: tuple[str, ...] = (
+    "You are a helpful personal assistant with access to the user's saved "
+    "notes and memories.",
+    "You are the user's personal assistant. Use their stored notes to answer "
+    "accurately and concisely.",
+    "Answer the user using their previously saved information. Be brief and "
+    "factual.",
+    "You are an assistant that recalls the user's stored notes to answer "
+    "questions concisely.",
+)
+
+
 @dataclass(frozen=True)
 class BehavioralOracleModule(_BaseModule):
     """Always-on gateway-encoded correctness oracle with timing thresholds.
@@ -656,8 +675,16 @@ class BehavioralOracleModule(_BaseModule):
         # second model call the oracle scores, while a static lookup that
         # skips the gateway cannot know the nonce and cannot answer.
         subject = secrets.token_hex(4)
+        # The payload must deserialize as the harness contract's RunRequest
+        # (dittobench-starter-kit src/protocol.rs): `case_id`, `system_prompt`
+        # and `user_input` are REQUIRED fields with no serde default, so an
+        # honest axum harness rejects a request missing any of them with 422
+        # before the handler runs. `tools`/`tool_endpoint`/`user_id` default.
+        # The system prompt is drawn from generic assistant phrasings so the
+        # request still carries no fixed marker a harness could branch on.
         request: Mapping[str, object] = {
             "case_id": secrets.token_hex(16),
+            "system_prompt": random.choice(_ORACLE_SYSTEM_PROMPTS),
             "user_input": (
                 f"Look up what I previously noted about item {subject} "
                 "and summarize it in one sentence."
@@ -667,6 +694,13 @@ class BehavioralOracleModule(_BaseModule):
             self.challenge_id, request, self.timeout_seconds
         )
         if not observation.ok:
+            logger.warning(
+                "behavioral oracle inconclusive: error_code=%s elapsed_ms=%s "
+                "gateway_calls=%s",
+                observation.error_code,
+                observation.elapsed_ms,
+                observation.gateway_calls,
+            )
             return ModuleResult(
                 ModuleDisposition.INCONCLUSIVE,
                 (

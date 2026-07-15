@@ -1037,6 +1037,16 @@ class BuildGate:
         elapsed_ms = round((asyncio.get_running_loop().time() - started) * 1000)
         gateway_calls = max(0, _gateway_call_count(gateway_state_file) - calls_before)
         if code != 0:
+            # The probe output carries the concrete failure ("HTTP 422: ...",
+            # a timeout traceback, ...). Log it bounded: a silent discard here
+            # previously hid a request-contract break behind an opaque
+            # "challenge-http-failure" for every screening.
+            logger.warning(
+                "private challenge %s HTTP failure: exit=%d detail=%.400s",
+                challenge_id,
+                code,
+                out,
+            )
             return ChallengeObservation(
                 challenge_id=challenge_id,
                 ok=False,

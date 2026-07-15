@@ -725,6 +725,39 @@ async def test_oracle_pass_does_not_clear_a_source_review_tripwire() -> None:
     assert any(item.digest is not None for item in decision.evidence)
 
 
+async def test_oracle_request_satisfies_harness_run_contract() -> None:
+    """The oracle payload must deserialize as the starter kit's RunRequest.
+
+    dittobench-starter-kit `src/protocol.rs` declares `case_id`,
+    `system_prompt` and `user_input` as REQUIRED (no serde default): an honest
+    axum harness 422s on a request missing any of them before its handler
+    runs, which turned every prod screening inconclusive when the oracle
+    omitted `system_prompt`. Keep this list in lockstep with the contract.
+    """
+    seen: list[dict] = []
+
+    async def challenge(challenge_id, request, _timeout):  # type: ignore[no-untyped-def]
+        seen.append(dict(request))
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=800,
+            gateway_calls=2,
+            oracle_answer_correct=True,
+        )
+
+    module = BehavioralOracleModule(module_id="v8-behavioral-oracle")
+    await module.evaluate(_context(challenge))
+    (request,) = seen
+    required = {"case_id", "system_prompt", "user_input"}
+    optional = {"tools", "tool_endpoint", "user_id"}
+    for fieldname in required:
+        value = request.get(fieldname)
+        assert isinstance(value, str) and value, f"missing/empty {fieldname}"
+    assert set(request) <= required | optional
+
+
 async def test_oracle_request_is_randomized_and_unfingerprintable() -> None:
     seen: list[dict] = []
 
