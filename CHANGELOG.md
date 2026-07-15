@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.1 (2026-07-15)
+
+### Bug Fixes
+
+- Retry interrupted screening builds
+  ([#7](https://github.com/ditto-assistant/ditto-screener/pull/7),
+  [`6d9372f`](https://github.com/ditto-assistant/ditto-screener/commit/6d9372f761a7597ef90ca2957d2c829d5a1d760f))
+
+
 ## v0.4.0 (2026-07-14)
 
 ### Features
