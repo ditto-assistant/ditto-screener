@@ -22,7 +22,7 @@ jobs:
     environment: prod
     env:
       GCP_PROJECT: ditto-app-dev
-      GCP_ZONE: us-central1-a
+      GCP_ZONE: us-central1-c
       SCREENER_VM: ditto-screener-prod
     steps:
       - uses: actions/checkout@v4
