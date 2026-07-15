@@ -35,6 +35,9 @@ The strict manifest contains exactly `policy_version`, `rotation_id`, and
   tools over the verified archive. Source is treated as adversarial data; the
   reviewer has no shell, edits, execution, web, external-directory, or secret
   tools. Medium/high risk can only select quarantine or a behavioral audit.
+  Exact SHA-256 provenance for named official starter-kit fixture/model files
+  prevents unchanged binaries and seed data from being mistaken for suspicious
+  static tables. Trust never extends to a changed path or derivative file.
 - `behavioral_challenge_pack`: runs bounded private `/run` requests only after a
   selector trips. It records response digests, elapsed time, and JSON keys, not
   private prompts or response bodies. An anomaly becomes quarantine and an
@@ -65,3 +68,9 @@ Source review uses `provider.zdr=true` and `data_collection=deny` on every
 OpenRouter request. Tool output and step counts are bounded. The API key is read
 from the mode-0400 file named by `SCREENER_SOURCE_REVIEW_API_KEY_FILE`; it is
 never injected into a submitted container or written to the review journal.
+
+Source-review holds use public-safe risk-domain reason codes. Private-challenge
+risk, malicious-source risk, and exact-artifact originality risk are distinct;
+raw categories, paths, prompts, and evidence stay private. A source-safe exact
+duplicate must still be held by the originality guard and must not be relabeled
+as private-challenge leakage.

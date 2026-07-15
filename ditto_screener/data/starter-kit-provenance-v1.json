@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "origin": "ditto-assistant/dittobench-starter-kit",
+  "revision": "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
+  "files": {
+    "fixtures/models/cross-encoder-vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+    "fixtures/models/cross-encoder.onnx": "d9c3f25f235fca2140fb1c15e63786e82c7ec9935e4426db4674be9a14d585fb",
+    "fixtures/models/mlp-weights.bin": "2cd9296d4e2e6ec8ac9d784fc64ab5b1db60fb14629005db0c509b9fcc36cbb9",
+    "fixtures/models/mlp-weights.meta.json": "9e9c8432d069efc266727839ab9fe73e7ffd1c86c419a528283ce1f83f763c2f",
+    "fixtures/seed-user/manifest.json": "7a549e0b553dfa62fe72381f3db2a760ded0aabb9cc47cb5161f05a55398a4e6",
+    "fixtures/seed-user/memory_cases.json": "21bd84ae345cecc2f2ae300564eb915be9c667c54b08680b3ae5a83fff45e966",
+    "fixtures/seed-user/pairs.json": "2cf8759d93b808666dc3228f3385b17a23726fe462fa6fa446f9ad5061c73c94",
+    "fixtures/seed-user/subject_links.json": "91b826124e7b93055afa3bc4f2317bcdc8326cdcaeb368267b76ca5b13befd22",
+    "fixtures/seed-user/subjects.json": "12881b1f26c348d9b9ceaadbddf1c477309b8390dae62b51c1fe4fe5b4cb6f36"
+  }
+}

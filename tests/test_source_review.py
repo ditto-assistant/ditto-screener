@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -10,7 +11,10 @@ from pathlib import Path
 
 import httpx
 
-from ditto_screener.source_review import OpenRouterSourceReviewAgent
+from ditto_screener.source_review import (
+    OpenRouterSourceReviewAgent,
+    TarSourceRepository,
+)
 
 _SHA = "ab" * 32
 
@@ -24,6 +28,16 @@ def _archive(tmp_path: Path, source: str) -> Path:
             "src/main.rs": source,
         }.items():
             raw = value.encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(raw)
+            archive.addfile(member, io.BytesIO(raw))
+    return path
+
+
+def _archive_files(tmp_path: Path, files: dict[str, bytes]) -> Path:
+    path = tmp_path / "files.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        for name, raw in files.items():
             member = tarfile.TarInfo(name)
             member.size = len(raw)
             archive.addfile(member, io.BytesIO(raw))
@@ -122,6 +136,95 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
         "data_collection": "deny",
         "require_parameters": True,
     }
+    assert (
+        "Public-benchmark optimization is allowed" in seen[0]["messages"][0]["content"]
+    )
+
+
+async def test_synthetic_legitimate_patterns_clear_source_safety(
+    tmp_path: Path,
+) -> None:
+    cases = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )["legitimate"]
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+
+    for index, case in enumerate(cases):
+        final = {
+            "risk_level": "low",
+            "confidence": 0.95,
+            "categories": ["none"],
+            "evidence": [],
+            "summary": "Allowed public-benchmark mechanism with user-scoped data.",
+        }
+        observation = await _agent(key, _transport(final, [])).review(
+            str(_archive(tmp_path, f"// synthetic case {index}\n{case['source']}")),
+            artifact_sha256=_SHA,
+        )
+        assert observation.ok and observation.risk_level == "low", case["name"]
+
+
+def test_regression_fixture_quantifies_the_tradeoff() -> None:
+    replay = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )["production_replay"]
+
+    assert replay == {
+        "unique_source_safe_patterns": 5,
+        "held_submissions": 6,
+        "old_generic_source_safety_holds": 6,
+        "new_source_safety_holds": 0,
+        "new_originality_holds": 2,
+    }
+
+
+def test_exact_official_provenance_does_not_whitelist_derivatives(
+    tmp_path: Path,
+) -> None:
+    official = b"official public fixture"
+    modified = b"official public fixture plus hidden derivative"
+    manifest = tmp_path / "provenance.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "public/starter",
+                "revision": "abc123",
+                "files": {
+                    "fixtures/models/official.bin": hashlib.sha256(
+                        official
+                    ).hexdigest(),
+                    "fixtures/seed-user/official.json": hashlib.sha256(
+                        official
+                    ).hexdigest(),
+                },
+            }
+        )
+    )
+    archive = _archive_files(
+        tmp_path,
+        {
+            "fixtures/models/official.bin": official,
+            "fixtures/seed-user/official.json": modified,
+            "fixtures/models/derivative.bin": official,
+        },
+    )
+
+    provenance = json.loads(
+        TarSourceRepository(str(archive)).trusted_provenance(str(manifest))
+    )
+
+    assert provenance["matched_exact_files"] == ["fixtures/models/official.bin"]
+    assert provenance["tracked_but_modified_files"] == [
+        "fixtures/seed-user/official.json"
+    ]
+    assert "fixtures/models/derivative.bin" not in json.dumps(provenance)
 
 
 async def test_sanitized_shortcut_fixture_produces_bounded_risk_digest(

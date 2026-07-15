@@ -1,0 +1,31 @@
+{
+  "legitimate": [
+    {
+      "name": "retrieval-context-seed-subject",
+      "source": "fn answer(req: Request) { let scoped = retrieve(req.user_id); build_context(scoped); improve_seed_subjects(); }"
+    },
+    {
+      "name": "user-scoped-abstention-answer-slot-injection-defense",
+      "source": "fn answer(req: Request) { let facts = retrieve_for_user(req.user_id); defend_injection(&facts); fill_answer_slot_or_abstain(facts); }"
+    },
+    {
+      "name": "tier-b-subject-construction-and-lexical-retrieval",
+      "source": "fn answer(req: Request) { let subjects = construct_tier_b(req.user_id); lexical_lookup(req.user_id, subjects); }"
+    },
+    {
+      "name": "runtime-canary-lookup-and-injection-defense",
+      "source": "fn answer(req: Request) { let canary = lexical_lookup(req.user_id, req.runtime_corpus); defend_injection(&canary); }"
+    },
+    {
+      "name": "source-safe-artifact-with-separate-originality-risk",
+      "source": "fn answer(req: Request) { general_model_backed_answer(req.user_id, req.messages); }"
+    }
+  ],
+  "production_replay": {
+    "unique_source_safe_patterns": 5,
+    "held_submissions": 6,
+    "old_generic_source_safety_holds": 6,
+    "new_source_safety_holds": 0,
+    "new_originality_holds": 2
+  }
+}
