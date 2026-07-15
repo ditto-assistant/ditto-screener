@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.2 (2026-07-15)
+
+### Bug Fixes
+
+- Reject exact cross-miner duplicates before screening
+  ([#8](https://github.com/ditto-assistant/ditto-screener/pull/8),
+  [`14e9ea1`](https://github.com/ditto-assistant/ditto-screener/commit/14e9ea15d12984d8331f16239b4aa5acf98fa836))
+
+
 ## v0.4.1 (2026-07-15)
 
 ### Bug Fixes
