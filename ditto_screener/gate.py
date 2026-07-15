@@ -18,7 +18,7 @@ Flow for one agent:
    ``build_timeout_seconds``.
 4. **Serve smoke.** Run the image detached with a memory + pids cap and poll
    ``GET /health`` until it returns 2xx.
-5. **Private policy.** The default v7 manifest performs bounded Luna source
+5. **Private policy.** The default v8 manifest performs bounded Luna source
    review after health. A rotating
    private manifest may use timing, random-control, fingerprint, and behavioral
    audit modules. Those signals can only pass or route to review; they cannot
@@ -26,7 +26,7 @@ Flow for one agent:
 6. **Teardown.** The container + image are always removed.
 
 A pass is "built, served, and cleared by bounded source review" under the
-default production-v7 manifest.
+default production-v8 manifest.
 Deterministic contract violations fail; infrastructure failures are retryable.
 Failures include a short ``detail``
 (response body, container-log tail, or failing stage) for the miner and operator.
@@ -49,6 +49,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -72,6 +73,7 @@ from ditto_screener.policy import (
     ChallengeObservation,
     PolicyContext,
     PolicyEngine,
+    PolicyEvidence,
     ReviewJournal,
     ScreeningDecision,
     ScreeningOutcome,
@@ -146,6 +148,7 @@ class _AuditRuntime:
 
     harness_base: str
     gateway_response_token: str
+    oracle_answer: str
     gateway_state_file: str
 
 
@@ -162,6 +165,98 @@ def dockerfile_at_root(member_names: list[str]) -> bool:
 def _rust_diagnostic(code: str, message: str, help_text: str) -> str:
     """Return a rustc-style contract diagnostic without source excerpts."""
     return f"error[{code}]: {message}\n\nhelp: {help_text}"
+
+
+# Rust/native build indicators. If none appear, the image cannot be compiling
+# the committed crate, so whatever it runs is not the reviewed source.
+_BUILD_STEP_RE = re.compile(r"\b(cargo|rustc|make|cmake)\b", re.IGNORECASE)
+
+
+def _dockerfile_instructions(text: str) -> list[tuple[str, str]]:
+    """Parse a Dockerfile into (INSTRUCTION, remainder) pairs.
+
+    Line continuations are joined and standalone comment lines are dropped.
+    This is a bounded static parse, not a full Dockerfile grammar.
+    """
+    logical: list[str] = []
+    buffer = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not buffer and (not stripped or stripped.startswith("#")):
+            continue
+        buffer = f"{buffer} {stripped}".strip() if buffer else stripped
+        if buffer.endswith("\\"):
+            buffer = buffer[:-1].rstrip()
+            continue
+        logical.append(buffer)
+        buffer = ""
+    if buffer:
+        logical.append(buffer)
+    instructions: list[tuple[str, str]] = []
+    for line in logical:
+        parts = line.split(None, 1)
+        if parts:
+            instructions.append((parts[0].upper(), parts[1] if len(parts) > 1 else ""))
+    return instructions
+
+
+def image_binding_advisory(dockerfile_text: str) -> str | None:
+    """Flag a Dockerfile that LOOKS like it ships a prebuilt binary.
+
+    This is a bounded static text heuristic, so it is ADVISORY ONLY and routes
+    to operator-reviewed quarantine, never to a deterministic rejection: a
+    legitimate wrapper (``RUN ./build.sh`` that calls cargo) would otherwise
+    be falsely rejected, while ``RUN echo cargo`` would falsely pass — text
+    matching can neither prove nor disprove provenance. Fully binding
+    provenance needs the build to emit, and the gate to verify, a hash of the
+    entrypoint's origin against the reviewed crate.
+    """
+    has_build_step = False
+    has_context_copy = False
+    has_entrypoint = False
+    for keyword, rest in _dockerfile_instructions(dockerfile_text):
+        if keyword == "RUN" and _BUILD_STEP_RE.search(rest):
+            has_build_step = True
+        elif keyword in {"COPY", "ADD"} and "--from=" not in rest.casefold():
+            has_context_copy = True
+        elif keyword in {"ENTRYPOINT", "CMD"}:
+            has_entrypoint = True
+    if has_entrypoint and has_context_copy and not has_build_step:
+        return (
+            "Dockerfile copies build-context files and sets an entrypoint "
+            "without a recognizable crate build step; the running image may "
+            "not be the reviewed source"
+        )
+    return None
+
+
+def _with_image_binding_advisory(
+    decision: ScreeningDecision, advisory: str | None
+) -> ScreeningDecision:
+    """Escalate a passing decision to operator review on a provenance warning.
+
+    The heuristic is text matching, so it can neither prove nor disprove that
+    the image runs the reviewed crate. It therefore never rejects: a PASS
+    becomes an operator-reviewed QUARANTINE and an existing QUARANTINE gains
+    the evidence item; terminal rejections and retryable failures are
+    untouched.
+    """
+    if advisory is None or decision.outcome not in {
+        ScreeningOutcome.PASS,
+        ScreeningOutcome.QUARANTINE,
+    }:
+        return decision
+    evidence = (
+        *decision.evidence[:15],
+        PolicyEvidence("stable-core", "image-binding-heuristic", advisory[:240]),
+    )
+    return ScreeningDecision(
+        outcome=ScreeningOutcome.QUARANTINE,
+        detail="private policy quarantine pending operator review",
+        manifest_digest=decision.manifest_digest,
+        evidence=evidence,
+        finding=decision.finding,
+    )
 
 
 def _gateway_call_count(path: str) -> int:
@@ -367,6 +462,7 @@ class BuildGate:
                     harness_base=audit_runtime.harness_base,
                     probe_container=gateway_container,
                     gateway_response_token=audit_runtime.gateway_response_token,
+                    oracle_answer=audit_runtime.oracle_answer,
                     gateway_state_file=audit_runtime.gateway_state_file,
                 )
 
@@ -393,6 +489,9 @@ class BuildGate:
             )
             report("validating")
             decision = await self._policy.evaluate(context)
+            decision = _with_image_binding_advisory(
+                decision, self._image_binding_advisory(tmp_path)
+            )
             self._journal.record(context=context, decision=decision)
             return decision
         except Exception as e:  # noqa: BLE001 - the loop must never die on one agent
@@ -452,6 +551,24 @@ class BuildGate:
             if not keep_path:
                 with contextlib.suppress(OSError):
                     os.unlink(path)
+
+    def _image_binding_advisory(self, tar_path: str) -> str | None:
+        """Run the advisory image/crate binding heuristic over the Dockerfile."""
+        try:
+            with tarfile.open(tar_path, mode="r:gz") as tar:
+                for name in ("Dockerfile", "./Dockerfile"):
+                    try:
+                        member = tar.getmember(name)
+                    except KeyError:
+                        continue
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        return None
+                    text = extracted.read(1024 * 1024).decode("utf-8", "replace")
+                    return image_binding_advisory(text)
+        except (tarfile.TarError, OSError):
+            return None
+        return None
 
     def _contract_error(self, tar_path: str) -> str | None:
         """Validate the archive and Rust harness contract without extracting it."""
@@ -544,6 +661,20 @@ class BuildGate:
                         "submit a runnable Rust package rather than a virtual "
                         "workspace",
                     )
+
+                dockerfile_file = tar.extractfile(members["Dockerfile"])
+                if dockerfile_file is not None:
+                    try:
+                        dockerfile_file.read().decode("utf-8")
+                    except UnicodeDecodeError:
+                        return _rust_diagnostic(
+                            "SCR-RUST-012",
+                            "Dockerfile is not valid UTF-8 text",
+                            "commit a readable UTF-8 Dockerfile that builds the crate",
+                        )
+                # Image/crate binding is a text heuristic, so it is applied as
+                # advisory quarantine evidence after policy evaluation (see
+                # _image_binding_advisory), never as a contract rejection.
                 return None
         except (tarfile.TarError, OSError) as e:
             logger.warning("could not read tar %s: %s", tar_path, e)
@@ -616,11 +747,17 @@ class BuildGate:
     ) -> tuple[_StageResult, _AuditRuntime | None]:
         """Run the image and await health against the isolated fake gateway."""
         port = self._config.container_port
-        response_text = f"ditto-fake-gateway-{secrets.token_hex(16)}"
+        # High-entropy, opaque tokens with no ``ditto``/``fake``/``screening``
+        # marker: the first is the per-container nonce the gateway returns, the
+        # second is the answer it returns only once the nonce is fed back on a
+        # second round-trip (the gateway-encoded correctness oracle).
+        response_text = secrets.token_hex(16)
+        oracle_answer = secrets.token_hex(16)
         started, detail = await self._start_fake_gateway(
             gateway_container=gateway_container,
             network=network,
             response_text=response_text,
+            oracle_answer=oracle_answer,
             state_dir=gateway_state_dir,
         )
         if not started:
@@ -695,6 +832,7 @@ class BuildGate:
             _AuditRuntime(
                 harness_base=harness_base,
                 gateway_response_token=response_text,
+                oracle_answer=oracle_answer,
                 gateway_state_file=str(Path(gateway_state_dir) / "model-called"),
             ),
         )
@@ -705,6 +843,7 @@ class BuildGate:
         gateway_container: str,
         network: str,
         response_text: str,
+        oracle_answer: str,
         state_dir: str,
     ) -> tuple[bool, str]:
         """Start the fake gateway beside the harness on an internal network."""
@@ -739,6 +878,8 @@ class BuildGate:
                 "32",
                 "-e",
                 f"DITTO_FAKE_GATEWAY_RESPONSE={response_text}",
+                "-e",
+                f"DITTO_FAKE_GATEWAY_ORACLE_ANSWER={oracle_answer}",
                 "-e",
                 "DITTO_FAKE_GATEWAY_STATE_FILE=/state/model-called",
                 "-v",
@@ -804,11 +945,14 @@ class BuildGate:
         probe_container: str,
         gateway_response_token: str,
         gateway_state_file: str,
+        oracle_answer: str | None = None,
     ) -> ChallengeObservation:
         """Run one selected private challenge and retain only bounded evidence.
 
-        This is observational triage. A response shape or timing can route to
-        review, but it is never interpreted as proof of causal model use.
+        Timing and gateway-call counts are objective, reproducible facts about
+        the isolated round-trip. ``oracle_answer_correct`` is likewise objective:
+        the harness can only surface ``oracle_answer`` by feeding the gateway
+        nonce back through a second turn, which a static table cannot do.
         """
         calls_before = _gateway_call_count(gateway_state_file)
         started = asyncio.get_running_loop().time()
@@ -858,7 +1002,20 @@ class BuildGate:
             elapsed_ms=elapsed_ms,
             json_keys=tuple(sorted(str(key) for key in payload)[:64]),
             gateway_calls=gateway_calls,
-            gateway_token_observed=_contains_string(payload, gateway_response_token),
+            # Either token proves binding to THIS container's ephemeral
+            # gateway: with the tool-call first turn the nonce is consumed
+            # inside the transcript and the surfaced final text is the oracle
+            # answer, so both must count.
+            gateway_token_observed=(
+                _contains_string(payload, gateway_response_token)
+                or (
+                    oracle_answer is not None
+                    and _contains_string(payload, oracle_answer)
+                )
+            ),
+            oracle_answer_correct=(
+                oracle_answer is not None and _contains_string(payload, oracle_answer)
+            ),
         )
 
     async def _request_from_sidecar(

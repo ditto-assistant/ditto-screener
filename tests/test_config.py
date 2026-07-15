@@ -87,7 +87,7 @@ def test_missing_api_token_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_missing_source_review_key_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     _base_env(monkeypatch)
     monkeypatch.delenv("SCREENER_SOURCE_REVIEW_API_KEY_FILE")
-    with pytest.raises(ScreenerConfigError, match="required by screening policy v7"):
+    with pytest.raises(ScreenerConfigError, match="required by screening policy v8"):
         parse_screener_config_from_env()
 
 

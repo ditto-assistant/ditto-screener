@@ -228,7 +228,7 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         raise ScreenerConfigError("SCREENER_API_TOKEN must be at least 32 characters")
     if not config.source_review_api_key_file:
         raise ScreenerConfigError(
-            "SCREENER_SOURCE_REVIEW_API_KEY_FILE is required by screening policy v7"
+            "SCREENER_SOURCE_REVIEW_API_KEY_FILE is required by screening policy v8"
         )
     if not 1 <= config.source_review_max_steps <= 20:
         raise ScreenerConfigError(

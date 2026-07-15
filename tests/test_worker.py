@@ -10,7 +10,12 @@ from uuid import UUID, uuid4
 
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.errors import PlatformError
-from ditto_screener.policy import ScreeningDecision, ScreeningOutcome, core_decision
+from ditto_screener.policy import (
+    PolicyEvidence,
+    ScreeningDecision,
+    ScreeningOutcome,
+    core_decision,
+)
 from ditto_screener.worker import ScreenerWorker
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
@@ -19,6 +24,7 @@ from ditto_screening_protocol import (
     ScreenerQueueItem,
     ScreenerQueueResponse,
     ScreenResultOutcome,
+    SourceReviewFinding,
 )
 
 _MINER = "5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm"
@@ -325,3 +331,74 @@ async def test_current_policy_claims_and_signs_current_policy(
 
     assert await worker._sweep(asyncio.Event()) == 1
     assert platform.verdicts[0]["policy_version"] == SCREENING_POLICY_VERSION
+
+
+async def test_quarantine_ships_bounded_evidence_and_digest_bound_finding(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    finding = SourceReviewFinding(
+        artifact_sha256="de" * 32,
+        prompt_revision="source-review-v2",
+        risk_level="high",
+        confidence=0.97,
+        categories=["benchmark_emulation"],
+        evidence=[
+            {"path": "src/main.rs", "line": 42, "category": "benchmark_emulation"}
+        ],
+        summary="Deterministic shortcut bypasses the general provider path.",
+    )
+    decision = ScreeningDecision(
+        outcome=ScreeningOutcome.QUARANTINE,
+        detail="private policy quarantine pending operator review",
+        manifest_digest="ab" * 32,
+        evidence=(
+            PolicyEvidence(
+                "luna-source-review",
+                "agentic-source-review-tripwire",
+                "private source analysis selected a behavioral audit",
+                finding.canonical_digest(),
+            ),
+        ),
+        finding=finding.model_dump(mode="json"),
+    )
+    platform = _FakePlatform([])
+    worker = _worker(make_config(), platform, _FakeGate(decision))
+    await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
+
+    verdict = platform.verdicts[0]
+    assert verdict["outcome"].value == "quarantine"
+    assert verdict["reason_code"] == "agentic-source-review-tripwire"
+    # The signed finding_digest binds the shipped finding payload exactly.
+    assert verdict["finding_digest"] == finding.canonical_digest()
+    assert verdict["finding"].canonical_digest() == verdict["finding_digest"]
+    assert [item.code for item in verdict["evidence"]] == [
+        "agentic-source-review-tripwire"
+    ]
+    assert verdict["evidence"][0].digest == finding.canonical_digest()
+
+
+async def test_quarantine_without_finding_keeps_last_evidence_digest(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    decision = ScreeningDecision(
+        outcome=ScreeningOutcome.QUARANTINE,
+        detail="private policy quarantine pending operator review",
+        manifest_digest="ab" * 32,
+        evidence=(
+            PolicyEvidence(
+                "v8-behavioral-oracle",
+                "behavioral-oracle-wrong-answer",
+                "behavioral oracle final answer did not match the "
+                "gateway-encoded value",
+                "cd" * 32,
+            ),
+        ),
+    )
+    platform = _FakePlatform([])
+    worker = _worker(make_config(), platform, _FakeGate(decision))
+    await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
+
+    verdict = platform.verdicts[0]
+    assert verdict["finding"] is None
+    assert verdict["finding_digest"] == "cd" * 32
+    assert verdict["evidence"][0].module_id == "v8-behavioral-oracle"

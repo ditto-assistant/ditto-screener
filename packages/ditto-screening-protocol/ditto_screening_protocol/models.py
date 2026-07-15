@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCREENING_POLICY_VERSION = 7
+SCREENING_POLICY_VERSION = 8
 
 _SS58_PATTERN = r"^[1-9A-HJ-NP-Za-km-z]{47,48}$"
 _SIGNATURE_HEX_PATTERN = r"^[0-9a-fA-F]{128}$"
@@ -148,6 +150,99 @@ class ScreenerQueueResponse(BaseModel):
     )
 
 
+class ScreenEvidenceItem(BaseModel):
+    """One bounded, public-safe policy evidence summary carried on a verdict.
+
+    Mirrors the screener's internal ``PolicyEvidence`` bounds. Raw challenge
+    prompts, responses, private rules, credentials, and artifact source never
+    belong here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    module_id: Annotated[
+        str,
+        Field(min_length=1, max_length=64, description="Reporting policy module."),
+    ]
+    code: Annotated[
+        str,
+        Field(min_length=1, max_length=64, description="Stable machine code."),
+    ]
+    summary: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=240,
+            description="One bounded, public-safe sentence for the operator.",
+        ),
+    ]
+    digest: Annotated[
+        str | None,
+        Field(
+            pattern=r"^[0-9a-f]{64}$",
+            description="Optional SHA-256 anchoring private evidence.",
+        ),
+    ] = None
+
+
+class SourceReviewEvidenceItem(BaseModel):
+    """One flagged source location from the read-only source review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: Annotated[str, Field(min_length=1, max_length=240)]
+    line: Annotated[int, Field(ge=1)]
+    category: Annotated[str, Field(min_length=1, max_length=64)]
+
+
+class SourceReviewFinding(BaseModel):
+    """Bounded source-review finding whose canonical JSON is digest-bound.
+
+    ``canonical_digest()`` over this payload must equal the ``finding_digest``
+    bound into the signed verdict, letting the platform verify the finding it
+    stores is exactly the one the screener attested.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    prompt_revision: Annotated[str, Field(min_length=1, max_length=64)]
+    risk_level: Literal["low", "medium", "high"]
+    confidence: Annotated[float, Field(ge=0, le=1)]
+    categories: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=64)]],
+        Field(min_length=1, max_length=8),
+    ]
+    evidence: Annotated[
+        list[SourceReviewEvidenceItem], Field(default_factory=list, max_length=16)
+    ]
+    summary: Annotated[str, Field(min_length=1, max_length=240)]
+
+    def canonical_digest(self) -> str:
+        """SHA-256 over the canonical JSON encoding of this finding."""
+        canonical = json.dumps(
+            {
+                "artifact_sha256": self.artifact_sha256,
+                "prompt_revision": self.prompt_revision,
+                "risk_level": self.risk_level,
+                "confidence": self.confidence,
+                "categories": sorted(set(self.categories)),
+                "evidence": [
+                    {
+                        "path": item.path,
+                        "line": item.line,
+                        "category": item.category,
+                    }
+                    for item in self.evidence
+                ],
+                "summary": self.summary,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class ScreenResultRequest(BaseModel):
     """Signed result posted to ``/screener/agent/{agent_id}/result``."""
 
@@ -181,6 +276,26 @@ class ScreenResultRequest(BaseModel):
     reason_code: Annotated[str | None, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")] = (
         None
     )
+    evidence: Annotated[
+        list[ScreenEvidenceItem] | None,
+        Field(
+            max_length=16,
+            description=(
+                "Bounded public-safe policy evidence trail for operator review. "
+                "Carried over the authenticated screener channel; the platform "
+                "must treat it as display data, not proof."
+            ),
+        ),
+    ] = None
+    finding: Annotated[
+        SourceReviewFinding | None,
+        Field(
+            description=(
+                "Bounded source-review finding. Its canonical digest must equal "
+                "finding_digest, which is bound into the verdict signature."
+            ),
+        ),
+    ] = None
     policy_version: Annotated[
         int,
         Field(
@@ -232,6 +347,20 @@ class ScreenResultRequest(BaseModel):
             self.manifest_digest is None or self.reason_code is None
         ):
             raise ValueError("quarantine requires manifest_digest and reason_code")
+        return self
+
+    @model_validator(mode="after")
+    def validate_review_payloads(self) -> ScreenResultRequest:
+        if (self.evidence is not None or self.finding is not None) and (
+            self.outcome
+            not in {ScreenResultOutcome.QUARANTINE, ScreenResultOutcome.INCONCLUSIVE}
+        ):
+            raise ValueError("evidence and finding require a review outcome")
+        if self.finding is not None:
+            if self.finding_digest is None:
+                raise ValueError("finding requires finding_digest")
+            if self.finding.canonical_digest() != self.finding_digest:
+                raise ValueError("finding does not match finding_digest")
         return self
 
 

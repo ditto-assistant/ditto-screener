@@ -31,7 +31,9 @@ from ditto_screener.signing import sign_heartbeat, sign_verdict
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
     ScreenerQueueItem,
+    ScreenEvidenceItem,
     ScreenResultOutcome,
+    SourceReviewFinding,
 )
 
 if TYPE_CHECKING:
@@ -263,8 +265,32 @@ class ScreenerWorker:
             passed = typed_outcome == ScreenResultOutcome.PASS
             is_quarantine = typed_outcome == ScreenResultOutcome.QUARANTINE
             reason_code = result.evidence[-1].code if result.evidence else None
+            # The bounded review payloads ride along on quarantine so the
+            # operator sees WHY, not just a digest. When a source-review
+            # finding exists, the signed finding_digest binds that finding;
+            # otherwise it anchors the last module evidence digest as before.
+            finding = (
+                SourceReviewFinding.model_validate(result.finding)
+                if is_quarantine and result.finding is not None
+                else None
+            )
+            evidence = (
+                [
+                    ScreenEvidenceItem(
+                        module_id=item.module_id,
+                        code=item.code,
+                        summary=item.summary,
+                        digest=item.digest,
+                    )
+                    for item in result.evidence
+                ]
+                if is_quarantine and result.evidence
+                else None
+            )
             finding_digest = (
-                next(
+                finding.canonical_digest()
+                if finding is not None
+                else next(
                     (item.digest for item in reversed(result.evidence) if item.digest),
                     None,
                 )
@@ -294,6 +320,8 @@ class ScreenerWorker:
                 manifest_digest=result.manifest_digest if is_quarantine else None,
                 finding_digest=finding_digest,
                 reason_code=reason_code,
+                evidence=evidence,
+                finding=finding,
             )
             logger.info(
                 "screened agent_id=%s miner=%s outcome=%s passed=%s -> %s%s",

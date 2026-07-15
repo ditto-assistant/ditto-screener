@@ -14,9 +14,13 @@ from pathlib import Path, PurePosixPath
 import httpx
 
 from ditto_screener.policy import SourceReviewObservation
+from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v2"
+_PROMPT_REVISION = "source-review-v3"
 _MAX_INVENTORY_FILES = 512
+_MAX_OPAQUE_BLOBS = 128
+_MAX_OPAQUE_SCAN_FILES = 2048
+_OPAQUE_SIZE_LIMIT = 2 * 1024 * 1024
 _MAX_TOOL_OUTPUT_CHARS = 48_000
 _MAX_TOTAL_TOOL_CHARS = 320_000
 _MAX_READ_LINES = 400
@@ -80,6 +84,18 @@ Never extend trust to neighboring or derivative files.
 Use duplicate_submission only when an external cross-submission observation is
 provided. Never infer originality or ownership from one archive alone.
 
+The initial inventory includes an "opaque_blobs" list of files the read-only
+tools cannot show you as text (non-UTF-8 or larger than 2 MiB). Treat these as
+elevated risk: a committed opaque blob is exactly where a string table or
+precomputed answer set would hide, and you cannot read it. Also treat these
+build-time signals as suspicious and raise the risk level toward quarantine:
+- a Dockerfile that COPYs or ADDs a prebuilt binary from the build context and
+  runs it as the entrypoint instead of compiling the committed crate, so what
+  the image runs is not the source you reviewed;
+- build steps that fetch and execute code from the network
+  (curl|sh, wget|sh, pip install from a URL, or downloading an archive/binary),
+  which move the real logic outside the reviewed source.
+
 Source-review findings are quarantine triage, never an automatic rejection.
 Before finishing, inspect enough primary files to support the result. Submit
 exactly one structured result using submit_review. Keep the summary generic and
@@ -119,17 +135,32 @@ class TarSourceRepository:
         ordered = sorted(
             self._members.values(), key=lambda item: (-item.size, item.name)
         )
-        rows = [
-            {"path": item.name, "bytes": item.size}
-            for item in ordered[:_MAX_INVENTORY_FILES]
-        ]
-        return _bounded_json(
-            {
+        # Files the read-only tools cannot show as text are surfaced
+        # explicitly so a string table hidden in a binary or oversized
+        # blob is never silently invisible to the reviewer.
+        opaque, opaque_total, opaque_scan_bounded = self.opaque_blobs()
+        limit = _MAX_INVENTORY_FILES
+        while True:
+            rows = [{"path": item.name, "bytes": item.size} for item in ordered[:limit]]
+            payload = {
                 "file_count": len(self._members),
                 "largest_files": rows,
+                "files_listed": len(rows),
+                "opaque_blobs": opaque,
+                "opaque_total": opaque_total,
+                "opaque_truncated": opaque_total > len(opaque) or opaque_scan_bounded,
                 "truncated": len(ordered) > len(rows),
             }
-        )
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            # Degrade PARTIALLY under the tool-output budget: trim the listing
+            # (and then the opaque list) rather than collapsing the whole
+            # inventory into an opaque truncation error.
+            if len(encoded) <= _MAX_TOOL_OUTPUT_CHARS or (limit == 0 and not opaque):
+                return encoded
+            if limit > 0:
+                limit = limit // 2
+            else:
+                opaque = opaque[: max(0, len(opaque) // 2)]
 
     def trusted_provenance(self, manifest_path: str) -> str:
         """Compare only explicitly tracked official files by exact SHA-256."""
@@ -153,6 +184,52 @@ class TarSourceRepository:
                 "scope": "exact-path-and-sha256-only",
             }
         )
+
+    def opaque_blobs(self) -> tuple[list[dict[str, object]], int, bool]:
+        """List files the reviewer cannot read as UTF-8 text.
+
+        Oversized (> 2 MiB) or non-UTF-8 files return ``file-is-not-utf8-text``
+        from ``read_file``/``search`` and would otherwise be invisible. They
+        are the natural hiding place for a committed string table, so they are
+        reported with path, size, and reason for the reviewer to weigh.
+
+        Returns ``(blobs, total, scan_bounded)``: at most ``_MAX_OPAQUE_BLOBS``
+        entries, the total number found, and whether the UTF-8 scan itself was
+        cut short — partial results are always labeled, never silent.
+        """
+        blobs: list[dict[str, object]] = []
+        total = 0
+        scanned = 0
+        scan_bounded = False
+        for name in sorted(self._members):
+            info = self._members[name]
+            if info.size > _OPAQUE_SIZE_LIMIT:
+                reason = "oversized"
+            else:
+                if scanned >= _MAX_OPAQUE_SCAN_FILES:
+                    scan_bounded = True
+                    break
+                scanned += 1
+                if self._read_text(name) is not None:
+                    continue
+                reason = "non_utf8"
+            total += 1
+            if len(blobs) < _MAX_OPAQUE_BLOBS:
+                blobs.append({"path": name, "bytes": info.size, "reason": reason})
+        return blobs, total, scan_bounded
+
+    def line_count(self, path: str) -> int | None:
+        """Total lines of a readable UTF-8 member, or ``None`` when opaque."""
+        normalized = path.removeprefix("./")
+        if normalized not in self._members:
+            return None
+        text = self._read_text(normalized)
+        if text is None:
+            return None
+        return len(text.splitlines())
+
+    def has_member(self, path: str) -> bool:
+        return path.removeprefix("./") in self._members
 
     def list_files(self, prefix: str = "") -> str:
         prefix = prefix.removeprefix("./")
@@ -262,7 +339,9 @@ class OpenRouterSourceReviewAgent:
             api_key = self._read_api_key()
             repository = TarSourceRepository(archive_path)
             result = await self._run(repository, api_key, progress=progress)
-            return _parse_review(result, artifact_sha256=artifact_sha256)
+            return _parse_review(
+                result, artifact_sha256=artifact_sha256, repository=repository
+            )
         except (OSError, ValueError, tarfile.TarError, httpx.HTTPError) as error:
             return SourceReviewObservation(
                 ok=False,
@@ -441,7 +520,9 @@ def _execute_tool(
     raise ValueError("source reviewer requested an unsupported tool")
 
 
-def _parse_review(value: object, *, artifact_sha256: str) -> SourceReviewObservation:
+def _parse_review(
+    value: object, *, artifact_sha256: str, repository: TarSourceRepository
+) -> SourceReviewObservation:
     if not isinstance(value, dict) or set(value) != {
         "risk_level",
         "confidence",
@@ -484,23 +565,53 @@ def _parse_review(value: object, *, artifact_sha256: str) -> SourceReviewObserva
         ):
             raise ValueError("source review evidence fields are invalid")
         normalized_evidence.append({"path": path, "line": line, "category": category})
-    canonical = json.dumps(
-        {
-            "artifact_sha256": artifact_sha256,
-            "prompt_revision": _PROMPT_REVISION,
-            "risk_level": risk,
-            "confidence": float(confidence),
-            "categories": sorted(set(categories)),
-            "evidence": normalized_evidence,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+    # The reviewer model is untrusted output: a citation must point at a real
+    # archive member, and at a real line when the member is readable text.
+    # Hallucinated locations are dropped BEFORE the finding is digest-bound so
+    # they can never become signed evidence; an opaque member keeps its
+    # citation (the path is proven, the line is unverifiable by design).
+    validated_evidence: list[dict[str, object]] = []
+    dropped = 0
+    for item in normalized_evidence:
+        cited_path = str(item["path"])
+        cited_line = item["line"]
+        assert isinstance(cited_line, int)
+        if not repository.has_member(cited_path):
+            dropped += 1
+            continue
+        total_lines = repository.line_count(cited_path)
+        if total_lines is not None and cited_line > max(total_lines, 1):
+            dropped += 1
+            continue
+        validated_evidence.append(item)
+    if dropped:
+        logger.warning(
+            "source review cited %d nonexistent location(s); dropped before "
+            "digest binding",
+            dropped,
+        )
+    normalized_evidence = validated_evidence
+    # The finding travels to the platform on quarantine and must hash to the
+    # digest bound into the signed verdict, so build it through the shared
+    # protocol model rather than a local canonicalization.
+    finding = SourceReviewFinding(
+        artifact_sha256=artifact_sha256,
+        prompt_revision=_PROMPT_REVISION,
+        risk_level=risk,
+        confidence=float(confidence),
+        categories=sorted(set(categories)),
+        evidence=[
+            SourceReviewEvidenceItem.model_validate(item)
+            for item in normalized_evidence
+        ],
+        summary=summary,
     )
     return SourceReviewObservation(
         ok=True,
         risk_level=risk,
-        finding_digest=hashlib.sha256(canonical.encode()).hexdigest(),
+        finding_digest=finding.canonical_digest(),
         categories=tuple(sorted(set(categories))),
+        finding=finding.model_dump(mode="json"),
     )
 
 

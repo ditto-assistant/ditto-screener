@@ -15,6 +15,7 @@ from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
 )
+from ditto_screening_protocol import SourceReviewFinding
 
 _SHA = "ab" * 32
 
@@ -100,6 +101,49 @@ def _agent(
         max_steps=4,
         transport=transport,
     )
+
+
+def _archive_with(tmp_path: Path, extra: dict[str, bytes]) -> Path:
+    path = tmp_path / "agent.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        base = {
+            "Cargo.toml": b'[package]\nname="agent"\nversion="0.1.0"\n',
+            "Dockerfile": b"FROM scratch\n",
+            "src/main.rs": b"fn main() {}\n",
+        }
+        base.update(extra)
+        for name, raw in base.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(raw)
+            archive.addfile(member, io.BytesIO(raw))
+    return path
+
+
+def test_opaque_binary_blob_is_surfaced_in_inventory(tmp_path: Path) -> None:
+    blob = b"MZ\x90\x00\x03\x00\x00\x00" + b"\x00secret-string-table\x00" * 8
+    repo = TarSourceRepository(str(_archive_with(tmp_path, {"assets/table.bin": blob})))
+    inventory = json.loads(repo.inventory())
+    opaque = {entry["path"]: entry for entry in inventory["opaque_blobs"]}
+    assert "assets/table.bin" in opaque
+    assert opaque["assets/table.bin"]["reason"] == "non_utf8"
+    assert opaque["assets/table.bin"]["bytes"] == len(blob)
+    # A normal UTF-8 source file is not surfaced as opaque.
+    assert "src/main.rs" not in opaque
+
+
+def test_oversized_file_is_surfaced_as_opaque(tmp_path: Path) -> None:
+    big = b"a" * (2 * 1024 * 1024 + 16)
+    repo = TarSourceRepository(str(_archive_with(tmp_path, {"data/big.txt": big})))
+    opaque = json.loads(repo.inventory())["opaque_blobs"]
+    assert any(
+        entry["path"] == "data/big.txt" and entry["reason"] == "oversized"
+        for entry in opaque
+    )
+
+
+def test_utf8_only_crate_reports_no_opaque_blobs(tmp_path: Path) -> None:
+    repo = TarSourceRepository(str(_archive_with(tmp_path, {})))
+    assert json.loads(repo.inventory())["opaque_blobs"] == []
 
 
 async def test_benign_control_clears_with_zdr_and_read_only_tools(
@@ -250,6 +294,25 @@ async def test_sanitized_shortcut_fixture_produces_bounded_risk_digest(
     assert observation.finding_digest is not None
     assert len(observation.finding_digest) == 64
 
+    # The bounded finding rides along for the operator console and hashes to
+    # the digest that the signed verdict binds.
+    assert observation.finding is not None
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert parsed.canonical_digest() == observation.finding_digest
+    assert parsed.risk_level == "high"
+    assert parsed.summary == final["summary"]
+    assert [item.model_dump() for item in parsed.evidence] == final["evidence"]
+    # Nothing beyond the sanitized, bounded fields is retained.
+    assert set(observation.finding) == {
+        "artifact_sha256",
+        "prompt_revision",
+        "risk_level",
+        "confidence",
+        "categories",
+        "evidence",
+        "summary",
+    }
+
 
 async def test_malformed_or_unavailable_reviewer_is_retryable_not_reject(
     tmp_path: Path,
@@ -318,3 +381,57 @@ async def test_transient_openrouter_failure_is_retried(
 
     assert observation.ok
     assert calls == 2
+
+
+async def test_hallucinated_citations_are_dropped_before_digest_binding(
+    tmp_path: Path,
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    final = {
+        "risk_level": "high",
+        "confidence": 0.9,
+        "categories": ["benchmark_emulation"],
+        "evidence": [
+            # Real file, real line: kept.
+            {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            # Nonexistent file: dropped.
+            {"path": "src/ghost.rs", "line": 3, "category": "benchmark_emulation"},
+            # Real file, impossible line: dropped.
+            {"path": "src/main.rs", "line": 9999, "category": "benchmark_emulation"},
+        ],
+        "summary": "Deterministic shortcut bypasses the general provider path.",
+    }
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, "fn run() { fast_path(); }")), artifact_sha256=_SHA
+    )
+
+    assert observation.ok and observation.finding is not None
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert [(item.path, item.line) for item in parsed.evidence] == [("src/main.rs", 1)]
+    # The digest binds the VALIDATED evidence set.
+    assert parsed.canonical_digest() == observation.finding_digest
+
+
+def test_inventory_degrades_partially_with_truncation_metadata(
+    tmp_path: Path,
+) -> None:
+    # Many files with long names would previously collapse the whole
+    # inventory into a truncation error; now the listing shrinks but the
+    # counts and flags survive.
+    files = {
+        f"src/module_{index:04d}/{'x' * 120}.rs": b"fn f() {}\n" for index in range(700)
+    }
+    files["assets/table.bin"] = b"\xff\xfe\x00binary" * 4
+    repo = TarSourceRepository(str(_archive_files(tmp_path, files)))
+    inventory = json.loads(repo.inventory())
+
+    assert "error" not in inventory
+    assert inventory["file_count"] == len(files)
+    assert inventory["truncated"] is True
+    assert inventory["files_listed"] == len(inventory["largest_files"])
+    assert inventory["opaque_total"] == 1
+    assert inventory["opaque_blobs"][0]["path"] == "assets/table.bin"
+    encoded = json.dumps(inventory, sort_keys=True, separators=(",", ":"))
+    assert len(encoded) <= 48_000
