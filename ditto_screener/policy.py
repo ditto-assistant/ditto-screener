@@ -615,8 +615,7 @@ _ORACLE_SYSTEM_PROMPTS: tuple[str, ...] = (
     "notes and memories.",
     "You are the user's personal assistant. Use their stored notes to answer "
     "accurately and concisely.",
-    "Answer the user using their previously saved information. Be brief and "
-    "factual.",
+    "Answer the user using their previously saved information. Be brief and factual.",
     "You are an assistant that recalls the user's stored notes to answer "
     "questions concisely.",
 )
