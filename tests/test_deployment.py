@@ -3,6 +3,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_deploy_workflow_targets_the_production_vm_zone() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+
+    assert "GCP_ZONE: us-central1-c" in workflow
+    assert "SCREENER_VM: ditto-screener-prod" in workflow
+
+
 def test_systemd_unit_runs_the_extracted_screener_entrypoint() -> None:
     unit = (ROOT / "deploy" / "ditto-screener.service").read_text()
 
