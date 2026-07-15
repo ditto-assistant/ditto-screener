@@ -110,7 +110,10 @@ def _make_readiness_server() -> ReadinessServer | None:
     except ValueError:
         logger.warning("ignoring non-integer SCREENER_READINESS_PORT=%r", raw)
         return None
-    if port <= 0:
+    if not 1 <= port <= 65535:
+        # Out-of-range (incl. >65535, which would raise OverflowError inside
+        # ReadinessServer and bypass the OSError handler below).
+        logger.warning("ignoring out-of-range SCREENER_READINESS_PORT=%d", port)
         return None
     try:
         return ReadinessServer(port)

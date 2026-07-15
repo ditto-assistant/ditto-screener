@@ -51,7 +51,7 @@ ensure_enabled() {
   # First boot restarts the unit but a reboot then short-circuits on the
   # bootstrap marker, so the unit must be ENABLED to come back after a reboot.
   systemctl is-enabled --quiet "$SCREENER_UNIT" 2>/dev/null \
-    || systemctl enable "$SCREENER_UNIT" >/dev/null 2>&1 || true
+    || systemctl enable "$SCREENER_UNIT" >/dev/null
 }
 
 record_deployed_sha() {

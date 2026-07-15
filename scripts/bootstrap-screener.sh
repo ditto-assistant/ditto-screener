@@ -146,9 +146,14 @@ command -v gcloud >/dev/null || {
 
 # --- uv (the worker runs from a uv-managed venv; updater expects this path) ---
 if [[ ! -x /usr/local/bin/uv ]]; then
-  curl -fsSL https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
-  UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install.sh
-  rm -f /tmp/uv-install.sh
+  # mktemp, not a predictable /tmp path: this runs as root, so a hardcoded
+  # /tmp/uv-install.sh is a symlink/TOCTOU foothold for a local user.
+  uv_installer="$(mktemp)"
+  trap 'rm -f "$uv_installer"' EXIT
+  curl -fsSL https://astral.sh/uv/install.sh -o "$uv_installer"
+  UV_INSTALL_DIR=/usr/local/bin sh "$uv_installer"
+  rm -f "$uv_installer"
+  trap - EXIT
 fi
 
 # --- Service user + directory layout (matches the pet VM / updater) ----------
@@ -162,11 +167,18 @@ install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0755 "$SCREENER_ROOT"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$LOGS_DIR"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$SECRETS_DIR"
 
-# github.com host key — needed for the deploy user's git-over-ssh fetches. Safe
-# to bake (a public host key, not a secret).
+# github.com host keys — PINNED (from https://api.github.com/meta ssh_keys),
+# not ssh-keyscan. ssh-keyscan is trust-on-first-use, so a network attacker
+# could impersonate github.com during the deploy user's git-over-ssh fetch and
+# steer the root-run updater onto a malicious checkout. Pinning closes that TOFU
+# window; refresh these lines if GitHub rotates its host keys.
 ssh_dir="/home/$SCREENER_USER/.ssh"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0700 "$ssh_dir"
-ssh-keyscan -t ed25519,rsa github.com 2>/dev/null >>"$ssh_dir/known_hosts"
+cat >"$ssh_dir/known_hosts" <<'KNOWN_HOSTS'
+github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+KNOWN_HOSTS
 chown "$SCREENER_USER:$SCREENER_GROUP" "$ssh_dir/known_hosts"
 chmod 0644 "$ssh_dir/known_hosts"
 

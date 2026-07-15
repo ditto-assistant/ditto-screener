@@ -27,8 +27,8 @@ and executes `scripts/bootstrap-screener.sh`, which:
    layout exactly (`/opt/ditto/screener`, `deploy:ditto`, protected
    `screener.env`);
 2. materializes the worker secrets from Secret Manager — the shared screener
-   hotkey mnemonic, the platform bearer token, and the BuildKit GitHub token
-   file (values never appear in logs or instance metadata);
+   hotkey mnemonic and platform bearer token (values never appear in logs or
+   instance metadata);
 3. hands off to `scripts/update-screener.sh` pinned to the checkout's HEAD, so
    first boot passes the same health verification as every subsequent deploy.
 

@@ -45,7 +45,7 @@ def test_updater_reports_running_sha_from_a_marker_not_git_head() -> None:
     # run interrupted between reset and restart leaves at a not-yet-running SHA.
     assert "deployed_marker=" in updater
     assert "record_deployed_sha" in updater
-    marker_write = updater.index("record_deployed_sha \"$actual_sha\"")
+    marker_write = updater.index('record_deployed_sha "$actual_sha"')
     health_check = updater.index("if ! wait_for_health")
     assert health_check < marker_write
 
@@ -59,7 +59,7 @@ def test_updater_and_bootstrap_serialize_on_a_shared_deploy_lock() -> None:
     # Bootstrap holds the lock and tells the updater it already holds it so the
     # nested updater invocation does not deadlock re-acquiring.
     assert "SCREENER_DEPLOY_LOCK_HELD=1" in bootstrap
-    assert 'SCREENER_DEPLOY_LOCK_HELD:-' in updater
+    assert "SCREENER_DEPLOY_LOCK_HELD:-" in updater
 
 
 def test_bootstrap_blocks_metadata_and_mounts_no_build_credential() -> None:
@@ -82,18 +82,23 @@ def test_bootstrap_bake_mode_provisions_before_any_secret() -> None:
 
     assert "SCREENER_BAKE_ONLY" in bootstrap
     # Bake must exit before fetching any secret, so nothing sensitive is baked.
-    bake_exit = bootstrap.index('if [[ "$SCREENER_BAKE_ONLY" == "1" ]]; then\n  runuser')
+    bake_exit = bootstrap.index(
+        'if [[ "$SCREENER_BAKE_ONLY" == "1" ]]; then\n  runuser'
+    )
     first_secret = bootstrap.index('read_secret "$SCREENER_MNEMONIC_SECRET"')
     assert bake_exit < first_secret
     # The deploy key is installed only outside bake mode (never baked in).
-    assert 'if [[ "$SCREENER_BAKE_ONLY" != "1" ]]; then\n  install -o "$SCREENER_USER"' in bootstrap
+    assert (
+        'if [[ "$SCREENER_BAKE_ONLY" != "1" ]]; then\n  install -o "$SCREENER_USER"'
+        in bootstrap
+    )
 
 
 def test_golden_image_bake_pipeline_exists() -> None:
     packer = (ROOT / "packer" / "screener-fleet.pkr.hcl").read_text()
     workflow = (ROOT / ".github" / "workflows" / "bake-image.yml").read_text()
 
-    assert 'image_family      = var.image_family' in packer
+    assert "image_family      = var.image_family" in packer
     assert "ditto-screener-fleet" in packer
     # Bakes via the same bootstrap script in bake mode; stores no secret.
     assert "SCREENER_BAKE_ONLY=1" in packer
