@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.5.1 (2026-07-15)
+
+### Bug Fixes
+
+- Bound screener disk growth continuously
+  ([#13](https://github.com/ditto-assistant/ditto-screener/pull/13),
+  [`637d1f8`](https://github.com/ditto-assistant/ditto-screener/commit/637d1f88bd41f9a1cc0f12a3e2787bfcc14b041b))
+
+
 ## v0.5.0 (2026-07-15)
 
 ### Bug Fixes
