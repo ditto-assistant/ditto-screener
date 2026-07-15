@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -31,6 +31,7 @@ _MINER = "5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm"
 
 
 def _item(agent_id: UUID, **overrides: Any) -> ScreenerQueueItem:
+    overrides.setdefault("lease_deadline", datetime.now(UTC) + timedelta(hours=1))
     return ScreenerQueueItem(
         agent_id=agent_id,
         miner_hotkey=_MINER,
@@ -39,7 +40,6 @@ def _item(agent_id: UUID, **overrides: Any) -> ScreenerQueueItem:
         status=AgentStatus.SCREENING,
         created_at=datetime.now(UTC),
         attempt_id=uuid4(),
-        lease_deadline=datetime.now(UTC),
         **overrides,
     )
 
@@ -62,9 +62,13 @@ class _FakeGate:
     def __init__(self, result: ScreeningDecision) -> None:
         self.result = result
         self.calls: list[UUID] = []
+        self.deadlines: list[float | None] = []
 
-    async def screen(self, *, agent_id: UUID, **_: Any) -> ScreeningDecision:
+    async def screen(
+        self, *, agent_id: UUID, deadline: float | None = None, **_: Any
+    ) -> ScreeningDecision:
         self.calls.append(agent_id)
+        self.deadlines.append(deadline)
         return self.result
 
 
@@ -227,6 +231,72 @@ async def test_screen_one_retryable_failure_preserves_v6_screening_failed_verdic
     assert platform.verdicts[0]["passed"] is False
     assert platform.verdicts[0]["detail"].startswith("screener error:")
     assert platform.verdicts[0]["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
+
+
+async def test_inconclusive_submits_retryable_instead_of_expiring_lease(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    platform = _FakePlatform([])
+    gate = _FakeGate(
+        _decision(ScreeningOutcome.INCONCLUSIVE, "behavioral oracle inconclusive")
+    )
+    worker = _worker(make_config(), platform, gate)
+    await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
+    # Previously an inconclusive screen submitted nothing and let the lease
+    # expire; it must now re-queue promptly via a retryable verdict.
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    assert verdict["passed"] is False
+    assert verdict["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
+    assert verdict["reason_code"] == "screening-inconclusive"
+
+
+async def test_screen_passes_lease_deadline_budget_to_gate(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+    item = _item(uuid4(), lease_deadline=datetime.now(UTC) + timedelta(minutes=30))
+    await worker._screen_one(item, policy_version=SCREENING_POLICY_VERSION)
+    assert gate.calls == [item.agent_id]
+    # The gate receives a monotonic budget bound (not None) derived from the lease.
+    assert gate.deadlines[0] is not None
+    assert gate.deadlines[0] > asyncio.get_running_loop().time()
+
+
+async def test_near_expired_lease_skips_build_and_reports_retryable(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+    # A lease already at (or past) its deadline: screening cannot land a verdict
+    # in time, so the worker must not download or build.
+    item = _item(uuid4(), lease_deadline=datetime.now(UTC))
+    await worker._screen_one(item, policy_version=SCREENING_POLICY_VERSION)
+    assert gate.calls == []
+    assert platform.artifact_calls == []
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    assert verdict["passed"] is False
+    assert verdict["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
+    assert verdict["reason_code"] == "lease-budget-exhausted"
+
+
+async def test_missing_lease_deadline_leaves_budget_open(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+    # Legacy platforms omit lease_deadline; the worker must still screen with an
+    # open (None) budget rather than treating it as expired.
+    item = _item(uuid4(), lease_deadline=None)
+    await worker._screen_one(item, policy_version=SCREENING_POLICY_VERSION)
+    assert gate.calls == [item.agent_id]
+    assert gate.deadlines[0] is None
+    assert platform.verdicts[0]["outcome"] == ScreenResultOutcome.PASS
 
 
 async def test_quarantine_submits_attempt_bound_typed_result(

@@ -329,6 +329,35 @@ async def test_malformed_or_unavailable_reviewer_is_retryable_not_reject(
     assert observation.error_code == "source-review-oserror"
 
 
+async def test_expired_lease_deadline_stops_review_before_first_call(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": []})
+
+    loop = asyncio.get_running_loop()
+    observation = await _agent(key, httpx.MockTransport(handler)).review(
+        str(_archive(tmp_path, "fn main() {}")),
+        artifact_sha256=_SHA,
+        deadline=loop.time() - 1.0,
+    )
+    # An exhausted lease aborts the review before any model turn and surfaces a
+    # retryable (ok=False) observation rather than burning the per-request
+    # timeout on every step.
+    assert calls == 0
+    assert not observation.ok
+    assert observation.error_code == "source-review-valueerror"
+
+
 async def test_transient_openrouter_failure_is_retried(
     tmp_path: Path, monkeypatch
 ) -> None:
