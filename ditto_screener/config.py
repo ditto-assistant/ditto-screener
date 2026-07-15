@@ -52,7 +52,12 @@ class ScreenerConfig:
     """Path/name of the docker CLI the gate shells out to."""
 
     build_timeout_seconds: float
-    """Hard cap on a single ``docker build`` (crate compile is slow)."""
+    """Hard cap on a single ``docker build`` (crate compile is slow).
+
+    Defaults to 45 minutes. Keep this at or below the platform's screening lease
+    window: the worker clamps a build to the remaining lease, so a cap larger
+    than the lease can never be used in full, while a cap smaller than a
+    legitimate slow crate compile false-fails it as a build timeout."""
 
     run_timeout_seconds: float
     """Hard cap on the container serve, health, and optional private audit."""
@@ -181,7 +186,7 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         screener_mnemonic=os.environ.get("SCREENER_MNEMONIC") or None,
         netuid=_parse_int("NETUID", os.environ.get("NETUID", "118")),
         docker_bin=os.environ.get("SCREENER_DOCKER_BIN", "docker"),
-        build_timeout_seconds=_parse_float("SCREENER_BUILD_TIMEOUT_SECONDS", "1200"),
+        build_timeout_seconds=_parse_float("SCREENER_BUILD_TIMEOUT_SECONDS", "2700"),
         run_timeout_seconds=_parse_float("SCREENER_RUN_TIMEOUT_SECONDS", "120"),
         build_memory=os.environ.get("SCREENER_BUILD_MEMORY", "2g"),
         gh_token_file=os.environ.get("SCREENER_GH_TOKEN_FILE") or None,

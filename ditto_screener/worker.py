@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from ditto_screener import __version__
@@ -51,6 +52,11 @@ EXACT_CROSS_MINER_DUPLICATE = "exact-cross-miner-duplicate"
 _HEARTBEAT_PROTOCOL_VERSION = 2
 _HEARTBEAT_MIN_INTERVAL_SECONDS = 120.0
 _ACTIVE_HEARTBEAT_SECONDS = 120.0
+# Slice of the lease reserved for signing and POSTing the verdict once screening
+# finishes, so a result computed just under the deadline still lands before the
+# platform rejects it as expired. The gate stops screening at this many seconds
+# before the lease deadline.
+_LEASE_SUBMIT_MARGIN_SECONDS = 10.0
 
 
 class ScreenerWorker:
@@ -89,6 +95,21 @@ class ScreenerWorker:
         )
         self._progress_heartbeat_tasks.add(task)
         task.add_done_callback(self._progress_heartbeat_tasks.discard)
+
+    def _screen_deadline(self, lease_deadline: datetime | None) -> float | None:
+        """Monotonic budget for one screen, or ``None`` when the lease is open.
+
+        Converts the platform's wall-clock ``lease_deadline`` into a
+        ``loop.time()`` bound and reserves ``_LEASE_SUBMIT_MARGIN_SECONDS`` for
+        signing and posting the verdict. A past/near deadline yields a bound in
+        the past so the caller skips the build and reports retryable at once.
+        """
+        if lease_deadline is None:
+            return None
+        remaining = (
+            lease_deadline - datetime.now(UTC)
+        ).total_seconds() - _LEASE_SUBMIT_MARGIN_SECONDS
+        return asyncio.get_running_loop().time() + remaining
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         """Sweep until ``stop`` is set, sleeping when the queue is empty."""
@@ -239,14 +260,48 @@ class ScreenerWorker:
                     detail="exact cross-miner duplicate",
                 )
             else:
-                artifact = await self._platform.get_artifact(agent_id)
-                result = await self._gate.screen(
-                    agent_id=agent_id,
-                    attempt_id=item.attempt_id,
-                    miner_hotkey=item.miner_hotkey,
-                    sha256=item.sha256,
-                    download_url=str(artifact.download_url),
-                    progress=self._set_progress,
+                screen_deadline = self._screen_deadline(item.lease_deadline)
+                if (
+                    screen_deadline is not None
+                    and screen_deadline <= asyncio.get_running_loop().time()
+                ):
+                    logger.warning(
+                        "agent_id=%s claimed with insufficient lease budget; "
+                        "reporting retryable so the platform re-queues promptly",
+                        agent_id,
+                    )
+                    result = core_decision(
+                        ScreeningOutcome.RETRYABLE_INFRA,
+                        code="lease-budget-exhausted",
+                        summary="insufficient screening lease budget at claim",
+                        detail="screener error: insufficient lease budget at claim",
+                    )
+                else:
+                    artifact = await self._platform.get_artifact(agent_id)
+                    result = await self._gate.screen(
+                        agent_id=agent_id,
+                        attempt_id=item.attempt_id,
+                        miner_hotkey=item.miner_hotkey,
+                        sha256=item.sha256,
+                        download_url=str(artifact.download_url),
+                        progress=self._set_progress,
+                        deadline=screen_deadline,
+                    )
+            if result.outcome == ScreeningOutcome.INCONCLUSIVE:
+                # An inconclusive screen used to submit nothing and let the lease
+                # expire, which re-queues the agent only after the full lease
+                # window and reads as a "lease expired" timeout. Report it as
+                # retryable-infra instead so the platform re-queues promptly.
+                logger.warning(
+                    "agent_id=%s screening inconclusive; reporting retryable_infra "
+                    "so the platform re-queues instead of waiting out the lease",
+                    agent_id,
+                )
+                result = core_decision(
+                    ScreeningOutcome.RETRYABLE_INFRA,
+                    code="screening-inconclusive",
+                    summary="screening was inconclusive and should be retried",
+                    detail=result.detail or "screener error: screening inconclusive",
                 )
             submits_result = (
                 result.submits_verdict or result.outcome.value == "quarantine"
