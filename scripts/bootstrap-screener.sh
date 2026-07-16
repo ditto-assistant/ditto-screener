@@ -232,11 +232,14 @@ NETUID=$NETUID
 SCREENER_HOTKEY=$SCREENER_HOTKEY
 SCREENER_POLL_SECONDS=30
 SCREENER_QUEUE_LIMIT=20
-# Per-stage caps. The worker additionally clamps EVERY stage (build, serve, and
-# each source-review step) to the remaining platform lease and re-queues as
-# retryable if the budget runs out, so these caps are upper bounds, not a floor
-# that can overrun a 30-min lease into a rejected-because-late verdict.
-SCREENER_BUILD_TIMEOUT_SECONDS=1200
+# Per-stage caps — kept in lockstep with the pet VM role
+# (infra ansible/roles/screener_worker/defaults) so pet and fleet return the
+# SAME verdict for the same submission. build_timeout matches the platform
+# screening lease (45m); the worker clamps every stage to the remaining lease
+# and re-queues as retryable if it runs out, and source review runs
+# concurrently with build/serve (ditto-screener#20), so these are upper bounds,
+# never a floor that rejects a legitimately-slow build the pet would accept.
+SCREENER_BUILD_TIMEOUT_SECONDS=2700
 SCREENER_RUN_TIMEOUT_SECONDS=120
 SCREENER_BUILD_MEMORY=2g
 SCREENER_PIDS_LIMIT=512
