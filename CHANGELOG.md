@@ -2,6 +2,53 @@
 
 <!-- version list -->
 
+## v0.6.0 (2026-07-16)
+
+### Bug Fixes
+
+- Address CI + CodeRabbit review on #14
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+- **bake**: Correct packer auth/args, validated by a real bake + canary
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+- **fleet**: Address P0/P1 review blockers
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+- **screener**: Install IMDS guard from the updater so the pet VM is covered
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+### Chores
+
+- Align fleet build timeout with the pet VM (45m lease)
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+### Documentation
+
+- **screener**: Lease expiry is 45m (raised by infra #28)
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+### Features
+
+- Self-bootstrapping fleet instances + label-driven deploys
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+- **fleet**: Golden-image bake mode + packer pipeline
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+- **screener**: Autoscaled fleet bootstrap, golden image, and IMDS metadata guard
+  ([#14](https://github.com/ditto-assistant/ditto-screener/pull/14),
+  [`7e0508b`](https://github.com/ditto-assistant/ditto-screener/commit/7e0508b56b1a2d06bafb8189f385c784fbfea748))
+
+
 ## v0.5.6 (2026-07-16)
 
 ### Performance Improvements
