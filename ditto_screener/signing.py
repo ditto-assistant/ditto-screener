@@ -93,6 +93,7 @@ def heartbeat_signing_message(
     policy_version: int,
     state: str,
     active_agent_id: UUID | None,
+    instance_id: str | None = None,
     progress: ScreenerProgress | None = None,
     system_metrics: SystemMetrics | None,
     timestamp: int,
@@ -105,6 +106,20 @@ def heartbeat_signing_message(
             "ditto-screener-heartbeat:v1:"
             f"{screener_hotkey}:{software_version}:{protocol_version}:{policy_version}:"
             f"{state}:{active_agent_id or ''}:"
+            f"{system_metrics_signing_token(system_metrics)}:{timestamp}"
+        ).encode()
+    if protocol_version >= 3:
+        # v3 adds the per-instance identity so the fleet's shared hotkey no
+        # longer collapses every worker into one heartbeat row. instance_id is
+        # signed to keep it non-spoofable; it never contains ':' (the field
+        # delimiter) — see ScreenerHeartbeatRequest's pattern.
+        if not instance_id:
+            raise ValueError("heartbeat protocol v3 requires an instance_id")
+        return (
+            "ditto-screener-heartbeat:v3:"
+            f"{screener_hotkey}:{software_version}:{protocol_version}:{policy_version}:"
+            f"{state}:{active_agent_id or ''}:{instance_id}:"
+            f"{screener_progress_signing_token(progress)}:"
             f"{system_metrics_signing_token(system_metrics)}:{timestamp}"
         ).encode()
     return (
@@ -125,6 +140,7 @@ def sign_heartbeat(
     policy_version: int,
     state: str,
     active_agent_id: UUID | None,
+    instance_id: str | None = None,
     progress: ScreenerProgress | None = None,
     system_metrics: SystemMetrics | None,
     timestamp: int,
@@ -136,6 +152,7 @@ def sign_heartbeat(
         policy_version=policy_version,
         state=state,
         active_agent_id=active_agent_id,
+        instance_id=instance_id,
         progress=progress,
         system_metrics=system_metrics,
         timestamp=timestamp,
