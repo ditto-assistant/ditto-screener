@@ -1185,10 +1185,17 @@ sys.stdout.buffer.write(output)
     ) -> None:
         """Best-effort removal of the container + image; never raises."""
         try:
-            await self._run(["rm", "-f", container], timeout=30.0)
-            await self._run(["rm", "-f", gateway_container], timeout=30.0)
-            await self._run(["network", "rm", network], timeout=30.0)
-            await self._run(["rmi", "-f", tag], timeout=30.0)
+            # Both containers can be removed concurrently; the network can
+            # only go once its endpoints are gone, and the image untag is
+            # independent of the network.
+            await asyncio.gather(
+                self._run(["rm", "-f", container], timeout=30.0),
+                self._run(["rm", "-f", gateway_container], timeout=30.0),
+            )
+            await asyncio.gather(
+                self._run(["network", "rm", network], timeout=30.0),
+                self._run(["rmi", "-f", tag], timeout=30.0),
+            )
         except Exception:  # noqa: BLE001 - teardown must never mask a result
             logger.warning("teardown issue for %s / %s", container, tag, exc_info=True)
 
