@@ -1,13 +1,50 @@
 # Production deployment
 
-Production runs as the `ditto-screener` systemd unit on the isolated
-`ditto-screener-prod` VM. GitHub Actions authenticates to GCP with Workload
-Identity Federation, copies the updater over IAP, and deploys the exact tested
-commit. The updater keeps the old process running through fetch and dependency
-sync, installs the repository-owned systemd unit, restarts only after the
-checkout is ready, verifies three consecutive systemd plus authenticated
-read-only policy preflight checks, and rolls back both the code and unit if the
-new process is not healthy.
+Production runs as the `ditto-screener` systemd unit on isolated GCE VMs: the
+long-lived `ditto-screener-prod` host plus any instances of the autoscaled
+screener fleet (a managed instance group sized by screening-queue depth; see
+the infra repository's `docs/screener-scaling.md`). GitHub Actions
+authenticates to GCP with Workload Identity Federation, discovers every
+production screener by label (`env=prod`, `role=screener` or
+`role=screener-fleet`), copies the updater over IAP, and deploys the exact
+tested commit to each. The updater keeps the old process running through fetch
+and dependency sync, installs the repository-owned systemd unit, restarts only
+after the checkout is ready, verifies three consecutive systemd plus
+authenticated read-only policy preflight checks, and rolls back both the code
+and unit if the new process is not healthy. Instances younger than 15 minutes
+are skipped: they are still executing first-boot bootstrap and converge to
+`origin/main` on their own, and the five-minute scheduled run then brings them
+to the exact deployed commit.
+
+## Fleet instance bootstrap
+
+Autoscaled instances provision themselves with zero manual steps. The GCE
+instance template's startup script (owned by the infra repository) fetches the
+read-only repository deploy key from Secret Manager, clones this repository,
+and executes `scripts/bootstrap-screener.sh`, which:
+
+1. installs Docker, uv, and the `deploy` service user, mirroring the pet VM's
+   layout exactly (`/opt/ditto/screener`, `deploy:ditto`, protected
+   `screener.env`);
+2. materializes the worker secrets from Secret Manager — the shared screener
+   hotkey mnemonic and platform bearer token (values never appear in logs or
+   instance metadata);
+3. hands off to `scripts/update-screener.sh` pinned to the checkout's HEAD, so
+   first boot passes the same health verification as every subsequent deploy.
+
+Every fleet instance shares the single allowlisted screener identity (hotkey,
+sr25519 signing key, bearer token). The platform's lease claims are safe under
+concurrency (`SKIP LOCKED` row claims, one running attempt per submission,
+45-minute lease expiry), so a fleet drains the queue without coordination. The
+known limitation is the fleet heartbeat: the platform keys heartbeats by
+hotkey, so N workers collapse into one `/screeners` row until the platform
+grows a per-worker identity dimension.
+
+Scale-in note: instance deletion grants only ~90 seconds of shutdown, so an
+in-flight build on a scaled-in instance is killed rather than drained
+(`TimeoutStopSec` applies to operator stops, not GCE deletions). The platform
+re-queues the interrupted submission when its lease expires; the autoscaler is
+configured to scale in at most one instance per 20 minutes to bound this.
 
 ## Required GitHub secrets
 
@@ -16,7 +53,10 @@ Repository or `prod` environment secrets:
 - `GCP_WIF_PROVIDER`: Workload Identity Provider resource name. Trust only this
   private repository and its `prod` environment.
 - `GCP_SCREENER_DEPLOY_SA`: dedicated deploy service-account email. Grant only
-  IAP tunnel, instance lookup, and SSH access to `ditto-screener-prod`.
+  IAP tunnel, instance listing/lookup, and SSH access to the production
+  screener instances (the fleet's instances are ephemeral, so these are
+  project-level `compute.viewer`, `iap.tunnelResourceAccessor`, and
+  `compute.osAdminLogin` rather than per-instance grants).
 - `RELEASE_TOKEN`: fine-grained token or GitHub App token scoped only to this
   repository's contents, used for semantic-release commits, tags, and releases.
 

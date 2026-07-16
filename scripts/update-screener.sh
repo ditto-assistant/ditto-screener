@@ -21,13 +21,106 @@ unit_source="$checkout/deploy/ditto-screener.service"
 unit_file="/etc/systemd/system/${SCREENER_UNIT}.service"
 gc_state_dir="$SCREENER_ROOT/state"
 gc_marker="$gc_state_dir/last-cache-gc"
+# SHA the currently-active, health-verified process is running. Written ONLY
+# after a restart passes health + the post-restart SHA check, so it is proof of
+# what is RUNNING — unlike git HEAD, which a run interrupted between `reset` and
+# a healthy restart leaves pointing at a not-yet-running commit.
+deployed_marker="$gc_state_dir/deployed-sha"
 secret_dir="$SCREENER_ROOT/secrets"
 source_review_key="$secret_dir/source-review-openrouter.key"
+lock_file="$(dirname "$SCREENER_ROOT")/.screener-deploy.lock"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "update-screener.sh must run as root" >&2
   exit 1
 fi
+
+# Serialize deploys against first-boot bootstrap and other deploy runs: both
+# mutate the same checkout / env / unit. bootstrap-screener.sh holds this lock
+# across its whole body and exports SCREENER_DEPLOY_LOCK_HELD=1 when it invokes
+# this script, so we don't re-lock (and deadlock) inside it.
+if [[ "${SCREENER_DEPLOY_LOCK_HELD:-}" != "1" ]]; then
+  exec {lock_fd}>"$lock_file"
+  if ! flock -w 2400 "$lock_fd"; then
+    echo "could not acquire deploy lock ($lock_file) within 40m" >&2
+    exit 1
+  fi
+fi
+
+ensure_enabled() {
+  # First boot restarts the unit but a reboot then short-circuits on the
+  # bootstrap marker, so the unit must be ENABLED to come back after a reboot.
+  systemctl is-enabled --quiet "$SCREENER_UNIT" 2>/dev/null \
+    || systemctl enable "$SCREENER_UNIT" >/dev/null
+}
+
+record_deployed_sha() {
+  mkdir -p "$gc_state_dir"
+  printf '%s\n' "$1" >"$deployed_marker"
+}
+
+ensure_imds_guard() {
+  # Block the GCE metadata server (169.254.169.254) from Docker container/build
+  # networks. A submission-controlled Dockerfile builds and runs with network
+  # access; left open, a hostile RUN step mints the VM's attached-SA token (the
+  # shared platform runtime SA) and reads platform/validator secrets. Container
+  # and build traffic to metadata traverses the FORWARD path (DOCKER-USER chain);
+  # the host's own gcloud uses OUTPUT and is unaffected.
+  #
+  # bootstrap-screener.sh installs the same guard at fleet first boot; running it
+  # here too means every deploy re-ensures it on the pet VM (hand-provisioned,
+  # never ran bootstrap) and self-heals any instance where it drifted. Idempotent
+  # and file-diff gated so a no-op deploy neither reloads systemd nor restarts the
+  # worker — no downtime. Docker requires iptables, so it is always present here.
+  local guard_bin=/usr/local/sbin/ditto-imds-guard
+  local guard_unit=/etc/systemd/system/ditto-imds-guard.service
+  local tmp changed=0
+  tmp="$(mktemp)"
+  cat >"$tmp" <<'GUARD'
+#!/usr/bin/env bash
+set -euo pipefail
+# DOCKER-USER is created by dockerd; ensure it exists before inserting.
+iptables -N DOCKER-USER 2>/dev/null || true
+# Idempotent: drop any prior copy, then insert at the top of the chain.
+while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
+iptables -I DOCKER-USER 1 -d 169.254.169.254/32 -j DROP
+GUARD
+  if ! cmp -s "$tmp" "$guard_bin"; then
+    install -m 0755 "$tmp" "$guard_bin"
+    changed=1
+  fi
+  rm -f "$tmp"
+  tmp="$(mktemp)"
+  cat >"$tmp" <<'UNIT'
+[Unit]
+Description=Block cloud metadata (IMDS) from Docker container/build networks
+After=docker.service
+Wants=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ditto-imds-guard
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  if ! cmp -s "$tmp" "$guard_unit"; then
+    install -m 0644 "$tmp" "$guard_unit"
+    changed=1
+  fi
+  rm -f "$tmp"
+  if [[ "$changed" -eq 1 ]]; then
+    systemctl daemon-reload
+  fi
+  systemctl is-enabled --quiet ditto-imds-guard.service 2>/dev/null \
+    || systemctl enable ditto-imds-guard.service >/dev/null
+  # Applying the rule is the security control: fail the deploy if it cannot be
+  # installed rather than run a worker exposed to metadata exfil. A no-op on an
+  # already-active oneshot (RemainAfterExit) does not re-run ExecStart.
+  systemctl start ditto-imds-guard.service
+}
 
 for path in "$checkout/.git" "$env_file" "$SCREENER_UV_BIN"; do
   if [[ ! -e "$path" ]]; then
@@ -196,9 +289,21 @@ fi
 # rotation does not require an unrelated code change.
 materialize_source_review_key
 
-if [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
+# Ensure the metadata guard before any path that could (re)start the worker or
+# leave it running — runs on both the fast path and a full deploy so a pet VM
+# that never had it, or an instance where it drifted, is protected every deploy.
+ensure_imds_guard
+
+deployed_sha=""
+[[ -f "$deployed_marker" ]] && deployed_sha="$(cat "$deployed_marker")"
+# Fast path gates on the RUNNING-verified SHA (marker), not git HEAD: a prior
+# run that reset HEAD to the new SHA but died before a healthy restart must not
+# be reported as deployed just because HEAD matches and the OLD process is up.
+if [[ -n "$deployed_sha" ]] && [[ "$deployed_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
+  [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
   systemctl is-active --quiet "$SCREENER_UNIT"; then
   probe_platform
+  ensure_enabled
   maintain_daemon_config
   maintain_cache
   maintain_logs
@@ -246,6 +351,7 @@ trap cleanup EXIT
 
 install -o root -g root -m 0644 "$unit_source" "$unit_file"
 systemctl daemon-reload
+ensure_enabled
 
 systemctl restart "$SCREENER_UNIT"
 if ! wait_for_health; then
@@ -269,6 +375,9 @@ if [[ "$actual_sha" != "$SCREENER_EXPECTED_SHA" ]]; then
   echo "healthy process is at unexpected commit $actual_sha" >&2
   exit 1
 fi
+# Only now is the new SHA proven running + healthy: record it so the next run's
+# fast path can trust it (and so an interrupted future run cannot be misread).
+record_deployed_sha "$actual_sha"
 maintain_daemon_config
 maintain_cache
 maintain_logs

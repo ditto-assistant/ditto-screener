@@ -15,18 +15,23 @@ concurrency:
   group: deploy-production-screener
   cancel-in-progress: false
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: prod
-    env:
-      GCP_PROJECT: ditto-app-dev
-      GCP_ZONE: us-central1-c
-      SCREENER_VM: ditto-screener-prod
-    steps:
-      - uses: actions/checkout@v4
+env:
+  GCP_PROJECT: ditto-app-dev
 
+jobs:
+  # Production screeners are discovered by label, not by name: the pet VM
+  # (role=screener) and every autoscaled fleet instance (role=screener-fleet)
+  # take the same exact-commit update. Instances younger than 15 minutes are
+  # skipped — they are still running first-boot bootstrap (which converges them
+  # to origin/main and holds the deploy lock) and the next scheduled run picks
+  # them up.
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: prod
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
       - name: Verify deploy configuration
         env:
           WIF: ${{ secrets.GCP_WIF_PROVIDER }}
@@ -42,19 +47,58 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Copy updater to the isolated VM
+      - name: Discover production screener instances
+        id: list
         run: |
-          gcloud compute scp scripts/update-screener.sh "$SCREENER_VM:/tmp/update-screener.sh" \
+          cutoff="$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+          # zone.basename() normalizes the resource-URI zone projection to the
+          # bare zone name that --zone expects.
+          gcloud compute instances list \
             --project "$GCP_PROJECT" \
-            --zone "$GCP_ZONE" \
-            --tunnel-through-iap \
-            --quiet
+            --filter="status=RUNNING AND labels.env=prod AND (labels.role=screener OR labels.role=screener-fleet) AND creationTimestamp<'$cutoff'" \
+            --format="csv[no-heading](name,zone.basename())" >instances.csv
+          echo "deploy targets:"
+          cat instances.csv
+          if [[ ! -s instances.csv ]]; then
+            echo "no eligible production screener instances found" >&2
+            exit 1
+          fi
+          # Emit a matrix so every instance deploys in parallel: the job's
+          # wall-clock becomes the slowest single host (one systemd stop can wait
+          # TimeoutStopSec=35min) instead of the sum across a growing fleet.
+          include="$(awk -F, 'NF>=2 && $1!="" {printf "%s{\"name\":\"%s\",\"zone\":\"%s\"}", sep, $1, $2; sep=","}' instances.csv)"
+          echo "matrix={\"include\":[$include]}" >>"$GITHUB_OUTPUT"
 
-      - name: Deploy exact commit, verify, and maintain cache
+  deploy:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: prod
+    strategy:
+      # Independent per-instance deploys: one host failing must not abandon the
+      # rest, and each reports its own resulting SHA in its job log.
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SCREENER_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy exact commit to ${{ matrix.name }} (${{ matrix.zone }})
         run: |
-          gcloud compute ssh "$SCREENER_VM" \
-            --project "$GCP_PROJECT" \
-            --zone "$GCP_ZONE" \
-            --tunnel-through-iap \
-            --quiet \
+          name='${{ matrix.name }}'
+          zone='${{ matrix.zone }}'
+          echo "::group::${name} (${zone})"
+          gcloud compute scp scripts/update-screener.sh "${name}:/tmp/update-screener.sh" \
+            --project "$GCP_PROJECT" --zone "$zone" --tunnel-through-iap --quiet
+          gcloud compute ssh "$name" \
+            --project "$GCP_PROJECT" --zone "$zone" --tunnel-through-iap --quiet \
             --command "sudo chmod 700 /tmp/update-screener.sh; sudo SCREENER_EXPECTED_SHA=${{ github.sha }} /tmp/update-screener.sh; rc=\$?; sudo rm -f /tmp/update-screener.sh; exit \$rc"
+          echo "::endgroup::"
+          echo "deployed ${{ github.sha }} to ${name}"

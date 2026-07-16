@@ -66,9 +66,10 @@ class ScreenerConfig:
     """``docker run --memory`` limit for the serve-smoke container (e.g. ``2g``)."""
 
     gh_token_file: str | None
-    """Path to a file holding a GitHub read token, mounted as the BuildKit
-    ``gh_token`` secret so a crate that pulls the private ``ditto-harness`` dep
-    builds (same token dittobench uses). ``None`` = plain build (public deps)."""
+    """Deprecated / retained for config compatibility only. It was the BuildKit
+    ``gh_token`` secret for the once-private ``ditto-harness`` dep; that repo is
+    now public, and mounting any credential into a submission-controlled build is
+    an exfiltration vector, so ``_build`` no longer consumes this. Leave unset."""
 
     pids_limit: int
     """``docker run --pids-limit`` for the smoke container."""
