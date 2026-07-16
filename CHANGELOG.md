@@ -2,6 +2,33 @@
 
 <!-- version list -->
 
+## v0.5.6 (2026-07-16)
+
+### Performance Improvements
+
+- Retain 40GB of build cache and parallelize container teardown
+  ([#21](https://github.com/ditto-assistant/ditto-screener/pull/21),
+  [`c3e8948`](https://github.com/ditto-assistant/ditto-screener/commit/c3e89482a05dfebd24db42b28ddb1b062c400a7c))
+
+- Run the source review concurrently with build, serve, and oracle
+  ([#20](https://github.com/ditto-assistant/ditto-screener/pull/20),
+  [`41653fc`](https://github.com/ditto-assistant/ditto-screener/commit/41653fceff9951d5d37131ac5fc6470f9b51e6f4))
+
+
+## v0.5.5 (2026-07-15)
+
+### Bug Fixes
+
+- Send a contract-complete RunRequest from the behavioral oracle
+  ([#18](https://github.com/ditto-assistant/ditto-screener/pull/18),
+  [`2d53c89`](https://github.com/ditto-assistant/ditto-screener/commit/2d53c898c414aabdc41598b8583cb74dec5c97d1))
+
+### Code Style
+
+- Ruff format ([#18](https://github.com/ditto-assistant/ditto-screener/pull/18),
+  [`2d53c89`](https://github.com/ditto-assistant/ditto-screener/commit/2d53c898c414aabdc41598b8583cb74dec5c97d1))
+
+
 ## v0.5.4 (2026-07-15)
 
 ### Bug Fixes

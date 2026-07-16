@@ -106,9 +106,13 @@ Disk is bounded by two cooperating layers:
 
 1. **Docker daemon builder GC** (`deploy/daemon.json`, installed by the
    updater; Docker restarts only when the file changes): BuildKit enforces the
-   12 GB cache budget continuously, per build, so a heavy screening burst (for
+   40 GB cache budget continuously, per build, so a heavy screening burst (for
    example a policy-rescreen wave that rebuilds every submission in a day)
-   cannot outrun the scheduled pass.
+   cannot outrun the scheduled pass. The budget is sized so that identical
+   resubmissions and requeued re-screens keep hitting the layer cache
+   (sub-second rebuilds) across at least a day of throughput: at 12 GB the
+   cache sat pinned at its cap and evicted layers faster than the platform's
+   ~45-minute re-screen cycle brought the same source back.
 2. **Updater backstop**: every scheduled run (five minutes) performs bounded
    garbage collection at most once per hour — `docker builder prune
    --keep-storage` with NO age filter (an age filter exempts exactly the
