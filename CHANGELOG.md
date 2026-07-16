@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.7.0 (2026-07-16)
+
+### Features
+
+- **heartbeat**: Sign a per-instance id (protocol v3)
+  ([#22](https://github.com/ditto-assistant/ditto-screener/pull/22),
+  [`bf1f8ff`](https://github.com/ditto-assistant/ditto-screener/commit/bf1f8ff476af7cf8037c9491d8f5f9750addb25e))
+
+
 ## v0.6.0 (2026-07-16)
 
 ### Bug Fixes
