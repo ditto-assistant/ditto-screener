@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
+import socket
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -49,7 +51,21 @@ logger = logging.getLogger(__name__)
 
 EXACT_CROSS_MINER_DUPLICATE = "exact-cross-miner-duplicate"
 
-_HEARTBEAT_PROTOCOL_VERSION = 2
+_HEARTBEAT_PROTOCOL_VERSION = 3
+
+
+def _resolve_instance_id() -> str:
+    """Stable per-worker id for the heartbeat (the fleet shares one hotkey).
+
+    On GCE ``gethostname()`` is the instance name (``ditto-screener-prod``,
+    ``ditto-screener-fleet-xxxx``). Sanitized to the signed instance_id charset
+    (no ':', <=63 chars) so an odd hostname can never break the signing message.
+    """
+    label = (socket.gethostname() or "screener").split(".", 1)[0]
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]", "-", label)[:63].strip("-")
+    return cleaned or "screener"
+
+
 _HEARTBEAT_MIN_INTERVAL_SECONDS = 120.0
 _ACTIVE_HEARTBEAT_SECONDS = 120.0
 # Slice of the lease reserved for signing and POSTing the verdict once screening
@@ -76,6 +92,7 @@ class ScreenerWorker:
         self._gate = gate
         self._keypair = keypair
         self._system_metrics = system_metrics
+        self._instance_id = _resolve_instance_id()
         self._active_agent_id: UUID | None = None
         self._active_progress_stage: ScreenerProgressStage | None = None
         self._job_started_at: int | None = None
@@ -174,6 +191,7 @@ class ScreenerWorker:
                 policy_version=SCREENING_POLICY_VERSION,
                 state=state,
                 active_agent_id=self._active_agent_id,
+                instance_id=self._instance_id,
                 progress=progress,
                 system_metrics=metrics,
                 timestamp=timestamp,
@@ -185,6 +203,7 @@ class ScreenerWorker:
                 policy_version=SCREENING_POLICY_VERSION,
                 state=state,
                 active_agent_id=self._active_agent_id,
+                instance_id=self._instance_id,
                 progress=progress,
                 system_metrics=metrics,
                 timestamp=timestamp,

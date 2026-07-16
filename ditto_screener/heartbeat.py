@@ -51,6 +51,9 @@ _SOURCE_REVIEW_PROGRESS_STAGES: tuple[ScreenerProgressStage, ...] = (
 _SS58_PATTERN = r"^[1-9A-HJ-NP-Za-km-z]{47,48}$"
 _SIGNATURE_HEX_PATTERN = r"^[0-9a-fA-F]{128}$"
 _SOFTWARE_VERSION_PATTERN = r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$"
+# Per-instance identity (v3). Excludes ':' so it can never break the
+# colon-delimited heartbeat signing message. GCE hostnames fit RFC1035.
+_INSTANCE_ID_PATTERN = r"^[a-zA-Z0-9._-]{1,63}$"
 _SYSTEM_METRICS_SAMPLE_SECONDS = 120.0
 
 
@@ -110,10 +113,17 @@ class ScreenerHeartbeatRequest(BaseModel):
     policy_version: Annotated[int, Field(ge=1, le=2**31 - 1)]
     state: ScreenerRuntimeState
     active_agent_id: UUID | None = None
+    instance_id: Annotated[str, Field(pattern=_INSTANCE_ID_PATTERN)] | None = None
     progress: ScreenerProgress | None = None
     system_metrics: SystemMetrics | None = None
     timestamp: Annotated[int, Field(ge=0)]
     signature: Annotated[str, Field(pattern=_SIGNATURE_HEX_PATTERN)]
+
+    @model_validator(mode="after")
+    def validate_instance_id(self) -> ScreenerHeartbeatRequest:
+        if self.protocol_version >= 3 and not self.instance_id:
+            raise ValueError("heartbeat protocol v3 requires an instance_id")
+        return self
 
     @model_validator(mode="after")
     def validate_progress(self) -> ScreenerHeartbeatRequest:
