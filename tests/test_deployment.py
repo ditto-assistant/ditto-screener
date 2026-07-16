@@ -108,16 +108,12 @@ def test_imds_guard_preserves_gce_dns_before_dropping_metadata() -> None:
         guard = script[guard_start:guard_end]
 
         udp_dns = guard.index(
-            "-A DITTO-IMDS-GUARD -p udp -d 169.254.169.254/32 "
-            "--dport 53 -j ACCEPT"
+            "-A DITTO-IMDS-GUARD -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT"
         )
         tcp_dns = guard.index(
-            "-A DITTO-IMDS-GUARD -p tcp -d 169.254.169.254/32 "
-            "--dport 53 -j ACCEPT"
+            "-A DITTO-IMDS-GUARD -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT"
         )
-        metadata_drop = guard.index(
-            "-A DITTO-IMDS-GUARD -d 169.254.169.254/32 -j DROP"
-        )
+        metadata_drop = guard.index("-A DITTO-IMDS-GUARD -d 169.254.169.254/32 -j DROP")
 
         assert udp_dns < metadata_drop
         assert tcp_dns < metadata_drop
