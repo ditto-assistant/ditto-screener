@@ -59,6 +59,69 @@ record_deployed_sha() {
   printf '%s\n' "$1" >"$deployed_marker"
 }
 
+ensure_imds_guard() {
+  # Block the GCE metadata server (169.254.169.254) from Docker container/build
+  # networks. A submission-controlled Dockerfile builds and runs with network
+  # access; left open, a hostile RUN step mints the VM's attached-SA token (the
+  # shared platform runtime SA) and reads platform/validator secrets. Container
+  # and build traffic to metadata traverses the FORWARD path (DOCKER-USER chain);
+  # the host's own gcloud uses OUTPUT and is unaffected.
+  #
+  # bootstrap-screener.sh installs the same guard at fleet first boot; running it
+  # here too means every deploy re-ensures it on the pet VM (hand-provisioned,
+  # never ran bootstrap) and self-heals any instance where it drifted. Idempotent
+  # and file-diff gated so a no-op deploy neither reloads systemd nor restarts the
+  # worker — no downtime. Docker requires iptables, so it is always present here.
+  local guard_bin=/usr/local/sbin/ditto-imds-guard
+  local guard_unit=/etc/systemd/system/ditto-imds-guard.service
+  local tmp changed=0
+  tmp="$(mktemp)"
+  cat >"$tmp" <<'GUARD'
+#!/usr/bin/env bash
+set -euo pipefail
+# DOCKER-USER is created by dockerd; ensure it exists before inserting.
+iptables -N DOCKER-USER 2>/dev/null || true
+# Idempotent: drop any prior copy, then insert at the top of the chain.
+while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
+iptables -I DOCKER-USER 1 -d 169.254.169.254/32 -j DROP
+GUARD
+  if ! cmp -s "$tmp" "$guard_bin"; then
+    install -m 0755 "$tmp" "$guard_bin"
+    changed=1
+  fi
+  rm -f "$tmp"
+  tmp="$(mktemp)"
+  cat >"$tmp" <<'UNIT'
+[Unit]
+Description=Block cloud metadata (IMDS) from Docker container/build networks
+After=docker.service
+Wants=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ditto-imds-guard
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  if ! cmp -s "$tmp" "$guard_unit"; then
+    install -m 0644 "$tmp" "$guard_unit"
+    changed=1
+  fi
+  rm -f "$tmp"
+  if [[ "$changed" -eq 1 ]]; then
+    systemctl daemon-reload
+  fi
+  systemctl is-enabled --quiet ditto-imds-guard.service 2>/dev/null \
+    || systemctl enable ditto-imds-guard.service >/dev/null
+  # Applying the rule is the security control: fail the deploy if it cannot be
+  # installed rather than run a worker exposed to metadata exfil. A no-op on an
+  # already-active oneshot (RemainAfterExit) does not re-run ExecStart.
+  systemctl start ditto-imds-guard.service
+}
+
 for path in "$checkout/.git" "$env_file" "$SCREENER_UV_BIN"; do
   if [[ ! -e "$path" ]]; then
     echo "required screener deployment path is missing: $path" >&2
@@ -225,6 +288,11 @@ fi
 # Refresh the protected key on every scheduled deployment run so Secret Manager
 # rotation does not require an unrelated code change.
 materialize_source_review_key
+
+# Ensure the metadata guard before any path that could (re)start the worker or
+# leave it running — runs on both the fast path and a full deploy so a pet VM
+# that never had it, or an instance where it drifted, is protected every deploy.
+ensure_imds_guard
 
 deployed_sha=""
 [[ -f "$deployed_marker" ]] && deployed_sha="$(cat "$deployed_marker")"

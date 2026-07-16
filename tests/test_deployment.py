@@ -77,6 +77,23 @@ def test_bootstrap_blocks_metadata_and_mounts_no_build_credential() -> None:
     assert "--secret" not in gate
 
 
+def test_updater_ensures_the_metadata_guard_on_every_deploy() -> None:
+    # The pet VM was hand-provisioned and never ran bootstrap, so the guard has
+    # to be (re)installed by the updater — the one path that runs on both the pet
+    # and every fleet instance — or the pet keeps running exposed to metadata
+    # exfil. It must run before the fast-path early-exit so a no-op deploy still
+    # protects the host.
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+
+    assert "169.254.169.254" in updater
+    assert "DOCKER-USER" in updater
+    assert "ensure_imds_guard" in updater
+
+    guard_call = updater.index("\nensure_imds_guard\n")
+    fast_path = updater.index('echo "healthy: $SCREENER_UNIT already at')
+    assert guard_call < fast_path
+
+
 def test_bootstrap_bake_mode_provisions_before_any_secret() -> None:
     bootstrap = (ROOT / "scripts" / "bootstrap-screener.sh").read_text()
 
