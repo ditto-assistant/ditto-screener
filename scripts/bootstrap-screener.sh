@@ -98,14 +98,15 @@ if ! command -v docker >/dev/null; then
 fi
 systemctl enable --now docker
 
-# --- Metadata (IMDS) guard: block 169.254.169.254 from container/build networks
+# --- Metadata (IMDS) guard: block metadata API, preserve GCE DNS -------------
 # A submission-controlled Dockerfile builds and runs with network access. Left
 # open, a hostile RUN step reaches the GCE metadata server and mints the VM's
 # attached-SA token (the shared platform runtime SA), which can read platform /
 # validator secrets and administer agent objects. Docker container/build traffic
 # to the metadata IP traverses the FORWARD path (the DOCKER-USER chain), while
-# the host's own gcloud uses OUTPUT — so dropping metadata in DOCKER-USER blocks
-# every container and build without touching the host's Secret Manager access.
+# the host's own gcloud uses OUTPUT. GCE also advertises the same IP as the VM's
+# DNS resolver, so the guard must allow TCP/UDP 53 before dropping other traffic
+# or every clean Docker build loses DNS.
 # Installed as a oneshot that re-applies after docker/iptables restarts + reboot.
 apt-get install -y -qq iptables
 install -m 0755 /dev/stdin /usr/local/sbin/ditto-imds-guard <<'GUARD'
@@ -113,9 +114,17 @@ install -m 0755 /dev/stdin /usr/local/sbin/ditto-imds-guard <<'GUARD'
 set -euo pipefail
 # DOCKER-USER is created by dockerd; ensure it exists before inserting.
 iptables -N DOCKER-USER 2>/dev/null || true
-# Idempotent: drop any prior copy, then insert at the top of the chain.
+# Remove the legacy broad drop, which also blocked GCE's DNS service.
 while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
-iptables -I DOCKER-USER 1 -d 169.254.169.254/32 -j DROP
+# Keep the policy in a dedicated chain so DNS exceptions precede the metadata
+# drop unambiguously and can be replaced atomically on every deploy.
+iptables -N DITTO-IMDS-GUARD 2>/dev/null || true
+iptables -F DITTO-IMDS-GUARD
+iptables -A DITTO-IMDS-GUARD -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT
+iptables -A DITTO-IMDS-GUARD -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT
+iptables -A DITTO-IMDS-GUARD -d 169.254.169.254/32 -j DROP
+while iptables -D DOCKER-USER -j DITTO-IMDS-GUARD 2>/dev/null; do :; done
+iptables -I DOCKER-USER 1 -j DITTO-IMDS-GUARD
 GUARD
 cat >/etc/systemd/system/ditto-imds-guard.service <<'UNIT'
 [Unit]

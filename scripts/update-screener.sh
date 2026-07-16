@@ -13,6 +13,7 @@ SCREENER_CACHE_GC_INTERVAL_SECONDS="${SCREENER_CACHE_GC_INTERVAL_SECONDS:-3600}"
 SCREENER_CACHE_KEEP_STORAGE="${SCREENER_CACHE_KEEP_STORAGE:-40GB}"
 SCREENER_GCP_PROJECT="${SCREENER_GCP_PROJECT:-ditto-app-dev}"
 SCREENER_SOURCE_REVIEW_SECRET_ID="${SCREENER_SOURCE_REVIEW_SECRET_ID:-validator-openrouter-key}"
+SCREENER_DNS_PROBE_IMAGE="${SCREENER_DNS_PROBE_IMAGE:-python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df}"
 
 checkout="$SCREENER_ROOT/src"
 venv="$checkout/.venv"
@@ -65,7 +66,8 @@ ensure_imds_guard() {
   # access; left open, a hostile RUN step mints the VM's attached-SA token (the
   # shared platform runtime SA) and reads platform/validator secrets. Container
   # and build traffic to metadata traverses the FORWARD path (DOCKER-USER chain);
-  # the host's own gcloud uses OUTPUT and is unaffected.
+  # the host's own gcloud uses OUTPUT and is unaffected. GCE also uses the same
+  # IP as the VM's DNS resolver, so TCP/UDP 53 must remain reachable from Docker.
   #
   # bootstrap-screener.sh installs the same guard at fleet first boot; running it
   # here too means every deploy re-ensures it on the pet VM (hand-provisioned,
@@ -81,9 +83,17 @@ ensure_imds_guard() {
 set -euo pipefail
 # DOCKER-USER is created by dockerd; ensure it exists before inserting.
 iptables -N DOCKER-USER 2>/dev/null || true
-# Idempotent: drop any prior copy, then insert at the top of the chain.
+# Remove the legacy broad drop, which also blocked GCE's DNS service.
 while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
-iptables -I DOCKER-USER 1 -d 169.254.169.254/32 -j DROP
+# Keep the policy in a dedicated chain so DNS exceptions precede the metadata
+# drop unambiguously and can be replaced atomically on every deploy.
+iptables -N DITTO-IMDS-GUARD 2>/dev/null || true
+iptables -F DITTO-IMDS-GUARD
+iptables -A DITTO-IMDS-GUARD -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT
+iptables -A DITTO-IMDS-GUARD -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT
+iptables -A DITTO-IMDS-GUARD -d 169.254.169.254/32 -j DROP
+while iptables -D DOCKER-USER -j DITTO-IMDS-GUARD 2>/dev/null; do :; done
+iptables -I DOCKER-USER 1 -j DITTO-IMDS-GUARD
 GUARD
   if ! cmp -s "$tmp" "$guard_bin"; then
     install -m 0755 "$tmp" "$guard_bin"
@@ -120,6 +130,14 @@ UNIT
   # installed rather than run a worker exposed to metadata exfil. A no-op on an
   # already-active oneshot (RemainAfterExit) does not re-run ExecStart.
   systemctl start ditto-imds-guard.service
+}
+
+probe_docker_dns() {
+  # Pull resolution happens in dockerd's host namespace; getent then exercises
+  # the container/build FORWARD path that the IMDS guard controls. Keep the
+  # image digest in lockstep with ditto_screener.gate._CANARY_IMAGE.
+  docker run --rm --network bridge --entrypoint /bin/sh \
+    "$SCREENER_DNS_PROBE_IMAGE" -c 'getent hosts github.com >/dev/null'
 }
 
 for path in "$checkout/.git" "$env_file" "$SCREENER_UV_BIN"; do
@@ -293,6 +311,7 @@ materialize_source_review_key
 # leave it running — runs on both the fast path and a full deploy so a pet VM
 # that never had it, or an instance where it drifted, is protected every deploy.
 ensure_imds_guard
+probe_docker_dns
 
 deployed_sha=""
 [[ -f "$deployed_marker" ]] && deployed_sha="$(cat "$deployed_marker")"

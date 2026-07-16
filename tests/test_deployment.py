@@ -94,6 +94,48 @@ def test_updater_ensures_the_metadata_guard_on_every_deploy() -> None:
     assert guard_call < fast_path
 
 
+def test_imds_guard_preserves_gce_dns_before_dropping_metadata() -> None:
+    """The metadata IP is also the GCE VM's DNS resolver.
+
+    A broad DOCKER-USER drop caused every clean build to lose DNS. Both the
+    golden-image bootstrap and the pet/fleet updater must install the same
+    ordered policy: DNS first, all other metadata-server traffic second.
+    """
+    for script_name in ("bootstrap-screener.sh", "update-screener.sh"):
+        script = (ROOT / "scripts" / script_name).read_text()
+        guard_start = script.index("iptables -N DOCKER-USER")
+        guard_end = script.index("\nGUARD", guard_start)
+        guard = script[guard_start:guard_end]
+
+        udp_dns = guard.index(
+            "-A DITTO-IMDS-GUARD -p udp -d 169.254.169.254/32 "
+            "--dport 53 -j ACCEPT"
+        )
+        tcp_dns = guard.index(
+            "-A DITTO-IMDS-GUARD -p tcp -d 169.254.169.254/32 "
+            "--dport 53 -j ACCEPT"
+        )
+        metadata_drop = guard.index(
+            "-A DITTO-IMDS-GUARD -d 169.254.169.254/32 -j DROP"
+        )
+
+        assert udp_dns < metadata_drop
+        assert tcp_dns < metadata_drop
+        assert "-D DOCKER-USER -d 169.254.169.254/32 -j DROP" in guard
+        assert "-I DOCKER-USER 1 -j DITTO-IMDS-GUARD" in guard
+
+
+def test_updater_probes_dns_through_a_fresh_container_after_guarding_imds() -> None:
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+
+    assert "probe_docker_dns" in updater
+    assert "getent hosts github.com" in updater
+    guard_call = updater.index("\nensure_imds_guard\n")
+    probe_call = updater.index("\nprobe_docker_dns\n")
+    fast_path = updater.index('echo "healthy: $SCREENER_UNIT already at')
+    assert guard_call < probe_call < fast_path
+
+
 def test_bootstrap_bake_mode_provisions_before_any_secret() -> None:
     bootstrap = (ROOT / "scripts" / "bootstrap-screener.sh").read_text()
 
