@@ -35,7 +35,7 @@ and executes `scripts/bootstrap-screener.sh`, which:
 Every fleet instance shares the single allowlisted screener identity (hotkey,
 sr25519 signing key, bearer token). The platform's lease claims are safe under
 concurrency (`SKIP LOCKED` row claims, one running attempt per submission,
-30-minute lease expiry), so a fleet drains the queue without coordination. The
+45-minute lease expiry), so a fleet drains the queue without coordination. The
 known limitation is the fleet heartbeat: the platform keys heartbeats by
 hotkey, so N workers collapse into one `/screeners` row until the platform
 grows a per-worker identity dimension.
