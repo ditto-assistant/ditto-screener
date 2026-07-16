@@ -79,7 +79,10 @@ from ditto_screener.policy import (
     ScreeningOutcome,
     core_decision,
 )
-from ditto_screener.source_review import OpenRouterSourceReviewAgent
+from ditto_screener.source_review import (
+    OpenRouterSourceReviewAgent,
+    SourceReviewObservation,
+)
 
 if TYPE_CHECKING:
     from ditto_screener.config import ScreenerConfig
@@ -375,6 +378,7 @@ class BuildGate:
         gateway_state_dir = tempfile.mkdtemp(prefix="ditto-gateway-state-")
         os.chmod(gateway_state_dir, 0o755)
         tmp_path: str | None = None
+        review_task: asyncio.Task[SourceReviewObservation] | None = None
         try:
             report("downloading")
             if (exhausted := self._lease_exhausted(deadline, "download")) is not None:
@@ -411,6 +415,28 @@ class BuildGate:
                     detail=contract_error,
                 )
             source_digest, source_paths = self._source_metadata(tmp_path)
+
+            # The agentic source review reads only the validated tarball, so
+            # it can run CONCURRENTLY with the docker build + serve + oracle
+            # stages instead of serially after them (prod baseline: ~430s
+            # review after a ~214s build; overlapping removes the build from
+            # the critical path of every passing screen). Its per-percent
+            # progress is muted until the policy phase so heartbeat stages
+            # keep their sequential meaning for operators.
+            in_policy_phase = False
+
+            def report_review_progress(completed: int, total: int) -> None:
+                if in_policy_phase:
+                    report(source_review_progress_stage(completed, total))
+
+            review_task = asyncio.create_task(
+                self._source_reviewer.review(
+                    tmp_path,
+                    artifact_sha256=sha256.lower(),
+                    progress=report_review_progress,
+                    deadline=deadline,
+                )
+            )
 
             report("building")
             if (exhausted := self._lease_exhausted(deadline, "build")) is not None:
@@ -500,14 +526,9 @@ class BuildGate:
                 )
 
             async def review_source():  # type: ignore[no-untyped-def]
-                return await self._source_reviewer.review(
-                    tmp_path,
-                    artifact_sha256=sha256.lower(),
-                    progress=lambda completed, total: report(
-                        source_review_progress_stage(completed, total)
-                    ),
-                    deadline=deadline,
-                )
+                nonlocal in_policy_phase
+                in_policy_phase = True
+                return await review_task
 
             context = PolicyContext(
                 agent_id=agent_id,
@@ -540,6 +561,15 @@ class BuildGate:
                 detail=f"screener error: {type(e).__name__}: {e}",
             )
         finally:
+            if review_task is not None and not review_task.done():
+                # The run is over without needing the review (build failure,
+                # lease exhaustion, core reject): stop spending LLM tokens.
+                review_task.cancel()
+            if review_task is not None:
+                # Drain so a failed review never surfaces as "exception was
+                # never retrieved" noise after the decision is already made.
+                with contextlib.suppress(BaseException):
+                    await review_task
             await self._teardown(
                 container,
                 tag,
