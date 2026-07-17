@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.10.0 (2026-07-17)
+
+### Features
+
+- **screener**: Indistinguishable behavioral oracle + audit-detection review
+  ([#29](https://github.com/ditto-assistant/ditto-screener/pull/29),
+  [`529e061`](https://github.com/ditto-assistant/ditto-screener/commit/529e061a73730a0a8be874677031a15044ddd8c8))
+
+
 ## v0.9.2 (2026-07-17)
 
 ### Bug Fixes
