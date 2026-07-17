@@ -69,6 +69,9 @@ OpenRouter request. Tool output and step counts are bounded. The API key is read
 from the mode-0400 file named by `SCREENER_SOURCE_REVIEW_API_KEY_FILE`; it is
 never injected into a submitted container or written to the review journal.
 
+The source-review cheating boundary and operator evidence requirements are
+documented in [source-review-policy.md](source-review-policy.md).
+
 Source-review holds use public-safe risk-domain reason codes. Private-challenge
 risk, malicious-source risk, and exact-artifact originality risk are distinct;
 raw categories, paths, prompts, and evidence stay private. A source-safe exact

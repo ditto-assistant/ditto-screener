@@ -180,9 +180,10 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
         "data_collection": "deny",
         "require_parameters": True,
     }
-    assert (
-        "Public-benchmark optimization is allowed" in seen[0]["messages"][0]["content"]
-    )
+    prompt = seen[0]["messages"][0]["content"]
+    assert "Public availability is not a safe harbor" in prompt
+    assert observation.finding is not None
+    assert observation.finding["prompt_revision"] == "source-review-v4"
 
 
 async def test_synthetic_legitimate_patterns_clear_source_safety(
@@ -212,6 +213,40 @@ async def test_synthetic_legitimate_patterns_clear_source_safety(
         assert observation.ok and observation.risk_level == "low", case["name"]
 
 
+async def test_synthetic_prohibited_patterns_report_benchmark_emulation(
+    tmp_path: Path,
+) -> None:
+    cases = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )["prohibited"]
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+
+    for index, case in enumerate(cases):
+        final = {
+            "risk_level": "high",
+            "confidence": 0.95,
+            "categories": ["benchmark_emulation"],
+            "evidence": [
+                {
+                    "path": "src/lib.rs",
+                    "line": 1,
+                    "category": "benchmark_emulation",
+                }
+            ],
+            "summary": "Runtime benchmark fingerprint or deterministic shortcut.",
+        }
+        observation = await _agent(key, _transport(final, [])).review(
+            str(_archive(tmp_path, f"// synthetic case {index}\n{case['source']}")),
+            artifact_sha256=_SHA,
+        )
+        assert observation.ok and observation.risk_level == "high", case["name"]
+        assert observation.categories == ("benchmark_emulation",), case["name"]
+
+
 def test_regression_fixture_quantifies_the_tradeoff() -> None:
     replay = json.loads(
         (
@@ -226,6 +261,27 @@ def test_regression_fixture_quantifies_the_tradeoff() -> None:
         "new_source_safety_holds": 0,
         "new_originality_holds": 2,
     }
+
+
+def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )
+
+    legitimate = {case["name"] for case in fixture["legitimate"]}
+    prohibited = {case["name"] for case in fixture["prohibited"]}
+
+    assert "tuned-candidate-profiles-with-general-agent-path" in legitimate
+    assert prohibited == {
+        "exact-generator-token-fingerprint",
+        "deterministic-scored-family-solver",
+        "expected-answer-trained-runtime",
+        "grader-authoritative-answer-splice",
+        "audit-environment-fingerprint",
+    }
+    assert legitimate.isdisjoint(prohibited)
 
 
 def test_exact_official_provenance_does_not_whitelist_derivatives(

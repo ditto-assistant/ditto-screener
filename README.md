@@ -74,5 +74,7 @@ Required values are supplied through the production host's protected
   `openai/gpt-5.6-luna`.
 
 See [docs/policy-modules.md](docs/policy-modules.md) for the private module
-boundary and [docs/deployment.md](docs/deployment.md) for deployment secrets,
-health checks, cache maintenance, and the compatible rollout sequence.
+boundary, [docs/source-review-policy.md](docs/source-review-policy.md) for the
+allowed-optimization and benchmark-emulation boundary, and
+[docs/deployment.md](docs/deployment.md) for deployment secrets, health checks,
+cache maintenance, and the compatible rollout sequence.

@@ -185,6 +185,7 @@ async def test_agentic_source_review_can_only_select_quarantine() -> None:
 @pytest.mark.parametrize(
     ("category", "expected_code"),
     [
+        ("benchmark_emulation", "source-safety-private-challenge-risk"),
         ("hidden_value_leakage", "source-safety-private-challenge-risk"),
         ("embedded_secret", "source-safety-malicious-risk"),
         ("data_exfiltration", "source-safety-malicious-risk"),
