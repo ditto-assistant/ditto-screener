@@ -621,60 +621,77 @@ class BehavioralChallengePackModule(_BaseModule):
 # mirrors the production scorer's own tool-case system prompt so a harness that
 # hardcode-matches the exact scored phrasing cannot separate the oracle from a
 # real tool case.
-_ORACLE_SYSTEM_PROMPTS: tuple[str, ...] = (
+# The exact system prompt the production scorer sends on a tool case. The oracle
+# uses this same single prompt (not a pool of oracle-specific phrasings) so a
+# harness cannot separate the oracle from scored traffic by the system prompt: a
+# scored request carries one fixed prompt, and a pool that only sometimes matches
+# it is itself a distinguishing tell.
+_ORACLE_SYSTEM_PROMPT = (
     "You are Ditto, a helpful assistant with access to tools. Call a tool "
-    "only when it is the right action for the user's request.",
-    "You are a helpful personal assistant with access to the user's saved "
-    "notes and memories.",
-    "You are the user's personal assistant. Use their stored notes to answer "
-    "accurately and concisely.",
-    "Answer the user using their previously saved information. Be brief and factual.",
-    "You are an assistant that recalls the user's stored notes to answer "
-    "questions concisely.",
+    "only when it is the right action for the user's request."
 )
 
-# A small, realistic tool catalog offered on the oracle's RunRequest — the same
-# shape a scored TOOL case carries. Declaring tools is what makes the oracle
-# indistinguishable from ordinary scored traffic: the rejected audit-detection
-# shortcut keyed on "no tools AND no tool_endpoint AND no seeded memory" to route
-# only the audit to the real model. A tool case legitimately carries tools + a
-# tool_endpoint and is NOT preceded by a /seed, so shaping the oracle this way
-# removes every leg of that signature at once. It is also the natural path for
-# the nonce round-trip: with tools declared the gateway's first turn is a
-# tool_calls completion carrying the nonce, so any honest agent loop executes the
-# tool and makes the second model call the oracle scores.
-_ORACLE_TOOLS: tuple[Mapping[str, object], ...] = (
-    {
-        "name": "search_memories",
-        "description": "Search the user's saved notes and past conversations "
-        "for information relevant to the query.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to look up in the user's memory.",
-                }
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "search_web",
-        "description": "Search the public web for current or external information.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query."}
-            },
-            "required": ["query"],
-        },
-    },
+# The full production tool catalog by name (dittobench-datagen catalog). The
+# oracle offers the SAME catalog a scored tool case does, so tool count and names
+# are not a tell; a two-tool oracle was trivially separable from scored traffic.
+# Kept in sync with the catalog; a generic query/argument schema is sufficient
+# because the harness only needs the names to declare tools to the model.
+_ORACLE_TOOL_NAMES: tuple[str, ...] = (
+    "create_image",
+    "edit_image",
+    "read_links",
+    "search_web",
+    "search_memories",
+    "search_subjects",
+    "fetch_memories",
+    "search_memories_in_subjects",
+    "artifacts",
+    "execute_agent_job",
+    "execute_agent_workflow",
+    "get_agent_job_status",
+    "list_agent_jobs",
+    "file_feedback_for_team",
+    "set_theme",
+    "set_main_model",
+    "set_reasoning_effort",
+    "set_chat_tool_preferences",
+    "create_automation",
+    "list_automations",
+    "create_recipe",
+    "apply_recipe",
+    "discover_capabilities",
+    "save_memory",
+    "update_memory",
+    "delete_memory",
+    "calendar_create_event",
+    "calendar_search_events",
+    "gmail_send",
+    "set_accent_color",
+    "set_chat_font",
 )
 
-# Tool-flavored user prompts: each is a task an ordinary tool case would pose,
-# encouraging the harness to route through a tool (and thus the model). Varied so
-# the phrasing is not a fixed marker.
+
+def _oracle_tools() -> list[Mapping[str, object]]:
+    """Build the oracle's tool catalog: every production tool name with a generic
+    argument schema, so the offered catalog matches scored traffic in count and
+    names."""
+    return [
+        {
+            "name": name,
+            "description": f"The {name.replace('_', ' ')} tool.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "Tool input."}
+                },
+            },
+        }
+        for name in _ORACLE_TOOL_NAMES
+    ]
+
+
+# Tool-flavored user prompts: each is a task an ordinary tool case would pose.
+# Varied per request like scored prompts, so phrasing is not a fixed marker.
 _ORACLE_USER_INPUTS: tuple[str, ...] = (
     "Look up what I previously noted about item {subject} and summarize it in "
     "one sentence.",
@@ -704,22 +721,25 @@ class BehavioralOracleModule(_BaseModule):
     therefore routes these observations to ``QUARANTINE`` and reserves
     ``deterministic_reject`` for stable-core artifact/build/serve failures.
 
-    TOOL-SHAPE TRADE-OFF: the request declares tools (see ``evaluate``), which
-    narrows the naturally-passing set to harnesses that EXECUTE a tool call — the
-    same agentic tool use every scored tool case already requires, so a viable
-    submission is unaffected. A harness that forwards the declared tools to the
-    model but never services the resulting tool call is the only honest case that
-    can now quarantine where a text-only round-trip once passed; because the
-    oracle only quarantines (operator-reviewed, never an auto-reject) and such a
-    harness cannot score the benchmark's tool cases anyway, this narrowing is
-    deliberate. A harness that does not forward the offered tools to the model
-    still gets a plain-text nonce turn and still passes via the text round-trip.
+    ARCHITECTURE-NEUTRAL MODEL-USE CHECK: the pass condition is a single model
+    turn whose output is relayed, not a forced two-turn tool loop. The gateway
+    returns the per-container nonce as the assistant's answer, and the check is
+    that the harness (a) made at least one gateway call and (b) surfaced the
+    gateway token in its final response, within a plausibility floor on elapsed
+    time. That proves the harness invoked the locked model and used its output —
+    which a static lookup table cannot fake, because it never calls the gateway
+    and so never learns the nonce. It does NOT require a two-turn agentic tool
+    loop, so text-only pipelines, one-turn model loops, direct-store retrieval
+    agents, tool-filtering agents, and Responses-API harnesses (which answer with
+    text rather than a function call) all pass. Envelope parity (see ``evaluate``)
+    is what defeats "model only when watched": a harness cannot tell the oracle
+    from scored traffic, so it must call the model on both or neither.
     """
 
     phase: str = field(init=False, default="challenge")
     challenge_id: str = "v8-behavioral-oracle"
     timeout_seconds: float = 20.0
-    min_gateway_calls: int = 2
+    min_gateway_calls: int = 1
     min_elapsed_ms: int = 250
 
     def __post_init__(self) -> None:
@@ -748,19 +768,24 @@ class BehavioralOracleModule(_BaseModule):
         # honest axum harness rejects a request missing any of them with 422
         # before the handler runs.
         #
-        # Shaped as a scored TOOL case: it carries a `user_id`, a `tools`
-        # catalog, and (filled by the challenge runner from the reachable
-        # gateway) a `tool_endpoint`. This removes every leg of the rejected
-        # audit-detection signature ("no tools AND no tool_endpoint AND no
-        # seeded memory routes only the audit to the real model"): a tool case
-        # legitimately carries tools + endpoint and is not preceded by a /seed,
-        # so an un-seeded tool-shaped /run is normal scored traffic, not a tell.
+        # ENVELOPE PARITY: the request is drawn from the same distributions a
+        # scored TOOL case uses, so a harness cannot classify oracle-vs-scored
+        # from any envelope field and then behave honestly only when watched:
+        #   - `case_id` uses the production format "c" + 16 hex (OpaqueCaseID),
+        #     not a bare 32-hex token that a `[0-9a-f]{32}` matcher would flag;
+        #   - the full production tool catalog is offered, not a two-tool subset;
+        #   - the one fixed scored tool-case system prompt is used, not a pool;
+        #   - no `user_id` is set (scored tool cases carry none);
+        #   - the challenge runner fills `tool_endpoint` from the reachable
+        #     gateway, exactly as a scored tool case carries one.
+        # A tool case is also not preceded by a /seed, so an un-seeded tool-shaped
+        # /run is normal scored traffic, closing the "no tools/endpoint/seed"
+        # audit-detection shortcut without leaving a residual envelope tell.
         request: Mapping[str, object] = {
-            "case_id": secrets.token_hex(16),
-            "user_id": secrets.token_hex(8),
-            "system_prompt": random.choice(_ORACLE_SYSTEM_PROMPTS),
+            "case_id": "c" + secrets.token_hex(8),
+            "system_prompt": _ORACLE_SYSTEM_PROMPT,
             "user_input": random.choice(_ORACLE_USER_INPUTS).format(subject=subject),
-            "tools": [dict(tool) for tool in _ORACLE_TOOLS],
+            "tools": _oracle_tools(),
         }
         observation = await context.run_challenge(
             self.challenge_id, request, self.timeout_seconds
@@ -785,8 +810,9 @@ class BehavioralOracleModule(_BaseModule):
                 ),
             )
         if observation.gateway_calls < self.min_gateway_calls:
-            # Too few calls is a strong shortcut signal, but alternate honest
-            # provider loops can differ, so it remains operator escalation.
+            # No model call at all: a static lookup that never touches the gateway.
+            # Alternate honest provider loops can still differ, so this remains
+            # operator escalation rather than a terminal reject.
             return ModuleResult(
                 ModuleDisposition.QUARANTINE,
                 (
@@ -798,17 +824,20 @@ class BehavioralOracleModule(_BaseModule):
                     ),
                 ),
             )
-        if not observation.oracle_answer_correct:
-            # Objective: the gateway-encoded answer is deterministically known
-            # to the screener; a wrong final answer is a checkable failure.
+        if not observation.gateway_token_observed:
+            # The harness called the model but did not surface the gateway token,
+            # so it did not relay the model's output — the signature of a harness
+            # that calls the model for show and answers from a table. The token is
+            # deterministically known to the screener, so this is a checkable
+            # failure independent of harness architecture.
             return ModuleResult(
                 ModuleDisposition.QUARANTINE,
                 (
                     PolicyEvidence(
                         self.module_id,
                         "behavioral-oracle-wrong-answer",
-                        "behavioral oracle final answer did not match the "
-                        "gateway-encoded value",
+                        "behavioral oracle final answer did not carry the "
+                        "gateway-encoded token",
                         observation.response_digest,
                     ),
                 ),

@@ -632,6 +632,45 @@ fn preprocess(req: Request) {
     assert "instruction-envelope-rewrite" in {lead["kind"] for lead in leads}
 
 
+def test_review_leads_surface_audit_gated_model_routing() -> None:
+    # The case-study bypass: recognize a watched request by its envelope, run the
+    # real model only then, and route scored traffic to a deterministic solver.
+    source = """\
+fn answer(req: Request) {
+    if tool_endpoint_present(&req) || is_probe(req.case_id) {
+        return call_model(req);
+    }
+    return deterministic_solver_lookup(req);
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "audit-gated-model-routing" in {lead["kind"] for lead in leads}
+    encoded = json.dumps(leads)
+    assert "deterministic_solver_lookup" not in encoded
+    assert "case_id" not in encoded
+
+
+def test_review_leads_do_not_flag_model_use_gated_by_tool_presence_alone() -> None:
+    # A harness that runs the real model always and merely uses tools when the
+    # request carries them has no deterministic route, so it is not the bypass.
+    source = """\
+fn answer(req: Request) {
+    let facts = retrieve(req.user_id);
+    let model = call_model(req.question, facts);
+    if !req.tools.is_empty() {
+        return run_tools(model, req.tools);
+    }
+    model.into_response()
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "audit-gated-model-routing" not in {lead["kind"] for lead in leads}
+
+
 def test_review_leads_distinguish_legitimate_near_neighbors() -> None:
     source = """\
 fn answer(req: Request) {
@@ -894,6 +933,7 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "deterministic-temporal-count-resolver",
         "scorer-contract-parallel-response-halves",
         "instruction-envelope-request-rewrite",
+        "audit-gated-model-routing",
     }
     assert legitimate.isdisjoint(prohibited)
 
