@@ -72,7 +72,7 @@ addopts = ["-m", "not integration"]
 [tool.semantic_release]
 allow_zero_version = true
 build_command = "python -m ensurepip && python -m pip install --disable-pip-version-check uv==0.11.28 && uv lock && uv build"
-commit_message = "chore(release): v{version} [skip ci]"
+commit_message = "chore(release): v{version}"
 tag_format = "v{version}"
 version_toml = ["pyproject.toml:project.version"]
 version_variables = ["ditto_screener/__init__.py:__version__"]

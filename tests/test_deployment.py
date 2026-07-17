@@ -28,6 +28,25 @@ def test_deploy_workflow_fans_out_over_the_fleet_in_parallel() -> None:
     assert "SCREENER_EXPECTED_SHA=${{ github.sha }}" in workflow
 
 
+def test_release_commit_triggers_deploy_without_recursive_release() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    deploy_workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+
+    # Semantic Release writes the version bump after the feature commit has
+    # already triggered deployment. That release commit must run the push-based
+    # deploy workflow so production receives the newly reported version.
+    assert 'commit_message = "chore(release): v{version}"' in pyproject
+    assert "[skip ci]" not in pyproject
+    assert "push:\n    branches: [main]" in deploy_workflow
+
+    # The release workflow excludes its own generated commit, preventing a
+    # release loop without suppressing the separate deploy workflow.
+    assert "!startsWith(github.event.head_commit.message, 'chore(release):')" in (
+        release_workflow
+    )
+
+
 def test_updater_enables_the_unit_so_it_survives_a_reboot() -> None:
     updater = (ROOT / "scripts" / "update-screener.sh").read_text()
 
