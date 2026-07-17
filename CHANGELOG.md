@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.9.0 (2026-07-17)
+
+### Features
+
+- Add bounded binary analysis to source review
+  ([#24](https://github.com/ditto-assistant/ditto-screener/pull/24),
+  [`d65caed`](https://github.com/ditto-assistant/ditto-screener/commit/d65caed9df17eb119fe10ba3192988d305303713))
+
+
 ## v0.8.0 (2026-07-17)
 
 ### Code Style
