@@ -68,6 +68,11 @@ def sign_verdict(
     manifest_digest: str | None = None,
     finding_digest: str | None = None,
     reason_code: str | None = None,
+    image_sha256: str | None = None,
+    image_size_bytes: int | None = None,
+    image_id: str | None = None,
+    image_ref: str | None = None,
+    image_upload_id: UUID | None = None,
 ) -> str:
     """Return the hex sr25519 signature over the canonical verdict payload."""
     message = verdict_signing_message(
@@ -80,6 +85,11 @@ def sign_verdict(
         manifest_digest=manifest_digest,
         finding_digest=finding_digest,
         reason_code=reason_code,
+        image_sha256=image_sha256,
+        image_size_bytes=image_size_bytes,
+        image_id=image_id,
+        image_ref=image_ref,
+        image_upload_id=image_upload_id,
     )
     signature: bytes = keypair.sign(message)
     return signature.hex()

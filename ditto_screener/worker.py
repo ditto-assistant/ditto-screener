@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from ditto_screener.config import ScreenerConfig
-    from ditto_screener.gate import BuildGate
+    from ditto_screener.gate import BuildGate, BuiltImageArtifact
     from ditto_screener.heartbeat import SystemMetricsCollector
     from ditto_screener.platform import PlatformClient
 
@@ -68,11 +68,10 @@ def _resolve_instance_id() -> str:
 
 _HEARTBEAT_MIN_INTERVAL_SECONDS = 120.0
 _ACTIVE_HEARTBEAT_SECONDS = 120.0
-# Slice of the lease reserved for signing and POSTing the verdict once screening
-# finishes, so a result computed just under the deadline still lands before the
-# platform rejects it as expired. The gate stops screening at this many seconds
-# before the lease deadline.
-_LEASE_SUBMIT_MARGIN_SECONDS = 10.0
+# Slice of the lease reserved only for signing and POSTing the verdict. Export,
+# multipart upload, and full-byte platform verification are part of the gate and
+# must finish before its deadline; they do not consume this final response tail.
+_LEASE_SUBMIT_MARGIN_SECONDS = 30.0
 
 
 class ScreenerWorker:
@@ -258,6 +257,7 @@ class ScreenerWorker:
         if item.attempt_id is None:
             logger.error("claimed agent_id=%s without a screening attempt id", agent_id)
             return
+        attempt_id = item.attempt_id
         self._active_agent_id = agent_id
         self._job_started_at = int(time.time())
         self._set_progress("preparing")
@@ -266,6 +266,22 @@ class ScreenerWorker:
             self._heartbeat_while_active(heartbeat_stop)
         )
         try:
+            screened_image: BuiltImageArtifact | None = None
+            screened_image_upload_id: UUID | None = None
+
+            async def publish_image(image: BuiltImageArtifact) -> None:
+                nonlocal screened_image, screened_image_upload_id
+                screened_image_upload_id = await self._platform.upload_screened_image(
+                    agent_id,
+                    attempt_id=attempt_id,
+                    path=image.path,
+                    sha256=image.sha256,
+                    size_bytes=image.size_bytes,
+                    image_id=image.image_id,
+                    image_ref=image.image_ref,
+                )
+                screened_image = image
+
             if item.precheck_reason_code is not None:
                 if item.precheck_reason_code != EXACT_CROSS_MINER_DUPLICATE:
                     raise PlatformError(
@@ -299,12 +315,13 @@ class ScreenerWorker:
                     artifact = await self._platform.get_artifact(agent_id)
                     result = await self._gate.screen(
                         agent_id=agent_id,
-                        attempt_id=item.attempt_id,
+                        attempt_id=attempt_id,
                         miner_hotkey=item.miner_hotkey,
                         sha256=item.sha256,
                         download_url=str(artifact.download_url),
                         progress=self._set_progress,
                         deadline=screen_deadline,
+                        publish_image=publish_image,
                     )
             # INCONCLUSIVE is a NON-verdict by platform contract: the result
             # endpoint rejects a submitted inconclusive outcome and expects the
@@ -329,6 +346,8 @@ class ScreenerWorker:
             self._set_progress("submitting")
             typed_outcome = ScreenResultOutcome(result.outcome.value)
             passed = typed_outcome == ScreenResultOutcome.PASS
+            if passed and (screened_image is None or screened_image_upload_id is None):
+                raise PlatformError("passing screen did not publish a prebuilt image")
             is_quarantine = typed_outcome == ScreenResultOutcome.QUARANTINE
             reason_code = result.evidence[-1].code if result.evidence else None
             # The bounded review payloads ride along on quarantine so the
@@ -369,11 +388,16 @@ class ScreenerWorker:
                 agent_id=agent_id,
                 passed=passed,
                 policy_version=policy_version,
-                attempt_id=item.attempt_id,
+                attempt_id=attempt_id,
                 outcome=typed_outcome,
                 manifest_digest=result.manifest_digest if is_quarantine else None,
                 finding_digest=finding_digest,
                 reason_code=reason_code,
+                image_sha256=screened_image.sha256 if screened_image else None,
+                image_size_bytes=screened_image.size_bytes if screened_image else None,
+                image_id=screened_image.image_id if screened_image else None,
+                image_ref=screened_image.image_ref if screened_image else None,
+                image_upload_id=screened_image_upload_id,
             )
             resp = await self._platform.submit_result(
                 agent_id,
@@ -381,13 +405,18 @@ class ScreenerWorker:
                 passed=passed,
                 policy_version=policy_version,
                 detail=result.detail,
-                attempt_id=item.attempt_id,
+                attempt_id=attempt_id,
                 outcome=typed_outcome,
                 manifest_digest=result.manifest_digest if is_quarantine else None,
                 finding_digest=finding_digest,
                 reason_code=reason_code,
                 evidence=evidence,
                 finding=finding,
+                image_sha256=screened_image.sha256 if screened_image else None,
+                image_size_bytes=screened_image.size_bytes if screened_image else None,
+                image_id=screened_image.image_id if screened_image else None,
+                image_ref=screened_image.image_ref if screened_image else None,
+                image_upload_id=screened_image_upload_id,
             )
             logger.info(
                 "screened agent_id=%s miner=%s outcome=%s passed=%s "

@@ -8,8 +8,11 @@ carry an sr25519 signature. It never touches the platform DB.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import httpx
@@ -21,6 +24,15 @@ from ditto_screener.heartbeat import (
 )
 from ditto_screening_protocol import (
     ArtifactResponse,
+    ScreenedImageCompletedPart,
+    ScreenedImagePartUploadRequest,
+    ScreenedImagePartUploadResponse,
+    ScreenedImageUploadAbortRequest,
+    ScreenedImageUploadAbortResponse,
+    ScreenedImageUploadCompleteRequest,
+    ScreenedImageUploadCompleteResponse,
+    ScreenedImageUploadRequest,
+    ScreenedImageUploadResponse,
     ScreenerQueueResponse,
     ScreenEvidenceItem,
     ScreenResultOutcome,
@@ -35,6 +47,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PREFIX = "/api/v1/screener"
+_IMAGE_REQUEST_TIMEOUT = httpx.Timeout(300.0, connect=30.0, pool=30.0)
+_IMAGE_UPLOAD_ATTEMPTS = 3
 
 
 class PlatformClient:
@@ -124,6 +138,11 @@ class PlatformClient:
         reason_code: str | None = None,
         evidence: list[ScreenEvidenceItem] | None = None,
         finding: SourceReviewFinding | None = None,
+        image_sha256: str | None = None,
+        image_size_bytes: int | None = None,
+        image_id: str | None = None,
+        image_ref: str | None = None,
+        image_upload_id: UUID | None = None,
     ) -> ScreenResultResponse:
         """Report a signed pass/fail verdict for ``agent_id``."""
         url = f"{self._base}{_PREFIX}/agent/{agent_id}/result"
@@ -140,6 +159,11 @@ class PlatformClient:
             reason_code=reason_code,
             evidence=evidence,
             finding=finding,
+            image_sha256=image_sha256,
+            image_size_bytes=image_size_bytes,
+            image_id=image_id,
+            image_ref=image_ref,
+            image_upload_id=image_upload_id,
         )
         try:
             resp = await self._client.post(
@@ -152,3 +176,184 @@ class PlatformClient:
                 f"verdict rejected ({resp.status_code}): {resp.text[:200]}"
             )
         return ScreenResultResponse.model_validate(resp.json())
+
+    async def upload_screened_image(
+        self,
+        agent_id: UUID,
+        *,
+        attempt_id: UUID,
+        path: str,
+        sha256: str,
+        size_bytes: int,
+        image_id: str,
+        image_ref: str,
+    ) -> UUID:
+        """Upload an image in bounded parts and return its verified upload id."""
+        archive = Path(path)
+        if archive.stat().st_size != size_bytes:
+            raise PlatformError("screened image changed before multipart upload")
+        request = ScreenedImageUploadRequest(
+            attempt_id=attempt_id,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            image_id=image_id,
+            image_ref=image_ref,
+        )
+        base_url = f"{self._base}{_PREFIX}/agent/{agent_id}/screened-image-upload"
+        upload: ScreenedImageUploadResponse | None = None
+        try:
+            response = await self._image_request(
+                "POST",
+                base_url,
+                operation="image upload initiate",
+                json=request.model_dump(mode="json"),
+                headers=self._headers,
+            )
+            upload = ScreenedImageUploadResponse.model_validate(response.json())
+            completed: list[ScreenedImageCompletedPart] = []
+            with archive.open("rb") as handle:
+                part_number = 1
+                uploaded_bytes = 0
+                while uploaded_bytes < size_bytes:
+                    part = await asyncio.to_thread(handle.read, upload.part_size_bytes)
+                    if not part:
+                        raise PlatformError(
+                            "screened image ended before declared multipart size"
+                        )
+                    uploaded_bytes += len(part)
+                    part_request = ScreenedImagePartUploadRequest(
+                        attempt_id=attempt_id,
+                        storage_upload_id=upload.storage_upload_id,
+                        part_number=part_number,
+                        size_bytes=len(part),
+                    )
+                    part_response = await self._image_request(
+                        "POST",
+                        f"{base_url}/{upload.image_upload_id}/part",
+                        operation=f"image part {part_number} mint",
+                        json=part_request.model_dump(mode="json"),
+                        headers=self._headers,
+                    )
+                    part_upload = ScreenedImagePartUploadResponse.model_validate(
+                        part_response.json()
+                    )
+                    stored = await self._image_request(
+                        "PUT",
+                        part_upload.upload_url,
+                        operation=f"image part {part_number} upload",
+                        content=part,
+                        headers=part_upload.required_headers,
+                        accepted=frozenset({200, 201, 204}),
+                    )
+                    etag = stored.headers.get("etag")
+                    if not etag:
+                        raise PlatformError(
+                            f"image part {part_number} upload returned no ETag"
+                        )
+                    completed.append(
+                        ScreenedImageCompletedPart(
+                            part_number=part_number,
+                            etag=etag,
+                        )
+                    )
+                    part_number += 1
+            if uploaded_bytes != size_bytes or archive.stat().st_size != size_bytes:
+                raise PlatformError(
+                    "screened image size changed during multipart upload"
+                )
+            complete = ScreenedImageUploadCompleteRequest(
+                attempt_id=attempt_id,
+                storage_upload_id=upload.storage_upload_id,
+                sha256=sha256,
+                size_bytes=size_bytes,
+                image_id=image_id,
+                image_ref=image_ref,
+                parts=completed,
+            )
+            completed_response = await self._image_request(
+                "POST",
+                f"{base_url}/{upload.image_upload_id}/complete",
+                operation="image upload complete",
+                json=complete.model_dump(mode="json"),
+                headers=self._headers,
+            )
+            ScreenedImageUploadCompleteResponse.model_validate(
+                completed_response.json()
+            )
+            return upload.image_upload_id
+        except BaseException:
+            if upload is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(
+                        self._abort_screened_image_upload(
+                            base_url,
+                            upload,
+                            attempt_id=attempt_id,
+                        )
+                    )
+            raise
+
+    async def _image_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        operation: str,
+        accepted: frozenset[int] = frozenset({200}),
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Issue one finite image request, retrying transport and server failures."""
+        for attempt in range(1, _IMAGE_UPLOAD_ATTEMPTS + 1):
+            try:
+                response = await self._client.request(
+                    method,
+                    url,
+                    timeout=_IMAGE_REQUEST_TIMEOUT,
+                    **kwargs,
+                )
+            except httpx.HTTPError as error:
+                if attempt == _IMAGE_UPLOAD_ATTEMPTS:
+                    raise PlatformError(f"{operation} failed: {error}") from error
+            else:
+                if response.status_code in accepted:
+                    return response
+                if response.status_code not in {429, 500, 502, 503, 504}:
+                    raise PlatformError(
+                        f"{operation} rejected ({response.status_code}): "
+                        f"{response.text[:200]}"
+                    )
+                if attempt == _IMAGE_UPLOAD_ATTEMPTS:
+                    raise PlatformError(
+                        f"{operation} failed after retries ({response.status_code}): "
+                        f"{response.text[:200]}"
+                    )
+            await asyncio.sleep(0.5 * attempt)
+        raise AssertionError("image request retry loop exhausted")
+
+    async def _abort_screened_image_upload(
+        self,
+        base_url: str,
+        upload: ScreenedImageUploadResponse,
+        *,
+        attempt_id: UUID,
+    ) -> None:
+        """Best-effort abort so failed multipart parts do not accumulate."""
+        request = ScreenedImageUploadAbortRequest(
+            attempt_id=attempt_id,
+            storage_upload_id=upload.storage_upload_id,
+        )
+        try:
+            response = await self._image_request(
+                "POST",
+                f"{base_url}/{upload.image_upload_id}/abort",
+                operation="image upload abort",
+                json=request.model_dump(mode="json"),
+                headers=self._headers,
+            )
+            ScreenedImageUploadAbortResponse.model_validate(response.json())
+        except PlatformError as error:
+            logger.warning(
+                "failed to abort image_upload_id=%s: %s",
+                upload.image_upload_id,
+                error,
+            )

@@ -95,6 +95,43 @@ def test_review_payloads_require_review_outcome() -> None:
             manifest_digest=None,
             reason_code=None,
             finding=None,
+            image_sha256="12" * 32,
+            image_size_bytes=123,
+            image_id="sha256:" + "34" * 32,
+            image_ref="ditto-screen/550e8400-e29b-41d4-a716-446655440000:latest",
+            image_upload_id=uuid4(),
+        )
+
+
+def test_policy_v9_rejects_legacy_untyped_outcome() -> None:
+    with pytest.raises(ValidationError, match="requires typed outcome"):
+        _request(
+            passed=False,
+            outcome=None,
+            manifest_digest=None,
+            finding_digest=None,
+            reason_code=None,
+            evidence=None,
+            finding=None,
+        )
+
+
+def test_legacy_outcome_rejects_image_metadata() -> None:
+    with pytest.raises(ValidationError, match="legacy result cannot carry"):
+        _request(
+            passed=True,
+            outcome=None,
+            policy_version=8,
+            manifest_digest=None,
+            finding_digest=None,
+            reason_code=None,
+            evidence=None,
+            finding=None,
+            image_sha256="12" * 32,
+            image_size_bytes=123,
+            image_id="sha256:" + "34" * 32,
+            image_ref="ditto-screen/550e8400-e29b-41d4-a716-446655440000:latest",
+            image_upload_id=uuid4(),
         )
 
 

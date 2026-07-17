@@ -2,7 +2,7 @@
 
 Platform-operated screening worker for Ditto SN118 submissions.
 
-The stable v8 core leases one submission at a time from `ditto-platform`,
+The stable core leases one submission at a time from `ditto-platform`,
 downloads and verifies its tarball, enforces safe archive and root Rust package
 rules, builds the Docker image, starts it with resource caps and an internal fake
 gateway, waits for `/health`, then performs a bounded, read-only Luna source
@@ -10,6 +10,16 @@ review before submitting a lease-bound sr25519 result. Medium- and high-risk
 results are quarantined for operator review, never automatically rejected. The
 default manifest never calls `POST /run`. It never reads or writes the platform
 database.
+
+On a pass, the worker exports the exact verified image with `docker image save`,
+hashes the archive, and uploads it sequentially in bounded multipart chunks.
+Each storage request has a finite timeout and bounded retry policy; failures
+trigger a best-effort multipart abort and the local archive is always removed.
+The platform streams the completed object to verify the full archive SHA-256
+before acknowledging it. The worker then binds that verified upload ID, archive
+digest, byte size, immutable Docker image ID, and image reference into the
+canonical signed verdict. Validators can therefore load the screened image
+instead of repeating the Rust build.
 
 The only shared application boundary is the dependency-light
 `packages/ditto-screening-protocol` package. It owns request/response models,
@@ -19,7 +29,7 @@ application packages.
 
 Private modules can rotate timing and relay tripwires, randomized controls,
 source/fingerprint triage, and behavioral challenge packs without changing the
-v8 protocol or signing bytes. No private signal proves causal model use.
+v9 protocol or signing bytes. No private signal proves causal model use.
 Modules can pass or route to `retryable_infra`, `quarantine`, or `inconclusive`;
 only the objective stable core can return `deterministic_reject`.
 
@@ -50,6 +60,9 @@ The real Docker core smoke test needs a canonical starter-kit checkout:
 DITTO_STARTER_KIT_DIR=/path/to/dittobench-starter-kit \
   uv run pytest -m integration tests/test_gate_docker_integration.py -vv
 ```
+
+Set `DITTOBENCH_API_DIR=/path/to/dittobench-api` as well to pass that exact
+export through the real validator-side image loader during the integration test.
 
 ## Runtime configuration
 
