@@ -617,8 +617,13 @@ class BehavioralChallengePackModule(_BaseModule):
 
 # Generic, benchmark-plausible system prompts for the oracle's RunRequest.
 # Several phrasings (picked per request) so no single fixed string becomes a
-# fingerprint, while each reads like an ordinary validator case.
+# fingerprint, while each reads like an ordinary validator case. The last entry
+# mirrors the production scorer's own tool-case system prompt so a harness that
+# hardcode-matches the exact scored phrasing cannot separate the oracle from a
+# real tool case.
 _ORACLE_SYSTEM_PROMPTS: tuple[str, ...] = (
+    "You are Ditto, a helpful assistant with access to tools. Call a tool "
+    "only when it is the right action for the user's request.",
     "You are a helpful personal assistant with access to the user's saved "
     "notes and memories.",
     "You are the user's personal assistant. Use their stored notes to answer "
@@ -626,6 +631,56 @@ _ORACLE_SYSTEM_PROMPTS: tuple[str, ...] = (
     "Answer the user using their previously saved information. Be brief and factual.",
     "You are an assistant that recalls the user's stored notes to answer "
     "questions concisely.",
+)
+
+# A small, realistic tool catalog offered on the oracle's RunRequest — the same
+# shape a scored TOOL case carries. Declaring tools is what makes the oracle
+# indistinguishable from ordinary scored traffic: the rejected audit-detection
+# shortcut keyed on "no tools AND no tool_endpoint AND no seeded memory" to route
+# only the audit to the real model. A tool case legitimately carries tools + a
+# tool_endpoint and is NOT preceded by a /seed, so shaping the oracle this way
+# removes every leg of that signature at once. It is also the natural path for
+# the nonce round-trip: with tools declared the gateway's first turn is a
+# tool_calls completion carrying the nonce, so any honest agent loop executes the
+# tool and makes the second model call the oracle scores.
+_ORACLE_TOOLS: tuple[Mapping[str, object], ...] = (
+    {
+        "name": "search_memories",
+        "description": "Search the user's saved notes and past conversations "
+        "for information relevant to the query.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to look up in the user's memory.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_web",
+        "description": "Search the public web for current or external information.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."}
+            },
+            "required": ["query"],
+        },
+    },
+)
+
+# Tool-flavored user prompts: each is a task an ordinary tool case would pose,
+# encouraging the harness to route through a tool (and thus the model). Varied so
+# the phrasing is not a fixed marker.
+_ORACLE_USER_INPUTS: tuple[str, ...] = (
+    "Look up what I previously noted about item {subject} and summarize it in "
+    "one sentence.",
+    "Check my saved notes for anything about {subject} and tell me what they say.",
+    "Find my note on {subject} and give me the key detail from it.",
+    "See what I recorded about {subject} and report back concisely.",
 )
 
 
@@ -648,6 +703,17 @@ class BehavioralOracleModule(_BaseModule):
     harness architecture can produce legitimate anomalies. The PolicyEngine
     therefore routes these observations to ``QUARANTINE`` and reserves
     ``deterministic_reject`` for stable-core artifact/build/serve failures.
+
+    TOOL-SHAPE TRADE-OFF: the request declares tools (see ``evaluate``), which
+    narrows the naturally-passing set to harnesses that EXECUTE a tool call — the
+    same agentic tool use every scored tool case already requires, so a viable
+    submission is unaffected. A harness that forwards the declared tools to the
+    model but never services the resulting tool call is the only honest case that
+    can now quarantine where a text-only round-trip once passed; because the
+    oracle only quarantines (operator-reviewed, never an auto-reject) and such a
+    harness cannot score the benchmark's tool cases anyway, this narrowing is
+    deliberate. A harness that does not forward the offered tools to the model
+    still gets a plain-text nonce turn and still passes via the text round-trip.
     """
 
     phase: str = field(init=False, default="challenge")
@@ -680,16 +746,21 @@ class BehavioralOracleModule(_BaseModule):
         # (dittobench-starter-kit src/protocol.rs): `case_id`, `system_prompt`
         # and `user_input` are REQUIRED fields with no serde default, so an
         # honest axum harness rejects a request missing any of them with 422
-        # before the handler runs. `tools`/`tool_endpoint`/`user_id` default.
-        # The system prompt is drawn from generic assistant phrasings so the
-        # request still carries no fixed marker a harness could branch on.
+        # before the handler runs.
+        #
+        # Shaped as a scored TOOL case: it carries a `user_id`, a `tools`
+        # catalog, and (filled by the challenge runner from the reachable
+        # gateway) a `tool_endpoint`. This removes every leg of the rejected
+        # audit-detection signature ("no tools AND no tool_endpoint AND no
+        # seeded memory routes only the audit to the real model"): a tool case
+        # legitimately carries tools + endpoint and is not preceded by a /seed,
+        # so an un-seeded tool-shaped /run is normal scored traffic, not a tell.
         request: Mapping[str, object] = {
             "case_id": secrets.token_hex(16),
+            "user_id": secrets.token_hex(8),
             "system_prompt": random.choice(_ORACLE_SYSTEM_PROMPTS),
-            "user_input": (
-                f"Look up what I previously noted about item {subject} "
-                "and summarize it in one sentence."
-            ),
+            "user_input": random.choice(_ORACLE_USER_INPUTS).format(subject=subject),
+            "tools": [dict(tool) for tool in _ORACLE_TOOLS],
         }
         observation = await context.run_challenge(
             self.challenge_id, request, self.timeout_seconds

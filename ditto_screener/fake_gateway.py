@@ -280,6 +280,17 @@ class FakeModelGateway:
                     "output_text": content,
                     "usage": {"input_tokens": 1, "output_tokens": 1},
                 }
+            elif method == "POST" and path.rstrip("/") == "/tool":
+                # Mock tool-execution sink for the behavioral oracle's
+                # tool-shaped RunRequest. It lets the harness's agent loop
+                # EXECUTE the tool call the model returned (nonce in its args)
+                # and proceed to the second model turn that unlocks the oracle
+                # answer. Deliberately NOT a model call: it must not increment
+                # the gateway call count (that counts only model round-trips).
+                # The result content is irrelevant to the nonce round-trip (the
+                # nonce rides the assistant tool_calls message in the
+                # transcript), so a benign acknowledgement suffices.
+                payload = {"result": "ok", "error": ""}
             elif method == "POST" and path.rstrip("/") in {
                 "/api/embed",
                 "/api/embeddings",

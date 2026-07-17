@@ -167,6 +167,32 @@ class _AuditRuntime:
     gateway_state_file: str
 
 
+# The fake gateway serves a benign `/tool` sink at the same host-container alias
+# the harness already uses for the model, so a tool-shaped challenge's
+# `tool_endpoint` is reachable from inside the harness network and carries no
+# screener-specific tell (it is the same host:port the model calls go to).
+_TOOL_ENDPOINT = f"http://{_GATEWAY_ALIAS}:8080/tool"
+
+
+def _with_tool_endpoint(request: Mapping[str, object]) -> dict[str, object]:
+    """Fill a reachable ``tool_endpoint`` for a tool-declaring challenge request.
+
+    Returns a copy so the caller's mapping is not mutated. A request that
+    already carries a ``tool_endpoint``, or declares no ``tools``, is returned
+    unchanged (aside from the copy).
+
+    This applies to any tool-declaring private challenge, not only the oracle.
+    An explicit ``tool_endpoint`` is always preserved, so a challenge pack that
+    deliberately wants a different endpoint — including an unreachable one, to
+    observe whether the harness fabricates tool results with no live endpoint —
+    sets its own and is never overridden by the gateway sink.
+    """
+    payload = dict(request)
+    if payload.get("tools") and not payload.get("tool_endpoint"):
+        payload["tool_endpoint"] = _TOOL_ENDPOINT
+    return payload
+
+
 def dockerfile_at_root(member_names: list[str]) -> bool:
     """Whether the tar has a ``Dockerfile`` at its root.
 
@@ -1095,12 +1121,18 @@ class BuildGate:
         the harness can only surface ``oracle_answer`` by feeding the gateway
         nonce back through a second turn, which a static table cannot do.
         """
+        # A tool-shaped challenge (non-empty `tools`) needs a reachable
+        # `tool_endpoint` so the harness's agent loop can execute the tool call
+        # the model returns and proceed to the second model turn. Filled here
+        # (not in the policy module) because only the gate knows the network
+        # topology.
+        payload = _with_tool_endpoint(request)
         calls_before = _gateway_call_count(gateway_state_file)
         started = asyncio.get_running_loop().time()
         code, out = await self._request_from_sidecar(
             probe_container,
             f"{harness_base}/run",
-            payload=request,
+            payload=payload,
             timeout=min(timeout, self._config.run_timeout_seconds),
         )
         elapsed_ms = round((asyncio.get_running_loop().time() - started) * 1000)
