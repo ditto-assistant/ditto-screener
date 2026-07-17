@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v0.7.1 (2026-07-17)
+
+### Bug Fixes
+
+- Apply IMDS guard updates safely ([#23](https://github.com/ditto-assistant/ditto-screener/pull/23),
+  [`50f3fa1`](https://github.com/ditto-assistant/ditto-screener/commit/50f3fa1a4e50687ca66c468a44101144594136da))
+
+- Preserve GCE DNS in screener IMDS guard
+  ([#23](https://github.com/ditto-assistant/ditto-screener/pull/23),
+  [`50f3fa1`](https://github.com/ditto-assistant/ditto-screener/commit/50f3fa1a4e50687ca66c468a44101144594136da))
+
+### Code Style
+
+- Format IMDS guard regression tests
+  ([#23](https://github.com/ditto-assistant/ditto-screener/pull/23),
+  [`50f3fa1`](https://github.com/ditto-assistant/ditto-screener/commit/50f3fa1a4e50687ca66c468a44101144594136da))
+
+
 ## v0.7.0 (2026-07-16)
 
 ### Features
