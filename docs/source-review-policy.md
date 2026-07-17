@@ -18,6 +18,25 @@ shipping byte-identical official starter-kit fixtures is not evidence of
 cheating. Modified code still needs a causal runtime connection to a prohibited
 behavior before it is reported.
 
+Opaque artifacts receive the same treatment. The reviewer can inspect bounded
+binary structure, strings, and public benchmark-schema markers without
+executing the file. A changed model is not suspicious solely because its
+weights differ, and a model filename or valid container is not a safe harbor.
+The finding must connect the artifact to prohibited runtime behavior.
+
+That rule includes build inputs and learned artifacts. A checksum-pinned public
+Git dependency, lockfile checksums, ordinary CI, and an optional unused
+BuildKit secret are normal locked-build mechanisms. A modified opaque ONNX/BERT
+cross-encoder used only to rerank live query-memory candidates is also allowed
+unless its contents or behavior show answer tables, challenge strings,
+deterministic dispatch, or an executable bypass.
+
+User scoping is judged across the substantive request -> retrieval -> model ->
+tool -> response path. A fixed-user bug in an abstention-only side probe remains
+a correctness defect, but it is not malicious cross-user access when no other
+user's content reaches model context, tool execution, the response, a log, or
+an outbound sink and the probe cannot replace the request-user path.
+
 ## Benchmark emulation
 
 Quarantine for `benchmark_emulation` when evidence from the effective build or
@@ -49,6 +68,12 @@ bypass. The following are insufficient on their own:
 - benchmark words in prose, comments, tests, or filenames;
 - unchanged official fixtures recognized by exact provenance;
 - local evaluation helpers that are unreachable from the submitted service.
+- opacity or divergence from a starter model blob without content or behavioral
+  evidence of prohibited logic;
+- pinned dependency, lockfile, CI, or optional-secret syntax without evidence
+  that the effective build reads credentials or replaces reviewed behavior;
+- a metadata-only fixed-user side-probe bug that cannot expose content or alter
+  the substantive model/tool result.
 
 When the causal connection is ambiguous, quarantine evidence may describe the
 uncertainty, but operators should not reject solely on terminology, timing,

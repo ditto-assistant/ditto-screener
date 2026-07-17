@@ -31,10 +31,14 @@ The strict manifest contains exactly `policy_version`, `rotation_id`, and
   select a deterministic private control sample for that rotation.
 - `source_fingerprint`: compares bounded canonical source/layout fingerprints
   and emits only a tripwire.
-- `agentic_source_review`: gives GPT-5.6 Luna bounded read/list/literal-search
-  tools over the verified archive. Source is treated as adversarial data; the
-  reviewer has no shell, edits, execution, web, external-directory, or secret
-  tools. Medium/high risk can only select quarantine or a behavioral audit.
+- `agentic_source_review`: gives GPT-5.6 Luna bounded
+  read/list/literal-search/binary-analysis tools over the verified archive.
+  Source is treated as adversarial data; the reviewer has no shell, edits,
+  execution, web, external-directory, or secret tools. Binary analysis uses
+  bounded in-process format parsers and is precomputed once for listed opaque
+  files before the model starts; full tool results reuse the same cache. It
+  never executes code, expands archive payloads, or loads external model data.
+  Medium/high risk can only select quarantine or a behavioral audit.
   Exact SHA-256 provenance for named official starter-kit fixture/model files
   prevents unchanged binaries and seed data from being mistaken for suspicious
   static tables. Trust never extends to a changed path or derivative file.
