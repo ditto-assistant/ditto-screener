@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.9.2 (2026-07-17)
+
+### Bug Fixes
+
+- Strengthen source-review reachable evidence
+  ([#27](https://github.com/ditto-assistant/ditto-screener/pull/27),
+  [`ea2b1ad`](https://github.com/ditto-assistant/ditto-screener/commit/ea2b1ad5c0e12090fa8e48cf066ab12cebd17dbf))
+
+
 ## v0.9.1 (2026-07-17)
 
 ### Bug Fixes
