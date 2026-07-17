@@ -108,17 +108,34 @@ def test_imds_guard_preserves_gce_dns_before_dropping_metadata() -> None:
         guard = script[guard_start:guard_end]
 
         udp_dns = guard.index(
-            "-A DITTO-IMDS-GUARD -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT"
+            '-A "$guard_tmp" -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT'
         )
         tcp_dns = guard.index(
-            "-A DITTO-IMDS-GUARD -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT"
+            '-A "$guard_tmp" -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT'
         )
-        metadata_drop = guard.index("-A DITTO-IMDS-GUARD -d 169.254.169.254/32 -j DROP")
+        metadata_drop = guard.index('-A "$guard_tmp" -d 169.254.169.254/32 -j DROP')
 
         assert udp_dns < metadata_drop
         assert tcp_dns < metadata_drop
+        replacement_jump = guard.index('-I DOCKER-USER 1 -j "$guard_tmp"')
+        old_jump_removal = guard.index("-D DOCKER-USER -j DITTO-IMDS-GUARD")
+        assert metadata_drop < replacement_jump < old_jump_removal
         assert "-D DOCKER-USER -d 169.254.169.254/32 -j DROP" in guard
-        assert "-I DOCKER-USER 1 -j DITTO-IMDS-GUARD" in guard
+        assert '-E "$guard_tmp" DITTO-IMDS-GUARD' in guard
+
+
+def test_updater_restarts_changed_imds_guard_unit() -> None:
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+
+    assert (
+        """if [[ "$changed" -eq 1 ]]; then
+    systemctl daemon-reload
+    systemctl restart ditto-imds-guard.service
+  else
+    systemctl start ditto-imds-guard.service
+  fi"""
+        in updater
+    )
 
 
 def test_updater_probes_dns_through_a_fresh_container_after_guarding_imds() -> None:

@@ -114,17 +114,22 @@ install -m 0755 /dev/stdin /usr/local/sbin/ditto-imds-guard <<'GUARD'
 set -euo pipefail
 # DOCKER-USER is created by dockerd; ensure it exists before inserting.
 iptables -N DOCKER-USER 2>/dev/null || true
-# Remove the legacy broad drop, which also blocked GCE's DNS service.
-while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
 # Keep the policy in a dedicated chain so DNS exceptions precede the metadata
-# drop unambiguously and can be replaced atomically on every deploy.
-iptables -N DITTO-IMDS-GUARD 2>/dev/null || true
-iptables -F DITTO-IMDS-GUARD
-iptables -A DITTO-IMDS-GUARD -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT
-iptables -A DITTO-IMDS-GUARD -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT
-iptables -A DITTO-IMDS-GUARD -d 169.254.169.254/32 -j DROP
+# drop unambiguously. Build a unique replacement first so the active policy is
+# never flushed in place and metadata stays protected throughout the swap.
+guard_tmp="DITTO-IMDS-GUARD-$$"
+iptables -N "$guard_tmp"
+iptables -A "$guard_tmp" -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT
+iptables -A "$guard_tmp" -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT
+iptables -A "$guard_tmp" -d 169.254.169.254/32 -j DROP
+iptables -I DOCKER-USER 1 -j "$guard_tmp"
+# The replacement now protects metadata. Remove the DNS-breaking legacy rule
+# and old jump before renaming the referenced replacement to the stable name.
+while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
 while iptables -D DOCKER-USER -j DITTO-IMDS-GUARD 2>/dev/null; do :; done
-iptables -I DOCKER-USER 1 -j DITTO-IMDS-GUARD
+iptables -F DITTO-IMDS-GUARD 2>/dev/null || true
+iptables -X DITTO-IMDS-GUARD 2>/dev/null || true
+iptables -E "$guard_tmp" DITTO-IMDS-GUARD
 GUARD
 cat >/etc/systemd/system/ditto-imds-guard.service <<'UNIT'
 [Unit]
