@@ -171,13 +171,15 @@ async def test_chunked_chat_completion_is_accepted() -> None:
         assert gateway.model_calls == 1
 
 
-async def test_tool_declaring_caller_gets_a_protocol_natural_round_trip() -> None:
-    """First turn is a tool call against the caller's own tools; the nonce is
-    inside its arguments, so an honest agent loop naturally feeds it back and
-    unlocks the oracle answer on the second turn."""
+async def test_gateway_answers_with_nonce_content_for_any_caller() -> None:
+    """The gateway answers with TEXT content carrying the nonce, whether or not
+    the caller declared tools, so a one-turn harness of any architecture relays
+    the nonce and passes. A harness that DOES loop and feeds the nonce back gets
+    the oracle answer on the second turn, so the multi-turn path still works."""
     async with FakeModelGateway(oracle_answer="oracle-token-xyz") as gateway:
         local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
         async with httpx.AsyncClient() as client:
+            # Turn 1 (tools declared): a text answer with the nonce, no forced call.
             first = await client.post(
                 f"{local_url}/v1/chat/completions",
                 json={
@@ -192,14 +194,11 @@ async def test_tool_declaring_caller_gets_a_protocol_natural_round_trip() -> Non
                 },
             )
             message = first.json()["choices"][0]["message"]
-            assert message["content"] is None
-            call = message["tool_calls"][0]
-            assert call["function"]["name"] == "search_memory"
-            arguments = json.loads(call["function"]["arguments"])
-            assert gateway.response_text in arguments.values()
-            assert first.json()["choices"][0]["finish_reason"] == "tool_calls"
+            assert message["content"] == gateway.response_text
+            assert "tool_calls" not in message
+            assert first.json()["choices"][0]["finish_reason"] == "stop"
 
-            # The honest second turn carries the transcript (with the nonce).
+            # A looping harness that feeds the nonce back still unlocks the answer.
             second = await client.post(
                 f"{local_url}/v1/chat/completions",
                 json={
@@ -207,11 +206,6 @@ async def test_tool_declaring_caller_gets_a_protocol_natural_round_trip() -> Non
                     "messages": [
                         {"role": "user", "content": "look this up"},
                         message,
-                        {
-                            "role": "tool",
-                            "tool_call_id": call["id"],
-                            "content": "no results",
-                        },
                     ],
                 },
             )

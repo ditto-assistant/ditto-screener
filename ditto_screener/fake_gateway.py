@@ -108,62 +108,22 @@ class FakeModelGateway:
             return self._oracle_answer
         return self.response_text
 
-    def _first_declared_tool(self, body: bytes) -> str | None:
-        """Name of the first tool the caller itself declared, if any."""
-        try:
-            parsed = json.loads(body) if body else None
-        except (ValueError, UnicodeError):
-            return None
-        if not isinstance(parsed, dict):
-            return None
-        tools = parsed.get("tools")
-        if not isinstance(tools, list):
-            return None
-        for tool in tools:
-            if not isinstance(tool, dict):
-                continue
-            function = tool.get("function")
-            if isinstance(function, dict) and isinstance(function.get("name"), str):
-                return function["name"]
-            if isinstance(tool.get("name"), str):
-                return tool["name"]
-        return None
-
     def _chat_message(self, body: bytes) -> dict[str, object]:
         """Build the assistant message for one chat-completions turn.
 
-        The nonce round-trip is protocol-natural: when the caller declares
-        tools and has not yet echoed the nonce, the first turn is a normal
-        ``tool_calls`` completion (calling one of the CALLER'S OWN declared
-        tools with the nonce inside its arguments). Any honest agent loop
-        executes the tool and calls the model again with a transcript that
-        contains the nonce, which unlocks ``oracle_answer``. A single text
-        turn is only used when the caller declares no tools, so a genuine
-        text-only pipeline still gets a plain completion instead of an
-        un-executable tool call.
+        The gateway answers with TEXT content carrying the per-container nonce,
+        the same for every caller regardless of whether tools were declared. A
+        real provider may answer directly instead of calling a tool, so this is
+        indistinguishable from ordinary provider behavior, and it makes the
+        model-use check architecture-neutral: any harness that relays the model's
+        answer (text-only, one-turn, tool-forwarding, Responses-API) surfaces the
+        nonce in a single turn and passes, while a static table that never calls
+        the gateway never learns the nonce. A harness that DOES loop and feeds the
+        nonce back still works: ``_response_content`` then returns ``oracle_answer``
+        (also an accepted gateway token), so the multi-turn path is supported but
+        not required.
         """
-        content = self._response_content(body)
-        tool_name = self._first_declared_tool(body)
-        if (
-            self._oracle_answer is not None
-            and content == self.response_text
-            and tool_name is not None
-        ):
-            return {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": f"call_{secrets.token_hex(12)}",
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps({"query": content}),
-                        },
-                    }
-                ],
-            }
-        return {"role": "assistant", "content": content}
+        return {"role": "assistant", "content": self._response_content(body)}
 
     @staticmethod
     def _echo_model(body: bytes) -> str:

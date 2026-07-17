@@ -47,6 +47,10 @@
     {
       "name": "generic-prompt-injection-defense",
       "source": "fn preprocess(req: Request) { sanitize_untrusted_content(req.user_input); preserve_user_question(req) }"
+    },
+    {
+      "name": "tool-present-branch-without-deterministic-route",
+      "source": "fn answer(req: Request) { let facts = retrieve(req.user_id); let model = call_model(req.question, facts); if !req.tools.is_empty() { return run_tools(model, req.tools); } model.into_response() }"
     }
   ],
   "advisory": [
@@ -116,6 +120,11 @@
       "name": "instruction-envelope-request-rewrite",
       "category": "benchmark_emulation",
       "source": "fn preprocess(req: Request) { if detect_response_constraint_envelope(&req.user_input) { return sanitize_strip_prefix_keep_trailing_request(req); } req }"
+    },
+    {
+      "name": "audit-gated-model-routing",
+      "category": "benchmark_emulation",
+      "source": "fn answer(req: Request) { if tool_endpoint_present(&req) || is_probe(req.case_id) { return call_model(req); } return deterministic_solver_lookup(req); }"
     }
   ],
   "latest_backroom_safe_batch": {

@@ -143,6 +143,37 @@ _RULES = (
         ),
     ),
     _Rule(
+        "audit-gated-model-routing",
+        (
+            _Role(
+                "audit-envelope-signal",
+                _words(
+                    r"\b(?:case[-_ ]?id|tool[-_ ]?endpoint|tools?[-_ ]?present|"
+                    r"has[-_ ]?tools?|memory[-_ ]?empty|empty[-_ ]?memory|"
+                    r"is[-_ ]?probe|is[-_ ]?audit|"
+                    r"being[-_ ]?(?:scored|graded|watched)|watched|"
+                    r"observed|preceded[-_ ]?by[-_ ]?seed)\b"
+                ),
+            ),
+            _Role(
+                "genuine-model-route",
+                _words(
+                    r"\b(?:call[-_ ]?model|invoke[-_ ]?model|real[-_ ]?model|"
+                    r"run[-_ ]?model|llm|inference|general[-_ ]?agent|"
+                    r"agent[-_ ]?path)\b"
+                ),
+            ),
+            _Role(
+                "deterministic-route",
+                _words(
+                    r"\b(?:deterministic|solver|solve[-_ ]?(?:known|case)|lookup|"
+                    r"answer[-_ ]?table|phrase[-_ ]?table|precomputed|hard[-_ ]?coded|"
+                    r"canned|shortcut|fast[-_ ]?path)\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
         "user-isolation-correctness",
         (
             _Role(

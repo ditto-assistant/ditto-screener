@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 
 from ditto_screener.policy import (
+    _ORACLE_SYSTEM_PROMPT,
     CORE_ONLY_MANIFEST,
     AgenticSourceReviewModule,
     BehavioralChallengePackModule,
@@ -113,6 +114,7 @@ async def test_default_v7_runs_luna_review_and_behavioral_oracle_and_passes() ->
             elapsed_ms=800,
             gateway_calls=2,
             oracle_answer_correct=True,
+            gateway_token_observed=True,
         )
 
     async def review() -> SourceReviewObservation:
@@ -524,6 +526,7 @@ async def test_behavioral_oracle_runs_without_any_tripwire() -> None:
             elapsed_ms=900,
             gateway_calls=2,
             oracle_answer_correct=True,
+            gateway_token_observed=True,
         )
 
     decision = await _oracle_engine().evaluate(_context(observe))
@@ -541,6 +544,7 @@ async def test_reasoning_harness_passes_the_oracle() -> None:
             elapsed_ms=1200,
             gateway_calls=3,
             oracle_answer_correct=True,
+            gateway_token_observed=True,
         )
 
     decision = await _oracle_engine().evaluate(_context(observe))
@@ -555,7 +559,7 @@ async def test_single_call_table_harness_fails_the_oracle() -> None:
             True,
             "cd" * 32,
             elapsed_ms=900,
-            gateway_calls=1,
+            gateway_calls=0,
             oracle_answer_correct=False,
         )
 
@@ -595,6 +599,7 @@ async def test_too_fast_round_trip_trips_the_timing_floor() -> None:
             elapsed_ms=3,
             gateway_calls=2,
             oracle_answer_correct=True,
+            gateway_token_observed=True,
         )
 
     decision = await _oracle_engine().evaluate(_context(observe))
@@ -619,6 +624,7 @@ async def test_behavioral_oracle_anomalies_are_escalation_only(
             elapsed_ms=elapsed_ms,
             gateway_calls=gateway_calls,
             oracle_answer_correct=answer_correct,
+            gateway_token_observed=answer_correct,
         )
 
     decision = await _oracle_engine().evaluate(_context(observe))
@@ -868,16 +874,17 @@ async def test_oracle_request_is_randomized_and_unfingerprintable() -> None:
     assert module.challenge_id not in str(first.values())
 
 
-async def test_oracle_request_is_shaped_like_a_scored_tool_case() -> None:
-    """The oracle request must be indistinguishable from scored tool traffic.
+async def test_oracle_request_envelope_matches_scored_tool_traffic() -> None:
+    """The oracle request must be envelope-identical to a scored tool case, so a
+    harness cannot classify oracle-vs-scored from any request field.
 
-    The rejected audit-detection shortcut routed only requests that had NO
-    tools AND NO tool_endpoint AND NO seeded memory to the real model. Shaping
-    the oracle as a tool case (declares tools, carries a user_id; the gate fills
-    tool_endpoint) removes that whole signature: a tool case legitimately
-    carries tools and is not preceded by a /seed, so an un-seeded tool-shaped
-    /run is ordinary scored traffic, not a tell.
+    - case_id uses the production "c" + 16 hex format (not a bare 32-hex token);
+    - the full production tool catalog is offered (not a two-tool subset);
+    - the single scored tool-case system prompt is used (not an oracle pool);
+    - no user_id is set (scored tool cases carry none).
     """
+    import re
+
     seen: list[dict] = []
 
     async def challenge(challenge_id, request, _timeout):  # type: ignore[no-untyped-def]
@@ -889,19 +896,23 @@ async def test_oracle_request_is_shaped_like_a_scored_tool_case() -> None:
             elapsed_ms=800,
             gateway_calls=2,
             oracle_answer_correct=True,
+            gateway_token_observed=True,
         )
 
     module = BehavioralOracleModule(module_id="v8-behavioral-oracle")
     await module.evaluate(_context(challenge))
     (request,) = seen
+    # Production case-ID format: "c" + 16 hex (OpaqueCaseID), not [0-9a-f]{32}.
+    assert re.fullmatch(r"c[0-9a-f]{16}", str(request["case_id"])), request["case_id"]
+    # Full catalog, not a tiny subset.
     tools = request.get("tools")
-    assert isinstance(tools, list) and tools, "oracle must declare a tools catalog"
-    for tool in tools:
-        assert (
-            isinstance(tool, dict)
-            and isinstance(tool.get("name"), str)
-            and tool["name"]
-        )
-    assert isinstance(request.get("user_id"), str) and request["user_id"], (
-        "oracle must carry a user_id"
+    assert isinstance(tools, list) and len(tools) >= 10, (
+        "oracle must offer full catalog"
     )
+    for tool in tools:
+        assert isinstance(tool, dict)
+        assert isinstance(tool.get("name"), str) and tool["name"]
+    # The single scored tool-case system prompt, and NO user_id.
+    assert request["system_prompt"] == _ORACLE_SYSTEM_PROMPT
+    # Scored tool cases carry no user_id; the oracle must not either.
+    assert "user_id" not in request
