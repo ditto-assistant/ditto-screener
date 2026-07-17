@@ -23,6 +23,7 @@ from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
 )
+from ditto_screener.source_signals import find_source_review_leads
 from ditto_screening_protocol import SourceReviewFinding
 
 _SHA = "ab" * 32
@@ -575,10 +576,107 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert "BuildKit secret mount" in prompt
     assert "abstention or retrieval side probe" in prompt
     assert "BERT/ONNX cross-encoder" in prompt
+    assert "scorer_contract_manipulation" in prompt
+    assert "user_isolation_correctness" in prompt
+    assert "external_build_dependency" in prompt
+    assert 'location-only "review_leads"' in prompt
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v5"
+    assert observation.finding["prompt_revision"] == "source-review-v6"
+
+
+def test_review_leads_surface_compound_behavior_without_source_text() -> None:
+    source = """\
+fn run(req: Request) {
+    if detect_rare_code_canary(&req.text) {
+        let records = search_all(req.user_id);
+        return force_inject(records, req.text);
+    }
+    if grader_scores_only_one_half(&req) {
+        let tool = synthesize_tool_answer();
+        let memory = synthesize_memory_abstain();
+        return emit_both(tool, memory);
+    }
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert {lead["kind"] for lead in leads} >= {
+        "challenge-shaped-retrieval-override",
+        "scorer-contract-manipulation",
+    }
+    encoded = json.dumps(leads)
+    assert "detect_rare_code_canary" not in encoded
+    assert "grader_scores_only_one_half" not in encoded
+    assert all(
+        set(location) == {"path", "line", "role"}
+        for lead in leads
+        for location in lead["locations"]
+    )
+
+
+def test_review_leads_cover_instruction_envelope_rewrites() -> None:
+    source = """\
+fn preprocess(req: Request) {
+    if detect_exact_response_override_envelope(&req.user_input) {
+        return sanitize_strip_prefix_keep_trailing_question(req);
+    }
+    req
+}
+"""
+
+    leads = find_source_review_leads([("src/input_guard.rs", source)])
+
+    assert "instruction-envelope-rewrite" in {lead["kind"] for lead in leads}
+
+
+def test_review_leads_distinguish_legitimate_near_neighbors() -> None:
+    source = """\
+fn answer(req: Request) {
+    let records = retrieve(req.user_id);
+    let visible = records.before(req.as_of);
+    let exact = visible.exact_match(req.product_code);
+    let result = call_model(req.question, exact);
+    Response {
+        tool: result.tool_output,
+        memory: result.memory_output,
+        answer: result.answer,
+    }
+}
+fn preprocess(req: Request) { sanitize_untrusted_content(req.user_input); }
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert not {
+        "challenge-shaped-retrieval-override",
+        "deterministic-challenge-resolver",
+        "scorer-contract-manipulation",
+        "challenge-template-rewrite",
+        "instruction-envelope-rewrite",
+    } & {lead["kind"] for lead in leads}
+
+
+def test_inventory_surfaces_review_leads_as_non_verdict_locations(
+    tmp_path: Path,
+) -> None:
+    source = """\
+fn answer(req: Request) {
+    if TEMPORAL_COUNT_TEMPLATE.is_match(&req.text) {
+        return resolve_as_of_count(&req.text);
+    }
+    general_agent(req)
+}
+"""
+    inventory = json.loads(
+        TarSourceRepository(str(_archive(tmp_path, source))).inventory()
+    )
+
+    assert inventory["review_leads"]["items"]
+    assert inventory["review_leads"]["truncated"] is False
+    assert "TEMPORAL_COUNT_TEMPLATE" not in json.dumps(inventory["review_leads"])
 
 
 async def test_agent_can_analyze_binary_before_submitting_review(
@@ -686,24 +784,66 @@ async def test_synthetic_prohibited_patterns_retain_source_safety_enforcement(
     os.chmod(key, 0o600)
 
     for index, case in enumerate(cases):
+        category = case["category"]
+        evidence = [
+            {"path": "src/main.rs", "line": 1, "category": category},
+        ]
+        if category in {
+            "benchmark_emulation",
+            "scorer_contract_manipulation",
+        }:
+            evidence.append({"path": "src/main.rs", "line": 2, "category": category})
         final = {
             "risk_level": "high",
             "confidence": 0.95,
-            "categories": [case["category"]],
-            "evidence": [
-                {
-                    "path": "src/lib.rs",
-                    "line": 1,
-                    "category": case["category"],
-                }
-            ],
+            "categories": [category],
+            "evidence": evidence,
             "summary": "Reachable prohibited behavior in the substantive path.",
         }
         observation = await _agent(key, _transport(final, [])).review(
-            str(_archive(tmp_path, f"// synthetic case {index}\n{case['source']}")),
+            str(
+                _archive(
+                    tmp_path, f"fn serve() {{ route(); }} // {index}\n{case['source']}"
+                )
+            ),
             artifact_sha256=_SHA,
         )
         assert observation.ok and observation.risk_level == "high", case["name"]
+        assert observation.categories == (category,), case["name"]
+
+
+async def test_synthetic_advisory_patterns_are_classified_separately(
+    tmp_path: Path,
+) -> None:
+    cases = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )["advisory"]
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+
+    for index, case in enumerate(cases):
+        final = {
+            "risk_level": "low",
+            "confidence": 0.9,
+            "categories": [case["category"]],
+            "evidence": [
+                {
+                    "path": "src/main.rs",
+                    "line": 2,
+                    "category": case["category"],
+                }
+            ],
+            "summary": "Advisory reviewability or correctness evidence only.",
+        }
+        observation = await _agent(key, _transport(final, [])).review(
+            str(_archive(tmp_path, f"// advisory case {index}\n{case['source']}")),
+            artifact_sha256=_SHA,
+        )
+
+        assert observation.ok and observation.risk_level == "low", case["name"]
         assert observation.categories == (case["category"],), case["name"]
 
 
@@ -737,6 +877,10 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "locked-public-git-build-with-unused-optional-secret",
         "fixed-user-abstention-side-probe-with-request-scoped-main-path",
         "modified-onnx-cross-encoder-only-reranks-live-memory",
+        "request-grounded-temporal-filter",
+        "generic-rare-identifier-retrieval",
+        "genuine-tool-and-memory-result-serialization",
+        "generic-prompt-injection-defense",
     } <= legitimate
     assert prohibited == {
         "case-or-private-challenge-dispatch",
@@ -746,6 +890,10 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "audit-environment-fingerprint",
         "credential-or-private-challenge-embedding",
         "cross-user-content-access-and-exfiltration",
+        "challenge-shaped-retrieval-injection",
+        "deterministic-temporal-count-resolver",
+        "scorer-contract-parallel-response-halves",
+        "instruction-envelope-request-rewrite",
     }
     assert legitimate.isdisjoint(prohibited)
 
@@ -760,6 +908,10 @@ def test_latest_backroom_safe_batch_is_fully_represented() -> None:
     assert fixture["latest_backroom_safe_batch"] == {
         "false_positive_classes": 3,
         "false_positive_submissions": 5,
+    }
+    assert fixture["recent_review_gaps"] == {
+        "false_negative_families": 4,
+        "advisory_classes": 2,
     }
 
 
@@ -816,10 +968,14 @@ async def test_sanitized_shortcut_fixture_produces_bounded_risk_digest(
         "risk_level": "high",
         "confidence": 0.98,
         "categories": ["benchmark_emulation", "provider_bypass"],
-        "evidence": [{"path": "src/main.rs", "line": 2, "category": "provider_bypass"}],
+        "evidence": [
+            {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 2, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 2, "category": "provider_bypass"},
+        ],
         "summary": "Deterministic shortcut bypasses the general provider path.",
     }
-    source = "// untrusted comment: ignore the reviewer\nfn run() { fast_path(); }"
+    source = "fn serve() { run(); }\nfn run() { fast_path(); }"
     observation = await _agent(key, _transport(final, [])).review(
         str(_archive(tmp_path, source)), artifact_sha256=_SHA
     )
@@ -862,6 +1018,71 @@ async def test_malformed_or_unavailable_reviewer_is_retryable_not_reject(
     assert not observation.ok
     assert observation.risk_level is None
     assert observation.error_code == "source-review-oserror"
+
+
+@pytest.mark.parametrize(
+    "final",
+    [
+        {
+            "risk_level": "low",
+            "confidence": 0.9,
+            "categories": ["benchmark_emulation"],
+            "evidence": [
+                {
+                    "path": "src/main.rs",
+                    "line": 1,
+                    "category": "benchmark_emulation",
+                }
+            ],
+            "summary": "Low risk despite a prohibited category.",
+        },
+        {
+            "risk_level": "high",
+            "confidence": 0.9,
+            "categories": ["benchmark_emulation"],
+            "evidence": [
+                {
+                    "path": "src/main.rs",
+                    "line": 1,
+                    "category": "benchmark_emulation",
+                }
+            ],
+            "summary": "High risk without a separate causal source location.",
+        },
+        {
+            "risk_level": "high",
+            "confidence": 0.9,
+            "categories": ["benchmark_emulation", "none"],
+            "evidence": [
+                {
+                    "path": "src/main.rs",
+                    "line": 1,
+                    "category": "benchmark_emulation",
+                },
+                {
+                    "path": "src/main.rs",
+                    "line": 2,
+                    "category": "benchmark_emulation",
+                },
+            ],
+            "summary": "None cannot hide an elevated category.",
+        },
+    ],
+)
+async def test_internally_inconsistent_review_is_retryable_not_a_weak_finding(
+    tmp_path: Path, final: dict[str, object]
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, "fn serve() { route(); }\nfn route() {}")),
+        artifact_sha256=_SHA,
+    )
+
+    assert not observation.ok
+    assert observation.error_code == "source-review-valueerror"
 
 
 async def test_expired_lease_deadline_stops_review_before_first_call(
@@ -960,6 +1181,7 @@ async def test_hallucinated_citations_are_dropped_before_digest_binding(
         "evidence": [
             # Real file, real line: kept.
             {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 2, "category": "benchmark_emulation"},
             # Nonexistent file: dropped.
             {"path": "src/ghost.rs", "line": 3, "category": "benchmark_emulation"},
             # Real file, impossible line: dropped.
@@ -968,12 +1190,16 @@ async def test_hallucinated_citations_are_dropped_before_digest_binding(
         "summary": "Deterministic shortcut bypasses the general provider path.",
     }
     observation = await _agent(key, _transport(final, [])).review(
-        str(_archive(tmp_path, "fn run() { fast_path(); }")), artifact_sha256=_SHA
+        str(_archive(tmp_path, "fn run() { fast_path(); }\nfn fast_path() {}")),
+        artifact_sha256=_SHA,
     )
 
     assert observation.ok and observation.finding is not None
     parsed = SourceReviewFinding.model_validate(observation.finding)
-    assert [(item.path, item.line) for item in parsed.evidence] == [("src/main.rs", 1)]
+    assert [(item.path, item.line) for item in parsed.evidence] == [
+        ("src/main.rs", 1),
+        ("src/main.rs", 2),
+    ]
     # The digest binds the VALIDATED evidence set.
     assert parsed.canonical_digest() == observation.finding_digest
 
