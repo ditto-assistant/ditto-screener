@@ -552,7 +552,7 @@ async def test_reasoning_harness_passes_the_oracle() -> None:
     assert any(item.code == "behavioral-oracle-passed" for item in decision.evidence)
 
 
-async def test_single_call_table_harness_fails_the_oracle() -> None:
+async def test_single_call_oracle_is_inconclusive_without_causal_evidence() -> None:
     async def observe(*_):  # type: ignore[no-untyped-def]
         return ChallengeObservation(
             "v8-behavioral-oracle",
@@ -564,7 +564,7 @@ async def test_single_call_table_harness_fails_the_oracle() -> None:
         )
 
     decision = await _oracle_engine().evaluate(_context(observe))
-    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.outcome == ScreeningOutcome.INCONCLUSIVE
     assert not decision.submits_verdict
     assert any(
         item.code == "behavioral-oracle-insufficient-round-trips"
@@ -629,7 +629,12 @@ async def test_behavioral_oracle_anomalies_are_escalation_only(
 
     decision = await _oracle_engine().evaluate(_context(observe))
 
-    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    expected = (
+        ScreeningOutcome.INCONCLUSIVE
+        if gateway_calls < 2
+        else ScreeningOutcome.QUARANTINE
+    )
+    assert decision.outcome == expected
     assert decision.outcome != ScreeningOutcome.DETERMINISTIC_REJECT
     assert not decision.submits_verdict
 
@@ -758,8 +763,8 @@ async def test_source_review_finding_travels_to_quarantine_decision() -> None:
     assert decision.finding == finding
 
 
-async def test_clean_review_finding_is_kept_when_oracle_quarantines() -> None:
-    """A low-risk source review is exculpatory context on an oracle quarantine."""
+async def test_clean_review_finding_is_kept_when_oracle_is_inconclusive() -> None:
+    """A low-risk source review remains exculpatory on an inconclusive oracle."""
     finding = _finding_payload("low")
 
     async def challenge(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
@@ -782,7 +787,7 @@ async def test_clean_review_finding_is_kept_when_oracle_quarantines() -> None:
         )
 
     decision = await load_policy_engine(None).evaluate(_context(challenge, review))
-    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.outcome == ScreeningOutcome.INCONCLUSIVE
     assert decision.finding == finding
 
 

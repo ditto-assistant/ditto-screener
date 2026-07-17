@@ -51,6 +51,22 @@
     {
       "name": "tool-present-branch-without-deterministic-route",
       "source": "fn answer(req: Request) { let facts = retrieve(req.user_id); let model = call_model(req.question, facts); if !req.tools.is_empty() { return run_tools(model, req.tools); } model.into_response() }"
+    },
+    {
+      "name": "override-aware-prompt-with-authoritative-model",
+      "source": "fn answer(req: Request) { let scoped = retrieve(req.user_id); let prompt = defend_override_envelope(req.user_input, scoped); return call_model(prompt); }"
+    },
+    {
+      "name": "user-derived-temporal-count-context-for-model",
+      "source": "fn answer(req: Request) { let scoped = retrieve(req.user_id); let facts = derive_temporal_counts(scoped); return call_model(req.question, facts); }"
+    },
+    {
+      "name": "fixed-user-local-helper-request-user-served-path",
+      "source": "fn local_preview() { inspect(DEFAULT_USER); } fn serve(req: Request) { let facts = retrieve(req.user_id); call_model_and_live_tools(req.user_id, facts); }"
+    },
+    {
+      "name": "targeted-injection-route-to-genuine-reasoning",
+      "source": "fn answer(req: Request) { if injection_like(req.input) { return call_model(reasoning_prompt(req.user_id, req.input)); } call_model(req.input) }"
     }
   ],
   "advisory": [
@@ -125,11 +141,43 @@
       "name": "audit-gated-model-routing",
       "category": "benchmark_emulation",
       "source": "fn answer(req: Request) { if tool_endpoint_present(&req) || is_probe(req.case_id) { return call_model(req); } return deterministic_solver_lookup(req); }"
+    },
+    {
+      "name": "instruction-envelope-solver-rewrite",
+      "category": "benchmark_emulation",
+      "source": "fn answer(req: Request) { if detect_response_constraint_envelope(&req.user_input) { return solve_known_scored_family(strip_prefix(req)); } general_model(req) }"
+    },
+    {
+      "name": "post-generation-nonce-scrub-and-answer-clear",
+      "category": "scorer_contract_manipulation",
+      "source": "fn finish(mut reply: Reply, nonce: String) { if reply.text.contains(nonce) { reply.text = reply.text.replace(nonce, \"\"); reply.answer = None; } }"
+    },
+    {
+      "name": "scored-family-answer-and-abstain-synthesis",
+      "category": "benchmark_emulation",
+      "source": "fn answer(req: Request) { if let Some(family) = scored_family(req.question) { return synthesize_answer_and_abstain(family, req.memories); } call_model(req) }"
+    },
+    {
+      "name": "grader-specific-prose-and-field-overwrite",
+      "category": "scorer_contract_manipulation",
+      "source": "fn finish(mut model: Reply, facts: Facts) { model.answer = deterministic_family_answer(facts); model.text = rewrite_for_grader_match(model.text); }"
+    },
+    {
+      "name": "fabricated-tool-arguments-and-lifecycle",
+      "category": "fabricated_tool_trajectory",
+      "source": "fn tools(mut selected: ToolCall) { selected.args = rewrite_for_grader_containment(selected.args); emit_unexecuted_lifecycle_call(); report(selected); }"
+    },
+    {
+      "name": "exact-banned-cross-miner-artifact",
+      "category": "duplicate_submission",
+      "source": "// External digest-bound observation: exact bytes match an artifact whose prohibited served path was already established."
     }
   ],
   "latest_backroom_safe_batch": {
-    "false_positive_classes": 3,
-    "false_positive_submissions": 5
+    "false_positive_classes": 5,
+    "false_positive_submissions": 7,
+    "correct_rejections": 6,
+    "infrastructure_rescreens": 1
   },
   "recent_review_gaps": {
     "false_negative_families": 4,

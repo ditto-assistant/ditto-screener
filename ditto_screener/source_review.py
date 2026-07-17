@@ -20,10 +20,13 @@ from ditto_screener.binary_analysis import (
     sample_stream,
 )
 from ditto_screener.policy import SourceReviewObservation
-from ditto_screener.source_signals import find_source_review_leads
+from ditto_screener.source_signals import (
+    find_decisive_malicious_source,
+    find_source_review_leads,
+)
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v7"
+_PROMPT_REVISION = "source-review-v8"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -214,6 +217,14 @@ _GENERATOR_MIRRORING_EXCLUDED_PARTS = frozenset(
     {".github", "docs", "examples", "fixtures", "target", "test", "tests", "vendor"}
 )
 
+
+def _is_generator_runtime_source(path: str) -> bool:
+    pure = PurePosixPath(path)
+    return pure.suffix.casefold() in _GENERATOR_MIRRORING_SOURCE_SUFFIXES and not any(
+        part.casefold() in _GENERATOR_MIRRORING_EXCLUDED_PARTS for part in pure.parts
+    )
+
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
@@ -240,9 +251,9 @@ also allowed. Parameter tuning, benchmark terminology, comments, documentation,
 or use of a documented protocol field are not evidence by themselves.
 
 Public availability is not a safe harbor for benchmark emulation. Report
-benchmark_emulation when the runtime path does one or more of the following:
-- recognizes exact generator, audit, canary, challenge, or scorer token/template
-  shapes and changes behavior because the input matches them;
+benchmark_emulation only when the effective served path uses benchmark-, audit-,
+challenge-, or grader-specific logic to replace or manipulate the genuine agent
+result. Strong examples are reachable code that:
 - implements deterministic solvers or phrase tables for scored question
   families instead of using the claimed general agent path;
 - trains or selects runtime behavior from expected answers, answer items,
@@ -259,19 +270,30 @@ benchmark_emulation when the runtime path does one or more of the following:
   audit or evaluation.
 
 Distinguish generic mechanisms from benchmark fingerprints. Generic lexical
-retrieval of a user-owned value is allowed; recognizing a benchmark-specific
-token grammar, bait/ownership pattern, or audit request shape is not. Generic
-answer-slot serialization is allowed; scorer-aware normalization or answer
-splicing that bypasses the model/tool result is not. Prompt-injection defense is
-allowed; stripping exact known challenge templates or extracting their trailing
-question specifically to defeat the audit is not.
+retrieval of a user-owned value is allowed. Recognizing an override,
+exact-response, or opaque-token envelope is not by itself benchmark emulation
+when current-user retrieval, genuine model generation, and live tool execution
+remain authoritative. Generic answer-slot serialization is allowed; scorer-aware
+normalization or answer splicing that bypasses the model/tool result is not.
 
 Apply that boundary to instruction-envelope rewriting generally: sanitizing
 untrusted instructions while preserving the user's real request is allowed.
 Recognizing exact-response, opaque-token, or override-envelope grammar and
 dropping the envelope before retrieval/model execution is benchmark emulation
 only when reachable evidence connects the recognized grammar to scored/audit
-traffic or to deterministic replacement of the genuine agent path.
+traffic AND to deterministic replacement or manipulation of the genuine agent
+path. Prompt wording, routing to a real model, or removal of untrusted
+instructions before that model call is insufficient by itself.
+
+Current-user facts remain legitimate agent context even when computed by local
+helpers. Temporal ordering, counts, lists, and similar derived facts may be
+computed from request-user memories and supplied to a real model without
+becoming benchmark emulation. Report them only when a scored-family dispatcher
+uses those computations to synthesize the authoritative answer before or
+instead of model inference. Likewise, a fixed user constant confined to a CLI,
+test, local helper, or metadata side path is not cross-user access when the
+served path retrieves, models, tools, and responds with the request user and no
+other user's content reaches a substantive sink.
 
 A benchmark_emulation finding requires evidence from the effective build or
 runtime path. Do not raise it solely for unchanged official fixtures, local
@@ -303,8 +325,10 @@ required.
 Do not report benchmark_emulation from the aggregate alone. One dimension, a
 public benchmark mention, ordinary application schema fields, generic retrieval,
 or starter/evaluation code without a reachable response path remains
-insufficient. Risk should be medium/high only after exact path:line evidence
-connects multiple mirrored dimensions to the effective pre-model response path.
+insufficient. Request-user grounding does not excuse a proven pre-model solver,
+but grounding plus a real authoritative model call is legitimate. Risk should
+be medium/high only after exact path:line evidence connects multiple mirrored
+dimensions to both the served trigger and the model-bypassing answer effect.
 
 Apply the same causal standard to source-safety categories:
 - An ordinary locked build is allowed to use a checksum-pinned public Git
@@ -389,9 +413,14 @@ be promoted merely because it was surfaced.
 For every medium/high category, cite at least one exact reachable path:line for
 that category. For benchmark_emulation or scorer_contract_manipulation, cite at
 least two distinct reachable locations covering the input/decision trigger and
-the resulting retrieval, model, tool, or response effect. Low risk may use only
-none or the advisory categories above. Never return none alongside another
-category.
+the resulting model bypass, authoritative-field change, or fabricated tool
+effect. Retrieval or prompt construction followed by an authoritative real
+model call does not satisfy the effect requirement. Reserve medium/high risk for
+causally established prohibited behavior; ambiguous intent, terminology,
+prompt-level awareness, local-only constants, and infrastructure or behavioral-
+oracle failures must be low risk with none or an advisory category. Low risk
+may use only none or the advisory categories above. Never return none alongside
+another category.
 
 Source-review findings are quarantine triage, never an automatic rejection.
 Before finishing, inspect enough primary files to support the result. Submit
@@ -476,17 +505,25 @@ class TarSourceRepository:
         members_considered = 0
         truncated = False
         with tarfile.open(self._archive_path, mode="r:gz") as archive:
-            for name in sorted(self._members):
+            # Runtime sources get the bounded scan budget before docs, tests,
+            # and other decoys, while the latter remain available to the broad
+            # review-lead scan when capacity remains.
+            ordered_names = sorted(
+                self._members,
+                key=lambda name: (not _is_generator_runtime_source(name), name),
+            )
+            for name in ordered_names:
+                member_info = self._members[name]
+                if member_info.size > _OPAQUE_SIZE_LIMIT:
+                    truncated = True
+                    continue
                 if members_considered >= _MAX_LEAD_SCAN_FILES:
                     truncated = True
                     break
                 members_considered += 1
-                member_info = self._members[name]
-                if member_info.size > _OPAQUE_SIZE_LIMIT:
-                    continue
                 if bytes_scanned + member_info.size > _MAX_LEAD_SCAN_BYTES:
                     truncated = True
-                    break
+                    continue
                 member = archive.getmember(member_info.archive_name)
                 extracted = archive.extractfile(member)
                 if extracted is None:
@@ -508,6 +545,79 @@ class TarSourceRepository:
             "truncated": truncated,
         }
 
+    def malicious_preflight(
+        self, *, artifact_sha256: str
+    ) -> SourceReviewObservation | None:
+        """Produce a signed, location-only finding before untrusted execution."""
+        readable: list[tuple[str, str]] = []
+        bytes_scanned = 0
+        members_considered = 0
+        with tarfile.open(self._archive_path, mode="r:gz") as archive:
+            for name in sorted(self._members):
+                if members_considered >= _MAX_LEAD_SCAN_FILES:
+                    break
+                members_considered += 1
+                member_info = self._members[name]
+                if member_info.size > _OPAQUE_SIZE_LIMIT:
+                    continue
+                if bytes_scanned + member_info.size > _MAX_LEAD_SCAN_BYTES:
+                    break
+                extracted = archive.extractfile(
+                    archive.getmember(member_info.archive_name)
+                )
+                if extracted is None:
+                    continue
+                raw = extracted.read(member_info.size + 1)
+                bytes_scanned += len(raw)
+                try:
+                    readable.append((name, raw.decode("utf-8")))
+                except UnicodeDecodeError:
+                    continue
+        matches = find_decisive_malicious_source(readable)
+        if not matches:
+            return None
+        categories = sorted({str(item["category"]) for item in matches})
+        evidence: list[SourceReviewEvidenceItem] = []
+        seen: set[tuple[str, int, str]] = set()
+        for match in matches:
+            category = str(match["category"])
+            locations = match["locations"]
+            assert isinstance(locations, list)
+            for location in locations:
+                assert isinstance(location, dict)
+                key = (str(location["path"]), int(location["line"]), category)
+                if key in seen:
+                    continue
+                seen.add(key)
+                evidence.append(
+                    SourceReviewEvidenceItem(path=key[0], line=key[1], category=key[2])
+                )
+                if len(evidence) >= 16:
+                    break
+            if len(evidence) >= 16:
+                break
+        finding = SourceReviewFinding(
+            artifact_sha256=artifact_sha256,
+            prompt_revision="static-malicious-preflight-v1",
+            risk_level="high",
+            confidence=1.0,
+            categories=categories,
+            evidence=evidence,
+            summary=(
+                "Static preflight found reachable source combinations for "
+                + ", ".join(sorted({str(item["kind"]) for item in matches}))
+                + "; execution was not started."
+            )[:240],
+        )
+        payload = finding.model_dump(mode="json")
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="high",
+            finding_digest=finding.canonical_digest(),
+            categories=tuple(categories),
+            finding=payload,
+        )
+
     @staticmethod
     def _generator_mirroring_analysis(
         readable: list[tuple[str, str]],
@@ -524,14 +634,7 @@ class TarSourceRepository:
         }
         scanned = 0
         for path, text in readable:
-            pure = PurePosixPath(path)
-            if (
-                pure.suffix.casefold() not in _GENERATOR_MIRRORING_SOURCE_SUFFIXES
-                or any(
-                    part.casefold() in _GENERATOR_MIRRORING_EXCLUDED_PARTS
-                    for part in pure.parts
-                )
-            ):
+            if not _is_generator_runtime_source(path):
                 continue
             scanned += 1
             for line_number, line in enumerate(text.splitlines(), 1):
