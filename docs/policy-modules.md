@@ -63,19 +63,19 @@ A missing call or missing dataflow token quarantines the attempt; it never
 creates a deterministic rejection. Embedding-only traffic does not satisfy the
 model-call check.
 
-The always-on behavioral oracle sends its `/run` **shaped like a scored tool
-case**: it carries a `user_id`, a `tools` catalog, and (filled by the gate from
-the reachable gateway) a `tool_endpoint`, with the system prompt drawn from a
-pool that includes the production scorer's own phrasing. This removes the
-audit-detection signature seen in rejected submissions — routing only requests
-with *no tools, no tool_endpoint, and no seeded memory* to the real model while
-solving scored requests deterministically. A tool case legitimately carries
-tools + an endpoint and is not preceded by a seed, so an un-seeded tool-shaped
-`/run` is ordinary scored traffic rather than a tell, and the tool-call round
-trip is the natural path by which the gateway's nonce reaches the harness's
-second model turn. The source reviewer additionally flags reachable code that
-classifies requests as audit-versus-scored (by seed state, empty memory, or
-envelope fields) to call the model only when watched.
+The always-on behavioral oracle sends its `/run` shaped like a scored tool case.
+It carries a `user_id`, a `tools` catalog, and a `tool_endpoint` filled by the
+gate from the reachable gateway, with the system prompt drawn from a pool that
+includes the production scorer's own phrasing. This removes the audit-detection
+signature seen in rejected submissions, which routed only requests with no tools,
+no tool_endpoint, and no seeded memory to the real model while solving scored
+requests deterministically. A tool case legitimately carries tools and an
+endpoint and is not preceded by a seed, so an un-seeded tool-shaped `/run` is
+ordinary scored traffic rather than a tell. The tool-call round trip is also the
+natural path by which the gateway's nonce reaches the harness's second model
+turn. The source reviewer additionally flags reachable code that classifies
+requests as audit versus scored, by seed state, empty memory, or envelope
+fields, to call the model only when watched.
 
 Challenge packs and selectors remain protected operator inputs. Rotate request
 shapes, identifiers, and audit sampling together; do not commit a production
