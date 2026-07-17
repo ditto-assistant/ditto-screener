@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.9.1 (2026-07-17)
+
+### Bug Fixes
+
+- Deploy semantic release commits ([#25](https://github.com/ditto-assistant/ditto-screener/pull/25),
+  [`5b31848`](https://github.com/ditto-assistant/ditto-screener/commit/5b31848e00d732f1d72aa017e010e8afc12b6a86))
+
+
 ## v0.9.0 (2026-07-17)
 
 ### Features
