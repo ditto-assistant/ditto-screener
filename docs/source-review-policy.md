@@ -73,6 +73,15 @@ abstain fields outside the genuine agent result.
 Public source code or documentation for a benchmark does not make these runtime
 shortcuts acceptable.
 
+Generator mirroring may be distributed rather than expressed as one obvious
+answer table. Source review therefore surfaces an aggregate routing signal for
+coordinated overlap across attribute ontologies, question templates, fact and
+update frames, event labels, retrieval vocabulary, and deterministic answer
+paths. The signal is not itself a finding. Reviewers must cite exact runtime
+locations and connect multiple mirrored dimensions to a served answer that
+bypasses model inference. Request-user grounding does not make that bypass
+general-purpose, and literal answer keys are not required.
+
 ## Evidence threshold
 
 A finding should identify the relevant `path:line` evidence and explain the
@@ -98,6 +107,8 @@ insufficient on their own:
   the substantive model/tool result.
 - an external or pinned build input without concrete execution, credential,
   exfiltration, backdoor, or runtime-replacement behavior.
+- one generator-mirroring dimension, ordinary schema/retrieval vocabulary, or
+  an aggregate candidate with no reachable pre-model response path.
 
 When the causal connection is ambiguous, quarantine evidence may describe the
 uncertainty, but operators should not reject solely on terminology, timing,

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import tarfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from ditto_screener.policy import SourceReviewObservation
 from ditto_screener.source_signals import find_source_review_leads
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v6"
+_PROMPT_REVISION = "source-review-v7"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -62,6 +63,156 @@ _MULTI_LOCATION_CATEGORIES = frozenset(
     {"benchmark_emulation", "scorer_contract_manipulation"}
 )
 _RETRY_DELAYS_SECONDS = (0.5, 1.0)
+
+# Public-generator vocabulary is weak evidence in isolation.  These families
+# intentionally use broad semantic stems rather than one magic phrase, and the
+# aggregate is only a routing hint for the agentic reviewer.  A finding still
+# requires a reachable deterministic path that changes the served response.
+_GENERATOR_MIRRORING_PATTERN_TEXT: dict[
+    str, tuple[int, tuple[tuple[str, str], ...]]
+] = {
+    "attribute_ontology": (
+        6,
+        (
+            ("location", r"\b(?:city|cities|location)\b"),
+            ("employment", r"\b(?:employer|company|occupation)\b"),
+            ("vehicle", r"\b(?:car|vehicle)\b"),
+            ("education", r"\b(?:university|college|school)\b"),
+            ("instrument", r"\binstrument\b"),
+            ("project", r"\bprojects?\b"),
+            ("trip", r"\btrips?\b"),
+            ("pet", r"\bpets?\b"),
+            ("food", r"\b(?:cuisine|dietary|diet)\b"),
+            ("color", r"\bcolou?rs?\b"),
+            ("hobby", r"\bhobb(?:y|ies)\b"),
+        ),
+    ),
+    "question_templates": (
+        4,
+        (
+            (
+                "what_attribute",
+                r"\bwhat\b.{0,80}\b(?:city|car|instrument|colou?r|occupation)\b",
+            ),
+            ("where_state", r"\bwhere\b.{0,80}\b(?:live|work|study|located)\b"),
+            (
+                "which_attribute",
+                r"\bwhich\b.{0,80}\b(?:company|university|project|trip|pet)\b",
+            ),
+            ("count_list", r"\bhow many\b.{0,80}\b(?:projects?|trips?|pets?|times)\b"),
+            (
+                "enumerate_list",
+                r"\b(?:list|name)\b.{0,80}\b(?:projects?|trips?|pets?)\b",
+            ),
+            (
+                "previous_state",
+                r"\b(?:what|where|which)\b.{0,80}\b(?:before|previous|used to)\b",
+            ),
+            (
+                "temporal_state",
+                r"\b(?:when|at the time|as of)\b.{0,80}"
+                r"\b(?:move|start|switch|change|work|live)\b",
+            ),
+        ),
+    ),
+    "fact_update_frames": (
+        5,
+        (
+            ("residence", r"\b(?:i|my)\b.{0,80}\b(?:live|moved|city|home)\b"),
+            ("employment", r"\b(?:i|my)\b.{0,80}\b(?:work|job|employer|company)\b"),
+            ("vehicle", r"\b(?:i|my)\b.{0,80}\b(?:drive|car|vehicle)\b"),
+            (
+                "education",
+                r"\b(?:i|my)\b.{0,80}\b(?:studied|university|college|school)\b",
+            ),
+            ("instrument", r"\b(?:i|my)\b.{0,80}\b(?:play|instrument)\b"),
+            ("list_fact", r"\b(?:i|my)\b.{0,80}\b(?:project|trip|pet)\b"),
+            (
+                "preference",
+                r"\b(?:i|my)\b.{0,80}\b(?:prefer|favorite|favourite|cuisine|diet|colou?r|hobby)\b",
+            ),
+            ("update", r"\b(?:now|moved|switched|changed|started|no longer|used to)\b"),
+        ),
+    ),
+    "event_label_frames": (
+        3,
+        (
+            ("move", r"\bmov(?:e|ed|ing)\b"),
+            ("start", r"\bstart(?:ed|ing)?\b"),
+            ("switch", r"\bswitch(?:ed|ing)?\b"),
+            ("change", r"\bchang(?:e|ed|ing)\b"),
+            ("adopt", r"\badopt(?:ed|ing)?\b"),
+            ("graduate", r"\bgraduat(?:e|ed|ing)\b"),
+            ("join", r"\bjoin(?:ed|ing)?\b"),
+        ),
+    ),
+    "retrieval_vocabulary_bridge": (
+        6,
+        (
+            ("question", r"\bquestion\b"),
+            ("query", r"\bquery\b"),
+            ("fact", r"\bfacts?\b"),
+            ("memory", r"\bmemor(?:y|ies)\b"),
+            ("attribute", r"\battributes?\b"),
+            ("value", r"\bvalues?\b"),
+            ("extract", r"\bextract(?:ed|ion|or|ors)?\b"),
+            ("retrieve", r"\bretriev(?:e|ed|al|er|ers)\b"),
+            ("match", r"\bmatch(?:ed|er|ers|ing)?\b"),
+            ("keyword", r"\bkeywords?\b"),
+        ),
+    ),
+    "deterministic_answer_path": (
+        4,
+        (
+            (
+                "direct_answer",
+                r"\b(?:direct|grounded|deterministic)[_ -](?:answer|response)\b",
+            ),
+            ("early_return", r"\b(?:return|early[_ -]?return|fast[_ -]?path)\b"),
+            ("answer", r"\banswers?\b"),
+            ("model", r"(?:\b|_)model(?:\b|_)"),
+            (
+                "inference",
+                r"(?:\b|_)(?:infer(?:ence)?|provider|chat[_ /-]?completions?)"
+                r"(?:\b|_)",
+            ),
+            ("fallback", r"(?:\b|_)(?:before|fallback|otherwise)(?:\b|_)"),
+        ),
+    ),
+}
+_GENERATOR_MIRRORING_PATTERNS: dict[
+    str, tuple[int, tuple[tuple[str, re.Pattern[str]], ...]]
+] = {
+    dimension: (
+        minimum,
+        tuple((marker, re.compile(pattern)) for marker, pattern in patterns),
+    )
+    for dimension, (minimum, patterns) in _GENERATOR_MIRRORING_PATTERN_TEXT.items()
+}
+_GENERATOR_MIRRORING_SOURCE_SUFFIXES = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cs",
+        ".go",
+        ".h",
+        ".hpp",
+        ".java",
+        ".js",
+        ".jsx",
+        ".kt",
+        ".py",
+        ".rb",
+        ".rs",
+        ".swift",
+        ".ts",
+        ".tsx",
+    }
+)
+_GENERATOR_MIRRORING_EXCLUDED_PARTS = frozenset(
+    {".github", "docs", "examples", "fixtures", "target", "test", "tests", "vendor"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +287,24 @@ This category requires exact evidence for both the scorer-aware decision and
 the changed response. Trace those citations through an entrypoint or call site
 before submitting them as reachable. Generic serialization of genuine tool
 and memory results is allowed.
+
+The initial inventory's location-only "review_leads" include a bounded
+generator-mirroring aggregate. It is a routing signal, not a verdict. When it
+reports a candidate, inspect the cited primary source locations and trace them
+through the served request path. Look for a coordinated constellation: a
+benchmark-like scalar/list ontology, finite question classifiers, finite
+fact/update frame extractors, event-label parsing, vocabulary bridges between
+questions and facts, and a deterministic answer return before model inference.
+A grounded answer is still benchmark_emulation when that coordinated
+public-generator mirror deterministically replaces the claimed general agent
+path across scored families; literal expected answers or hidden values are not
+required.
+
+Do not report benchmark_emulation from the aggregate alone. One dimension, a
+public benchmark mention, ordinary application schema fields, generic retrieval,
+or starter/evaluation code without a reachable response path remains
+insufficient. Risk should be medium/high only after exact path:line evidence
+connects multiple mirrored dimensions to the effective pre-model response path.
 
 Apply the same causal standard to source-safety categories:
 - An ordinary locked build is allowed to use a checksum-pinned public Git
@@ -332,10 +501,90 @@ class TarSourceRepository:
                 files_scanned += 1
         return {
             "items": find_source_review_leads(readable),
+            "generator_mirroring": self._generator_mirroring_analysis(readable),
             "files_scanned": files_scanned,
             "members_considered": members_considered,
             "bytes_scanned": bytes_scanned,
             "truncated": truncated,
+        }
+
+    @staticmethod
+    def _generator_mirroring_analysis(
+        readable: list[tuple[str, str]],
+    ) -> dict[str, object]:
+        """Surface aggregate public-generator mirroring for causal review.
+
+        The pre-analysis never assigns a policy category or risk level. It
+        reports only dimensions, counts, and real archive locations so the
+        reviewer can distinguish a reachable coordinated solver from isolated
+        schema, retrieval, documentation, test, or starter-kit vocabulary.
+        """
+        hits: dict[str, dict[str, tuple[str, int]]] = {
+            dimension: {} for dimension in _GENERATOR_MIRRORING_PATTERNS
+        }
+        scanned = 0
+        for path, text in readable:
+            pure = PurePosixPath(path)
+            if (
+                pure.suffix.casefold() not in _GENERATOR_MIRRORING_SOURCE_SUFFIXES
+                or any(
+                    part.casefold() in _GENERATOR_MIRRORING_EXCLUDED_PARTS
+                    for part in pure.parts
+                )
+            ):
+                continue
+            scanned += 1
+            for line_number, line in enumerate(text.splitlines(), 1):
+                folded = line.casefold()
+                for dimension, (
+                    _minimum,
+                    patterns,
+                ) in _GENERATOR_MIRRORING_PATTERNS.items():
+                    dimension_hits = hits[dimension]
+                    for marker, pattern in patterns:
+                        if marker not in dimension_hits and pattern.search(folded):
+                            dimension_hits[marker] = (path, line_number)
+
+        dimensions: dict[str, dict[str, object]] = {}
+        matched: list[str] = []
+        for dimension, (minimum, _patterns) in _GENERATOR_MIRRORING_PATTERNS.items():
+            marker_hits = hits[dimension]
+            if len(marker_hits) < minimum:
+                continue
+            matched.append(dimension)
+            dimensions[dimension] = {
+                "marker_count": len(marker_hits),
+                "minimum": minimum,
+                "locations": [
+                    {"path": path, "line": line}
+                    for path, line in list(marker_hits.values())[:8]
+                ],
+            }
+
+        grammar_dimensions = {
+            "attribute_ontology",
+            "question_templates",
+            "fact_update_frames",
+            "event_label_frames",
+            "retrieval_vocabulary_bridge",
+        }
+        matched_grammar = grammar_dimensions.intersection(matched)
+        aggregate_candidate = (
+            len(matched_grammar) >= 4
+            and {
+                "question_templates",
+                "fact_update_frames",
+            }.issubset(matched_grammar)
+            and "deterministic_answer_path" in matched
+        )
+        return {
+            "aggregate_candidate": aggregate_candidate,
+            "matched_dimensions": matched,
+            "dimensions": dimensions,
+            "scanned_runtime_source_files": scanned,
+            "disposition": "requires-runtime-causal-review"
+            if aggregate_candidate
+            else "no-aggregate-candidate",
         }
 
     def trusted_provenance(self, manifest_path: str) -> str:
