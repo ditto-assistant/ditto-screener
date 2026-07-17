@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.7.2 (2026-07-17)
+
+### Bug Fixes
+
+- Clarify benchmark emulation boundary
+  ([#11](https://github.com/ditto-assistant/ditto-screener/pull/11),
+  [`21ad169`](https://github.com/ditto-assistant/ditto-screener/commit/21ad16979215177d56c0c489da1d2ecf67026247))
+
+
 ## v0.7.1 (2026-07-17)
 
 ### Bug Fixes
