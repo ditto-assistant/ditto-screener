@@ -37,6 +37,18 @@ a correctness defect, but it is not malicious cross-user access when no other
 user's content reaches model context, tool execution, the response, a log, or
 an outbound sink and the probe cannot replace the request-user path.
 
+Reachable fixed-user writes, cross-user lifecycle maps, and global lifecycle
+state are classified as `user_isolation_correctness` when they do not carry
+another user's content into the substantive path. That category may justify a
+correctness review, but it is not benchmark-emulation or malicious-source proof
+and does not justify an anti-cheat rejection by itself.
+
+Likewise, an external or pinned input may be recorded as
+`external_build_dependency` when it expands the review surface without concrete
+malicious behavior. Only an effective build that reads or leaks credentials,
+executes mutable unreviewed logic, installs a backdoor, or replaces the reviewed
+runtime qualifies as `malicious_build`.
+
 ## Benchmark emulation
 
 Quarantine for `benchmark_emulation` when evidence from the effective build or
@@ -53,6 +65,11 @@ runtime path shows at least one of these behaviors:
 - fabricated tool trajectories or calls made only to satisfy the evaluator;
 - screening-environment fingerprinting that presents different audit behavior.
 
+Use `scorer_contract_manipulation` as an additional category when reachable
+code exploits which response half or field the grader observes, emits parallel
+tool and memory answers because only one is scored, or synthesizes answer and
+abstain fields outside the genuine agent result.
+
 Public source code or documentation for a benchmark does not make these runtime
 shortcuts acceptable.
 
@@ -60,7 +77,12 @@ shortcuts acceptable.
 
 A finding should identify the relevant `path:line` evidence and explain the
 causal path from recognized input to changed output, tool trajectory, or model
-bypass. The following are insufficient on their own:
+bypass. Medium/high findings require evidence for every category. Benchmark
+emulation and scorer-contract manipulation require at least two distinct,
+validated source locations covering the trigger and effect. Location-only
+review leads in the initial inventory are search prompts, not findings; the
+reviewer must prove they are reachable before citing them. The following are
+insufficient on their own:
 
 - tuned parameters or multiple candidate profiles;
 - generic answer-slot parsing;
@@ -74,6 +96,8 @@ bypass. The following are insufficient on their own:
   that the effective build reads credentials or replaces reviewed behavior;
 - a metadata-only fixed-user side-probe bug that cannot expose content or alter
   the substantive model/tool result.
+- an external or pinned build input without concrete execution, credential,
+  exfiltration, backdoor, or runtime-replacement behavior.
 
 When the causal connection is ambiguous, quarantine evidence may describe the
 uncertainty, but operators should not reject solely on terminology, timing,
@@ -89,6 +113,10 @@ score, or a single fingerprint signal.
 - **Reject** when source evidence establishes benchmark emulation, hidden-value
   leakage, fabricated execution, cross-user access, credential/exfiltration
   behavior, malicious build behavior, or another documented policy violation.
+
+`user_isolation_correctness` and `external_build_dependency` are advisory
+categories. They may support hardening, rescreening, or a separate correctness
+review, but are not terminal anti-cheat grounds by themselves.
 
 Every operator action must record a miner-visible reason describing the actual
 evidence. Avoid conclusions based only on labels such as "optimized" or

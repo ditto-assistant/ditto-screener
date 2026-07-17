@@ -49,6 +49,7 @@ _PRIVATE_CHALLENGE_CATEGORIES = frozenset(
         "fabricated_tool_trajectory",
         "hidden_value_leakage",
         "provider_bypass",
+        "scorer_contract_manipulation",
         "seed_state_shortcut",
         "suspicious_static_tables",
     }
@@ -64,6 +65,9 @@ _MALICIOUS_SOURCE_CATEGORIES = frozenset(
     }
 )
 _ORIGINALITY_CATEGORIES = frozenset({"duplicate_submission"})
+_ADVISORY_SOURCE_CATEGORIES = frozenset(
+    {"external_build_dependency", "user_isolation_correctness"}
+)
 
 
 class ScreeningOutcome(StrEnum):
@@ -489,9 +493,13 @@ class AgenticSourceReviewModule(_BaseModule):
                     ),
                 ),
             )
-        if observation.risk_level == "low" and set(observation.categories) <= {"none"}:
+        if observation.risk_level == "low" and set(observation.categories) <= (
+            {"none"} | _ADVISORY_SOURCE_CATEGORIES
+        ):
             # Keep the low-risk finding: if another module later quarantines,
-            # a clean source review is exculpatory context for the operator.
+            # clean or advisory-only source review is useful operator context.
+            # Advisory correctness/build observations are not anti-cheat
+            # tripwires by themselves.
             return ModuleResult(ModuleDisposition.CLEAR, finding=observation.finding)
         if observation.risk_level not in {"low", "medium", "high"}:
             return ModuleResult(
@@ -634,18 +642,12 @@ class BehavioralOracleModule(_BaseModule):
     the round-trip cannot produce the right final answer, returns in ~1 call,
     and answers in milliseconds.
 
-    TRUST-BOUNDARY NOTE: a wrong gateway-encoded answer and an implausibly
-    fast / single-call round-trip are objective, checkable facts, so they
-    *could* map to ``deterministic_reject``. The PolicyEngine deliberately
-    reserves terminal rejection to the stable core (see module docstring and
-    ``core_decision``); a private module cannot emit ``deterministic_reject``.
-    We therefore route objective failures to ``QUARANTINE``, which already
-    withholds the pass verdict (the cheater is not admitted) while keeping an
-    operator in the loop. TODO(anti-gaming): to promote these objective
-    failures to ``deterministic_reject``, run this oracle inside the stable
-    core in ``gate.py`` (which owns the container/gateway lifecycle and is the
-    only role permitted to reject), or add a sanctioned objective-reject
-    disposition to ``_module_terminal``.
+    TRUST-BOUNDARY NOTE: a wrong gateway-encoded answer, insufficient call
+    count, or implausibly fast round-trip is reproducible escalation evidence,
+    but it is not sole terminal proof. Provider behavior, retries, caching, and
+    harness architecture can produce legitimate anomalies. The PolicyEngine
+    therefore routes these observations to ``QUARANTINE`` and reserves
+    ``deterministic_reject`` for stable-core artifact/build/serve failures.
     """
 
     phase: str = field(init=False, default="challenge")
@@ -712,8 +714,8 @@ class BehavioralOracleModule(_BaseModule):
                 ),
             )
         if observation.gateway_calls < self.min_gateway_calls:
-            # Objective: a genuine multi-step harness makes the round-trip;
-            # a lookup answers with too few (often one) gateway calls.
+            # Too few calls is a strong shortcut signal, but alternate honest
+            # provider loops can differ, so it remains operator escalation.
             return ModuleResult(
                 ModuleDisposition.QUARANTINE,
                 (
@@ -741,8 +743,7 @@ class BehavioralOracleModule(_BaseModule):
                 ),
             )
         if observation.elapsed_ms < self.min_elapsed_ms:
-            # Objective: real model round-trips accrue latency; a table returns
-            # in milliseconds.
+            # Very low latency is a tripwire, not causal proof of a table.
             return ModuleResult(
                 ModuleDisposition.QUARANTINE,
                 (
@@ -962,6 +963,12 @@ def _source_review_reason(categories: Sequence[str]) -> tuple[str, str]:
         return (
             "originality-duplicate-risk",
             "cross-submission evidence found exact-artifact originality risk",
+        )
+    if category_set & _ADVISORY_SOURCE_CATEGORIES:
+        return (
+            "source-correctness-review",
+            "private source analysis found correctness or reviewability risk, "
+            "not terminal anti-cheat proof",
         )
     return (
         "source-safety-behavioral-risk",

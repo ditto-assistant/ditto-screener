@@ -186,6 +186,7 @@ async def test_agentic_source_review_can_only_select_quarantine() -> None:
     ("category", "expected_code"),
     [
         ("benchmark_emulation", "source-safety-private-challenge-risk"),
+        ("scorer_contract_manipulation", "source-safety-private-challenge-risk"),
         ("hidden_value_leakage", "source-safety-private-challenge-risk"),
         ("embedded_secret", "source-safety-malicious-risk"),
         ("data_exfiltration", "source-safety-malicious-risk"),
@@ -222,6 +223,65 @@ async def test_adversarial_and_originality_risks_remain_quarantined(
     assert all(
         item.code != "audit-awaiting-private-challenge" for item in decision.evidence
     )
+
+
+@pytest.mark.parametrize(
+    "category", ["external_build_dependency", "user_isolation_correctness"]
+)
+async def test_low_advisory_source_categories_clear_without_anti_cheat_hold(
+    category: str,
+) -> None:
+    finding = {"categories": [category], "summary": "advisory only"}
+
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("advisory-only review must not select a challenge")
+
+    async def review() -> SourceReviewObservation:
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="low",
+            finding_digest="ab" * 32,
+            categories=(category,),
+            finding=finding,
+        )
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="advisory-source-review",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="private-source-review"),),
+    )
+    decision = await engine.evaluate(_context(challenge, review))
+
+    assert decision.outcome == ScreeningOutcome.PASS
+    assert decision.finding == finding
+
+
+async def test_medium_isolation_correctness_uses_non_anti_cheat_reason() -> None:
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("no behavioral pack is configured")
+
+    async def review() -> SourceReviewObservation:
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="medium",
+            finding_digest="ab" * 32,
+            categories=("user_isolation_correctness",),
+        )
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="correctness-review",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="private-source-review"),),
+    )
+    decision = await engine.evaluate(_context(challenge, review))
+
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.evidence[0].code == "source-correctness-review"
+    assert "not terminal anti-cheat proof" in decision.evidence[0].summary
 
 
 async def test_low_risk_label_cannot_clear_a_malicious_category() -> None:
@@ -542,6 +602,30 @@ async def test_too_fast_round_trip_trips_the_timing_floor() -> None:
     assert any(
         item.code == "behavioral-oracle-implausibly-fast" for item in decision.evidence
     )
+
+
+@pytest.mark.parametrize(
+    ("gateway_calls", "answer_correct", "elapsed_ms"),
+    [(1, False, 900), (2, False, 900), (2, True, 3)],
+)
+async def test_behavioral_oracle_anomalies_are_escalation_only(
+    gateway_calls: int, answer_correct: bool, elapsed_ms: int
+) -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            "v8-behavioral-oracle",
+            True,
+            "01" * 32,
+            elapsed_ms=elapsed_ms,
+            gateway_calls=gateway_calls,
+            oracle_answer_correct=answer_correct,
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe))
+
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.outcome != ScreeningOutcome.DETERMINISTIC_REJECT
+    assert not decision.submits_verdict
 
 
 async def test_inconclusive_oracle_is_not_a_rejection() -> None:

