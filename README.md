@@ -75,6 +75,8 @@ Required values are supplied through the production host's protected
 
 See [docs/policy-modules.md](docs/policy-modules.md) for the private module
 boundary, [docs/source-review-policy.md](docs/source-review-policy.md) for the
-allowed-optimization and benchmark-emulation boundary, and
+allowed-optimization and benchmark-emulation boundary,
+[docs/binary-analysis.md](docs/binary-analysis.md) for the bounded opaque-file
+inspection contract, and
 [docs/deployment.md](docs/deployment.md) for deployment secrets, health checks,
 cache maintenance, and the compatible rollout sequence.

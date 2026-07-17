@@ -6,11 +6,19 @@ import hashlib
 import io
 import json
 import os
+import sqlite3
+import struct
 import tarfile
+import zipfile
 from pathlib import Path
+from typing import IO
 
 import httpx
+import pytest
 
+from ditto_screener import binary_analysis as binary_analysis_module
+from ditto_screener import source_review as source_review_module
+from ditto_screener.binary_analysis import BinarySample
 from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
@@ -119,6 +127,45 @@ def _archive_with(tmp_path: Path, extra: dict[str, bytes]) -> Path:
     return path
 
 
+def _varint(value: int) -> bytes:
+    encoded = bytearray()
+    while value > 0x7F:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def _pb_varint(field: int, value: int) -> bytes:
+    return _varint(field << 3) + _varint(value)
+
+
+def _pb_bytes(field: int, value: bytes) -> bytes:
+    return _varint((field << 3) | 2) + _varint(len(value)) + value
+
+
+def _minimal_onnx() -> bytes:
+    # ONNX ModelProto -> GraphProto -> NodeProto/TensorProto/ValueInfoProto.
+    node = _pb_bytes(4, b"MatMul")
+    tensor = (
+        _pb_varint(2, 1)
+        + _pb_bytes(8, b"reranker.weight")
+        + _pb_bytes(9, b"\x00\xff\x02\x03")
+    )
+    value_info = _pb_bytes(1, b"embedding")
+    graph = b"".join(
+        [
+            _pb_bytes(1, node),
+            _pb_bytes(2, b"reranker"),
+            _pb_bytes(5, tensor),
+            _pb_bytes(11, value_info),
+            _pb_bytes(12, value_info),
+        ]
+    )
+    opset = _pb_bytes(1, b"") + _pb_varint(2, 18)
+    return _pb_varint(1, 9) + _pb_bytes(7, graph) + _pb_bytes(8, opset)
+
+
 def test_opaque_binary_blob_is_surfaced_in_inventory(tmp_path: Path) -> None:
     blob = b"MZ\x90\x00\x03\x00\x00\x00" + b"\x00secret-string-table\x00" * 8
     repo = TarSourceRepository(str(_archive_with(tmp_path, {"assets/table.bin": blob})))
@@ -129,6 +176,347 @@ def test_opaque_binary_blob_is_surfaced_in_inventory(tmp_path: Path) -> None:
     assert opaque["assets/table.bin"]["bytes"] == len(blob)
     # A normal UTF-8 source file is not surfaced as opaque.
     assert "src/main.rs" not in opaque
+
+
+def test_valid_onnx_is_structurally_analyzed_without_extension_trust(
+    tmp_path: Path,
+) -> None:
+    model = _minimal_onnx()
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/reranker.bin": model}))
+    )
+
+    inventory = json.loads(repo.inventory())
+    assert [item["path"] for item in inventory["opaque_blobs"]] == [
+        "models/reranker.bin"
+    ]
+    assert inventory["binary_analysis"][0]["path"] == "models/reranker.bin"
+    assert inventory["binary_analysis"][0]["format"] == "onnx"
+    assert inventory["binary_analysis"][0]["details"]["operator_types"] == ["MatMul"]
+    analysis = json.loads(repo.analyze_binary("models/reranker.bin"))
+
+    assert analysis["format"] == "onnx"
+    assert analysis["format_confidence"] == "high"
+    assert analysis["details"]["graph_complete"] is True
+    assert analysis["details"]["graph_parse_status"] == "complete"
+    assert analysis["details"]["graph_name"] == "reranker"
+    assert analysis["details"]["ir_version"] == 9
+    assert analysis["details"]["node_count"] == 1
+    assert analysis["details"]["initializer_count"] == 1
+    assert analysis["details"]["initializer_bytes"] == 4
+    assert analysis["details"]["input_count"] == 1
+    assert analysis["details"]["output_count"] == 1
+    assert analysis["details"]["operator_types"] == ["MatMul"]
+    assert analysis["details"]["opsets"] == [{"domain": "", "version": 18}]
+    assert analysis["details"]["external_data_references"] == 0
+    assert analysis["details"]["metadata_complete"] is True
+    assert analysis["details"]["model_parse_status"] == "complete"
+    assert analysis["benchmark_schema_markers"] == []
+    assert analysis["safety"] == {
+        "decompressed_payloads": False,
+        "executed": False,
+        "external_data_loaded": False,
+    }
+
+
+def test_onnx_suffix_does_not_hide_renamed_answer_registry(tmp_path: Path) -> None:
+    registry = (
+        b"\xff\x00expected_answer\x00answer_items\x00forbidden_answer\x00"
+        b"memory_cases\x00run_after_wave\x00tool_cases\x00"
+    )
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/answers.onnx": registry}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/answers.onnx"))
+
+    assert analysis["format"] == "binary-data"
+    assert analysis["benchmark_schema_markers"] == [
+        "answer_items",
+        "expected_answer",
+        "forbidden_answer",
+        "memory_cases",
+        "run_after_wave",
+        "tool_cases",
+    ]
+    inventory = json.loads(repo.inventory())
+    assert any(
+        item["path"] == "models/answers.onnx" for item in inventory["opaque_blobs"]
+    )
+    assert inventory["binary_analysis"][0]["format"] == "binary-data"
+    assert inventory["binary_analysis"][0]["benchmark_schema_markers"] == [
+        "answer_items",
+        "expected_answer",
+        "forbidden_answer",
+        "memory_cases",
+        "run_after_wave",
+        "tool_cases",
+    ]
+
+
+def test_analyze_binary_reports_executable_and_archive_structure(
+    tmp_path: Path,
+) -> None:
+    elf = bytearray(64)
+    elf[:7] = b"\x7fELF\x02\x01\x01"
+    elf[16:20] = struct.pack("<HH", 2, 62)
+    elf[24:32] = struct.pack("<Q", 0x401000)
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("dataset/memory_cases.json", b'{"expected_answer":"x"}')
+
+    repo = TarSourceRepository(
+        str(
+            _archive_with(
+                tmp_path,
+                {
+                    "bin/agent": bytes(elf),
+                    "fixtures/public-dataset.zip": archive_buffer.getvalue(),
+                },
+            )
+        )
+    )
+
+    executable = json.loads(repo.analyze_binary("bin/agent"))
+    bundled = json.loads(repo.analyze_binary("fixtures/public-dataset.zip"))
+
+    assert executable["format"] == "elf"
+    assert executable["details"] == {
+        "bits": 64,
+        "byte_order": "little",
+        "entrypoint": 0x401000,
+        "machine": 62,
+        "os_abi": 0,
+        "type": 2,
+    }
+    assert bundled["format"] == "zip"
+    assert bundled["details"]["entry_count"] == 1
+    assert bundled["details"]["entries"][0]["path"] == ("dataset/memory_cases.json")
+    assert bundled["safety"]["decompressed_payloads"] is False
+
+
+def test_analyze_binary_reports_safetensors_without_loading_weights(
+    tmp_path: Path,
+) -> None:
+    header = json.dumps(
+        {
+            "reranker.weight": {
+                "dtype": "F32",
+                "shape": [2, 2],
+                "data_offsets": [0, 16],
+            },
+            "__metadata__": {"framework": "competition-reranker"},
+        },
+        separators=(",", ":"),
+    ).encode()
+    model = len(header).to_bytes(8, "little") + header + b"\xff" * 16
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/reranker.weights": model}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/reranker.weights"))
+
+    assert analysis["format"] == "safetensors"
+    assert analysis["details"]["tensor_count"] == 1
+    assert analysis["details"]["tensor_bytes"] == 16
+    assert analysis["details"]["tensors"] == [
+        {
+            "bytes": 16,
+            "dtype": "F32",
+            "name": "reranker.weight",
+            "shape": [2, 2],
+        }
+    ]
+    assert analysis["safety"]["external_data_loaded"] is False
+
+
+def test_safetensors_rejects_invalid_and_overlapping_payload_ranges(
+    tmp_path: Path,
+) -> None:
+    header = json.dumps(
+        {
+            "valid": {"dtype": "U8", "shape": [8], "data_offsets": [0, 8]},
+            "negative": {"dtype": "U8", "shape": [1], "data_offsets": [-1, 0]},
+            "descending": {
+                "dtype": "U8",
+                "shape": [1],
+                "data_offsets": [9, 8],
+            },
+            "outside": {"dtype": "U8", "shape": [1], "data_offsets": [16, 17]},
+            "overlap": {"dtype": "U8", "shape": [8], "data_offsets": [4, 12]},
+            "boolean": {"dtype": "U8", "shape": [1], "data_offsets": [False, 1]},
+        },
+        separators=(",", ":"),
+    ).encode()
+    model = len(header).to_bytes(8, "little") + header + b"\xff" * 16
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/untrusted.weights": model}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/untrusted.weights"))
+
+    assert analysis["format"] == "safetensors"
+    assert analysis["format_confidence"] == "medium"
+    assert analysis["details"]["tensor_count"] == 1
+    assert analysis["details"]["tensor_bytes"] == 8
+    assert analysis["details"]["invalid_tensor_ranges"] == 5
+    assert analysis["details"]["payload_available"] is False
+
+
+def test_safetensors_without_declared_payload_is_not_high_confidence(
+    tmp_path: Path,
+) -> None:
+    header = json.dumps(
+        {
+            "missing": {
+                "dtype": "F32",
+                "shape": [2, 2],
+                "data_offsets": [0, 16],
+            }
+        },
+        separators=(",", ":"),
+    ).encode()
+    model = len(header).to_bytes(8, "little") + header
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/missing-payload.weights": model}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/missing-payload.weights"))
+
+    assert analysis["format"] != "safetensors"
+    assert analysis["format_confidence"] != "high"
+
+
+def test_onnx_truncated_top_level_parse_is_partial(tmp_path: Path) -> None:
+    model = _minimal_onnx() + _pb_varint(2, 128)[:-1]
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/truncated.onnx": model}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/truncated.onnx"))
+
+    assert analysis["format"] == "onnx"
+    assert analysis["format_confidence"] == "medium"
+    assert analysis["details"]["model_parse_status"] == "truncated"
+    assert analysis["details"]["metadata_complete"] is False
+
+
+def test_onnx_field_cap_is_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(binary_analysis_module, "_MAX_PROTO_FIELDS", 2)
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/capped.onnx": _minimal_onnx()}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/capped.onnx"))
+
+    assert analysis["format"] == "onnx"
+    assert analysis["format_confidence"] == "medium"
+    assert analysis["details"]["model_parse_status"] == "field_limit"
+    assert analysis["details"]["metadata_complete"] is False
+
+
+def test_onnx_truncated_nested_graph_is_partial(tmp_path: Path) -> None:
+    graph = _pb_bytes(1, _pb_bytes(4, b"MatMul")) + b"\x10\x80"
+    model = _pb_varint(1, 9) + _pb_bytes(7, graph)
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/partial-graph.onnx": model}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/partial-graph.onnx"))
+
+    assert analysis["format"] == "onnx"
+    assert analysis["format_confidence"] == "medium"
+    assert analysis["details"]["graph_parse_status"] == "truncated"
+    assert analysis["details"]["graph_complete"] is False
+    assert analysis["details"]["metadata_complete"] is False
+
+
+def test_analyze_binary_surfaces_datagen_schema_inside_sqlite(tmp_path: Path) -> None:
+    database = tmp_path / "answers.db"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "CREATE TABLE memory_cases "
+        "(expected_answer TEXT, answer_items TEXT, forbidden_answer TEXT)"
+    )
+    connection.commit()
+    connection.close()
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"cache/retrieval.db": database.read_bytes()}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("cache/retrieval.db"))
+
+    assert analysis["format"] == "sqlite3"
+    assert analysis["details"]["page_size"] == 4096
+    assert analysis["benchmark_schema_markers"] == [
+        "answer_items",
+        "expected_answer",
+        "forbidden_answer",
+        "memory_cases",
+    ]
+
+
+def test_analyze_binary_is_bounded_and_labels_partial_analysis(tmp_path: Path) -> None:
+    oversized = b"\xff" + b"x" * (8 * 1024 * 1024 + 1)
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/large.weights": oversized}))
+    )
+
+    analysis = json.loads(repo.analyze_binary("models/large.weights"))
+
+    assert analysis["bytes"] == len(oversized)
+    assert analysis["analyzed_bytes"] == 8 * 1024 * 1024
+    assert analysis["analysis_truncated"] is True
+    assert len(analysis["sha256"]) == 64
+    assert analysis["sha256_complete"] is True
+    assert analysis["sha256_bytes"] == len(oversized)
+
+
+def test_binary_hashing_has_an_expanded_member_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(binary_analysis_module, "_MAX_HASHED_BYTES", 16)
+
+    sample = binary_analysis_module.sample_stream(io.BytesIO(b"x" * 64), size=64)
+    analysis = binary_analysis_module.analyze_binary(sample, path="data/bomb.bin")
+
+    assert sample.hashed_bytes == 16
+    assert sample.hash_complete is False
+    assert analysis["sha256_bytes"] == 16
+    assert analysis["sha256_complete"] is False
+    assert analysis["analysis_truncated"] is True
+
+
+def test_analyze_binary_rejects_missing_member(tmp_path: Path) -> None:
+    repo = TarSourceRepository(str(_archive_with(tmp_path, {})))
+    assert json.loads(repo.analyze_binary("missing.onnx")) == {
+        "error": "file-not-found"
+    }
+
+
+def test_inventory_preanalysis_is_reused_by_agent_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+    original = source_review_module.sample_stream
+
+    def counting_sample_stream(stream: IO[bytes], *, size: int) -> BinarySample:
+        nonlocal calls
+        calls += 1
+        return original(stream, size=size)
+
+    monkeypatch.setattr(source_review_module, "sample_stream", counting_sample_stream)
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"models/reranker.onnx": _minimal_onnx()}))
+    )
+
+    inventory = json.loads(repo.inventory())
+    detailed = json.loads(repo.analyze_binary("models/reranker.onnx"))
+
+    assert inventory["binary_analysis"][0]["sha256"] == detailed["sha256"]
+    assert calls == 1
 
 
 def test_oversized_file_is_surfaced_as_opaque(tmp_path: Path) -> None:
@@ -143,7 +531,9 @@ def test_oversized_file_is_surfaced_as_opaque(tmp_path: Path) -> None:
 
 def test_utf8_only_crate_reports_no_opaque_blobs(tmp_path: Path) -> None:
     repo = TarSourceRepository(str(_archive_with(tmp_path, {})))
-    assert json.loads(repo.inventory())["opaque_blobs"] == []
+    inventory = json.loads(repo.inventory())
+    assert inventory["opaque_blobs"] == []
+    assert inventory["binary_analysis"] == []
 
 
 async def test_benign_control_clears_with_zdr_and_read_only_tools(
@@ -171,7 +561,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert progress == [(0, 4), (1, 4), (2, 4)]
     assert all(
         tool["function"]["name"]
-        in {"list_files", "read_file", "search", "submit_review"}
+        in {"analyze_binary", "list_files", "read_file", "search", "submit_review"}
         for request in seen
         for tool in request["tools"]
     )
@@ -182,8 +572,78 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     }
     prompt = seen[0]["messages"][0]["content"]
     assert "Public availability is not a safe harbor" in prompt
+    assert "BuildKit secret mount" in prompt
+    assert "abstention or retrieval side probe" in prompt
+    assert "BERT/ONNX cross-encoder" in prompt
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v4"
+    assert "use\nanalyze_binary only when" in prompt
+    assert 'compact, precomputed\n"binary_analysis"' in prompt
+    assert observation.finding["prompt_revision"] == "source-review-v5"
+
+
+async def test_agent_can_analyze_binary_before_submitting_review(
+    tmp_path: Path,
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        payload = json.loads(request.content)
+        if calls == 0:
+            tool_calls = [
+                _tool("binary-1", "analyze_binary", {"path": "models/answers.onnx"})
+            ]
+        else:
+            tool_result = json.loads(payload["messages"][-1]["content"])
+            assert tool_result["format"] == "binary-data"
+            assert tool_result["benchmark_schema_markers"] == ["expected_answer"]
+            tool_calls = [
+                _tool(
+                    "submit-1",
+                    "submit_review",
+                    {
+                        "risk_level": "medium",
+                        "confidence": 0.8,
+                        "categories": ["suspicious_static_tables"],
+                        "evidence": [
+                            {
+                                "path": "models/answers.onnx",
+                                "line": 1,
+                                "category": "suspicious_static_tables",
+                            }
+                        ],
+                        "summary": "Opaque runtime artifact needs operator review.",
+                    },
+                )
+            ]
+        calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": tool_calls,
+                        }
+                    }
+                ]
+            },
+        )
+
+    archive = _archive_with(
+        tmp_path, {"models/answers.onnx": b"\xffexpected_answer\x00known-value"}
+    )
+    observation = await _agent(key, httpx.MockTransport(handler)).review(
+        str(archive), artifact_sha256=_SHA
+    )
+
+    assert observation.ok and observation.risk_level == "medium"
+    assert calls == 2
 
 
 async def test_synthetic_legitimate_patterns_clear_source_safety(
@@ -213,7 +673,7 @@ async def test_synthetic_legitimate_patterns_clear_source_safety(
         assert observation.ok and observation.risk_level == "low", case["name"]
 
 
-async def test_synthetic_prohibited_patterns_report_benchmark_emulation(
+async def test_synthetic_prohibited_patterns_retain_source_safety_enforcement(
     tmp_path: Path,
 ) -> None:
     cases = json.loads(
@@ -229,22 +689,22 @@ async def test_synthetic_prohibited_patterns_report_benchmark_emulation(
         final = {
             "risk_level": "high",
             "confidence": 0.95,
-            "categories": ["benchmark_emulation"],
+            "categories": [case["category"]],
             "evidence": [
                 {
                     "path": "src/lib.rs",
                     "line": 1,
-                    "category": "benchmark_emulation",
+                    "category": case["category"],
                 }
             ],
-            "summary": "Runtime benchmark fingerprint or deterministic shortcut.",
+            "summary": "Reachable prohibited behavior in the substantive path.",
         }
         observation = await _agent(key, _transport(final, [])).review(
             str(_archive(tmp_path, f"// synthetic case {index}\n{case['source']}")),
             artifact_sha256=_SHA,
         )
         assert observation.ok and observation.risk_level == "high", case["name"]
-        assert observation.categories == ("benchmark_emulation",), case["name"]
+        assert observation.categories == (case["category"],), case["name"]
 
 
 def test_regression_fixture_quantifies_the_tradeoff() -> None:
@@ -255,7 +715,7 @@ def test_regression_fixture_quantifies_the_tradeoff() -> None:
     )["production_replay"]
 
     assert replay == {
-        "unique_source_safe_patterns": 5,
+        "unique_source_safe_patterns": 8,
         "held_submissions": 6,
         "old_generic_source_safety_holds": 6,
         "new_source_safety_holds": 0,
@@ -273,15 +733,34 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
     legitimate = {case["name"] for case in fixture["legitimate"]}
     prohibited = {case["name"] for case in fixture["prohibited"]}
 
-    assert "tuned-candidate-profiles-with-general-agent-path" in legitimate
+    assert {
+        "locked-public-git-build-with-unused-optional-secret",
+        "fixed-user-abstention-side-probe-with-request-scoped-main-path",
+        "modified-onnx-cross-encoder-only-reranks-live-memory",
+    } <= legitimate
     assert prohibited == {
-        "exact-generator-token-fingerprint",
-        "deterministic-scored-family-solver",
+        "case-or-private-challenge-dispatch",
+        "deterministic-benchmark-answer-table",
         "expected-answer-trained-runtime",
-        "grader-authoritative-answer-splice",
+        "model-output-replacement",
         "audit-environment-fingerprint",
+        "credential-or-private-challenge-embedding",
+        "cross-user-content-access-and-exfiltration",
     }
     assert legitimate.isdisjoint(prohibited)
+
+
+def test_latest_backroom_safe_batch_is_fully_represented() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )
+
+    assert fixture["latest_backroom_safe_batch"] == {
+        "false_positive_classes": 3,
+        "false_positive_submissions": 5,
+    }
 
 
 def test_exact_official_provenance_does_not_whitelist_derivatives(
