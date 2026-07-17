@@ -98,7 +98,12 @@ benchmark_emulation when the runtime path does one or more of the following:
   evaluator/grader code, or private challenge outcomes;
 - rewrites authoritative answer/abstain fields independently of the genuine
   model or tool result, fabricates tool trajectories, or injects served grading
-  needles into the final response; or
+  needles into the final response;
+- classifies requests as audit/probe versus scored — for example by whether a
+  request was preceded by a seed, whether memory for the user is empty, or
+  whether tools/tool_endpoint/user_id are present — and calls the real model
+  only for the detected audit while routing scored requests to a deterministic
+  solver (the "model only when watched" bypass); or
 - fingerprints the screening environment to present different behavior during
   audit or evaluation.
 

@@ -236,3 +236,31 @@ async def test_text_only_caller_still_gets_a_plain_completion() -> None:
         message = response.json()["choices"][0]["message"]
         assert message["content"] == gateway.response_text
         assert "tool_calls" not in message
+
+
+async def test_tool_sink_returns_result_without_counting_a_model_call(
+    tmp_path: Path,
+) -> None:
+    """The /tool sink lets the oracle's tool-shaped run execute its tool call.
+
+    It returns a benign result so the harness's agent loop proceeds to the
+    second model turn, but it MUST NOT increment the gateway model-call count —
+    that count is the oracle's round-trip evidence and only model turns count.
+    """
+    state = tmp_path / "calls"
+    async with FakeModelGateway(state_file=str(state)) as gateway:
+        local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{local_url}/tool",
+                json={
+                    "case_id": "c",
+                    "name": "search_memories",
+                    "args": {"query": "x"},
+                },
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["result"] and not body["error"]
+        assert gateway.model_calls == 0
+        assert not state.exists() or state.read_text() == ""

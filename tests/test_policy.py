@@ -866,3 +866,42 @@ async def test_oracle_request_is_randomized_and_unfingerprintable() -> None:
     assert first["case_id"] != second["case_id"]
     assert first["user_input"] != second["user_input"]
     assert module.challenge_id not in str(first.values())
+
+
+async def test_oracle_request_is_shaped_like_a_scored_tool_case() -> None:
+    """The oracle request must be indistinguishable from scored tool traffic.
+
+    The rejected audit-detection shortcut routed only requests that had NO
+    tools AND NO tool_endpoint AND NO seeded memory to the real model. Shaping
+    the oracle as a tool case (declares tools, carries a user_id; the gate fills
+    tool_endpoint) removes that whole signature: a tool case legitimately
+    carries tools and is not preceded by a /seed, so an un-seeded tool-shaped
+    /run is ordinary scored traffic, not a tell.
+    """
+    seen: list[dict] = []
+
+    async def challenge(challenge_id, request, _timeout):  # type: ignore[no-untyped-def]
+        seen.append(dict(request))
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=800,
+            gateway_calls=2,
+            oracle_answer_correct=True,
+        )
+
+    module = BehavioralOracleModule(module_id="v8-behavioral-oracle")
+    await module.evaluate(_context(challenge))
+    (request,) = seen
+    tools = request.get("tools")
+    assert isinstance(tools, list) and tools, "oracle must declare a tools catalog"
+    for tool in tools:
+        assert (
+            isinstance(tool, dict)
+            and isinstance(tool.get("name"), str)
+            and tool["name"]
+        )
+    assert isinstance(request.get("user_id"), str) and request["user_id"], (
+        "oracle must carry a user_id"
+    )

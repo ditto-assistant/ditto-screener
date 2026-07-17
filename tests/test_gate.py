@@ -703,3 +703,29 @@ async def test_private_challenge_flags_wrong_oracle_answer(
     assert observation.ok
     assert observation.gateway_calls == 0
     assert not observation.oracle_answer_correct
+
+
+def test_with_tool_endpoint_fills_only_tool_declaring_requests() -> None:
+    from ditto_screener.gate import _TOOL_ENDPOINT, _with_tool_endpoint
+
+    # Tool-declaring request with no endpoint: gets the reachable gateway sink.
+    filled = _with_tool_endpoint({"case_id": "c", "tools": [{"name": "search_web"}]})
+    assert filled["tool_endpoint"] == _TOOL_ENDPOINT
+
+    # No tools: unchanged (no endpoint injected).
+    assert "tool_endpoint" not in _with_tool_endpoint({"case_id": "c"})
+
+    # Explicit endpoint is preserved, not overwritten.
+    kept = _with_tool_endpoint(
+        {
+            "case_id": "c",
+            "tools": [{"name": "x"}],
+            "tool_endpoint": "http://elsewhere/tool",
+        }
+    )
+    assert kept["tool_endpoint"] == "http://elsewhere/tool"
+
+    # The input mapping is copied, never mutated.
+    original = {"case_id": "c", "tools": [{"name": "x"}]}
+    _with_tool_endpoint(original)
+    assert "tool_endpoint" not in original
