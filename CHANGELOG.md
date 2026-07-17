@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v0.8.0 (2026-07-17)
+
+### Code Style
+
+- Ruff format + line length ([#19](https://github.com/ditto-assistant/ditto-screener/pull/19),
+  [`d87d423`](https://github.com/ditto-assistant/ditto-screener/commit/d87d4235052672af99351f51977651472eadc80d))
+
+### Features
+
+- Log per-stage wall-clock timings for every screening
+  ([#19](https://github.com/ditto-assistant/ditto-screener/pull/19),
+  [`d87d423`](https://github.com/ditto-assistant/ditto-screener/commit/d87d4235052672af99351f51977651472eadc80d))
+
+
 ## v0.7.2 (2026-07-17)
 
 ### Bug Fixes
