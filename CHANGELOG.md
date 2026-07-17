@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.11.0 (2026-07-17)
+
+### Documentation
+
+- **policy-modules**: Tighten oracle wording, drop em-dashes
+  ([#31](https://github.com/ditto-assistant/ditto-screener/pull/31),
+  [`63d6350`](https://github.com/ditto-assistant/ditto-screener/commit/63d6350f7bd65a635037673048473f153123192d))
+
+### Features
+
+- Indistinguishable oracle envelope and audit-gated-routing lead
+  ([#32](https://github.com/ditto-assistant/ditto-screener/pull/32),
+  [`c2531d1`](https://github.com/ditto-assistant/ditto-screener/commit/c2531d1d5971771a7991445392576636f5f62e45))
+
+
 ## v0.10.0 (2026-07-17)
 
 ### Features
