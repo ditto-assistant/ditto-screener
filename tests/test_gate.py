@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import logging
 import os
 import tarfile
 import tempfile
@@ -20,6 +21,7 @@ from ditto_screener.config import ScreenerConfig
 from ditto_screener.gate import (
     BuildGate,
     _detail_tail,
+    _format_stage_timings,
     _log_tail,
     dockerfile_at_root,
     image_binding_advisory,
@@ -299,6 +301,45 @@ async def test_progress_callback_failure_does_not_change_screening(
             progress=fail_progress,
         )
     assert result.outcome == ScreeningOutcome.PASS
+
+
+def test_format_stage_timings_folds_transitions() -> None:
+    history = [
+        ("downloading", 0.0),
+        ("validating", 1.0),
+        ("building", 1.5),
+        ("source_review_0", 211.5),
+        ("source_review_50", 261.5),
+        ("source_review_100", 311.5),
+        ("validating", 351.5),
+    ]
+    formatted = _format_stage_timings(history, end=352.0)
+    assert formatted == (
+        "downloading_ms=1000 validating_ms=1000 building_ms=210000 "
+        "source_review_ms=140000"
+    )
+    assert _format_stage_timings([], end=1.0) == ""
+
+
+async def test_screen_logs_one_stage_timing_line(
+    make_config: Callable[..., ScreenerConfig],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tarball = _valid_tar()
+    gate = _gate_with(make_config(), _ok_run(), tarball=tarball)
+    with caplog.at_level(logging.INFO, logger="ditto_screener.gate"):
+        async with gate._client:
+            result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.PASS
+    timing_lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("screen timing agent_id=")
+    ]
+    assert len(timing_lines) == 1
+    (line,) = timing_lines
+    for key in ("total_ms=", "teardown_ms=", "building_ms=", "health_check_ms="):
+        assert key in line, line
 
 
 async def test_fake_gateway_is_internal_and_resource_capped(

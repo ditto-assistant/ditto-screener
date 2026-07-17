@@ -390,11 +390,13 @@ class ScreenerWorker:
                 finding=finding,
             )
             logger.info(
-                "screened agent_id=%s miner=%s outcome=%s passed=%s -> %s%s",
+                "screened agent_id=%s miner=%s outcome=%s passed=%s "
+                "elapsed_s=%d -> %s%s",
                 agent_id,
                 item.miner_hotkey,
                 result.outcome,
                 passed,
+                int(time.time()) - (self._job_started_at or int(time.time())),
                 resp.status,
                 f" detail={result.detail!r}" if result.detail else "",
             )

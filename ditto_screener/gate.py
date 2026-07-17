@@ -56,7 +56,7 @@ import signal
 import tarfile
 import tempfile
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -317,6 +317,23 @@ def _docker_infrastructure_failure(text: str) -> bool:
     return any(marker in normalized for marker in _DOCKER_INFRASTRUCTURE_MARKERS)
 
 
+def _format_stage_timings(history: Sequence[tuple[str, float]], *, end: float) -> str:
+    """Fold progress transitions into ``stage=<ms>`` pairs, in order.
+
+    Each stage's duration runs until the next transition (the last until
+    ``end``). The per-percent ``source_review_NN`` stages collapse into one
+    ``source_review`` bucket, and a revisited stage name accumulates.
+    """
+    durations: dict[str, int] = {}
+    for index, (stage, entered) in enumerate(history):
+        exited = history[index + 1][1] if index + 1 < len(history) else end
+        name = "source_review" if stage.startswith("source_review_") else str(stage)
+        durations[name] = durations.get(name, 0) + round(
+            max(0.0, exited - entered) * 1000
+        )
+    return " ".join(f"{name}_ms={ms}" for name, ms in durations.items())
+
+
 class BuildGate:
     """Runs the build, serve, and model-call checks for one agent at a time.
 
@@ -364,7 +381,15 @@ class BuildGate:
         longer run past the lease and have its verdict rejected as expired.
         """
 
+        loop = asyncio.get_running_loop()
+        screen_started = loop.time()
+        # (stage, entered_at) transitions; folded into one per-stage timing
+        # log line when the screen ends, so operators can see where each
+        # screening spent its wall clock without any external tooling.
+        stage_history: list[tuple[str, float]] = []
+
         def report(stage: ScreenerProgressStage) -> None:
+            stage_history.append((stage, loop.time()))
             try:
                 if progress is not None:
                     progress(stage)
@@ -570,6 +595,7 @@ class BuildGate:
                 # never retrieved" noise after the decision is already made.
                 with contextlib.suppress(BaseException):
                     await review_task
+            teardown_started = loop.time()
             await self._teardown(
                 container,
                 tag,
@@ -580,6 +606,13 @@ class BuildGate:
             if tmp_path is not None:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
+            logger.info(
+                "screen timing agent_id=%s total_ms=%d teardown_ms=%d %s",
+                agent_id,
+                round((loop.time() - screen_started) * 1000),
+                round((loop.time() - teardown_started) * 1000),
+                _format_stage_timings(stage_history, end=teardown_started),
+            )
 
     # --- lease budget -----------------------------------------------------
 
