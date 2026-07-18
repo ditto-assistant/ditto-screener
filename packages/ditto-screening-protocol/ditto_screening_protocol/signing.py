@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from ditto_screening_protocol.models import (
@@ -21,17 +22,51 @@ def verdict_signing_message(
     manifest_digest: str | None = None,
     finding_digest: str | None = None,
     reason_code: str | None = None,
+    image_sha256: str | None = None,
+    image_size_bytes: int | None = None,
+    image_id: str | None = None,
+    image_ref: str | None = None,
+    image_upload_id: UUID | None = None,
 ) -> bytes:
     """Return the exact bytes signed by the screener and verified by the API."""
     if outcome is not None:
         if attempt_id is None:
             raise ValueError("typed result signature requires attempt_id")
-        return (
-            "ditto-screen-result:v3:"
-            f"{screener_hotkey}:{agent_id}:{attempt_id}:{outcome}:"
-            f"{policy_version}:{manifest_digest or ''}:{finding_digest or ''}:"
-            f"{reason_code or ''}"
-        ).encode()
+        payload = json.dumps(
+            {
+                "agent_id": str(agent_id),
+                "attempt_id": str(attempt_id),
+                "finding_digest": finding_digest,
+                "image_id": image_id,
+                "image_ref": image_ref,
+                "image_sha256": image_sha256,
+                "image_size_bytes": image_size_bytes,
+                "image_upload_id": (
+                    str(image_upload_id) if image_upload_id is not None else None
+                ),
+                "manifest_digest": manifest_digest,
+                "outcome": outcome.value,
+                "policy_version": policy_version,
+                "reason_code": reason_code,
+                "screener_hotkey": screener_hotkey,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return f"ditto-screen-result:v5:{payload}".encode()
+    if policy_version >= SCREENING_POLICY_VERSION:
+        raise ValueError("policy-v9 verdict requires typed outcome")
+    if any(
+        value is not None
+        for value in (
+            image_sha256,
+            image_size_bytes,
+            image_id,
+            image_ref,
+            image_upload_id,
+        )
+    ):
+        raise ValueError("legacy verdict cannot carry screened image metadata")
     if attempt_id is not None:
         return (
             "ditto-screen-verdict:v2:"

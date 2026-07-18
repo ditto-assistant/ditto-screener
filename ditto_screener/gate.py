@@ -56,7 +56,7 @@ import signal
 import tarfile
 import tempfile
 import tomllib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -102,6 +102,9 @@ _PROBE_INTERVAL_SECONDS = 1.0
 # the whole lease on work whose verdict would arrive after expiry.
 _LEASE_MIN_STAGE_SECONDS = 5.0
 _MAX_UNPACKED_BYTES = 64 * 1024 * 1024
+_MAX_SCREENED_IMAGE_BYTES = 8 * 1024**3
+_IMAGE_EXPORT_DISK_RESERVE_BYTES = 256 * 1024**2
+_IMAGE_HASH_CHUNK_BYTES = 8 * 1024**2
 _MAX_CANARY_RESPONSE_BYTES = 64 * 1024
 _CANARY_IMAGE = (
     "python:3.12-alpine@sha256:"
@@ -156,6 +159,29 @@ class _StageResult:
     def __post_init__(self) -> None:
         if self.passed and self.retryable:
             raise ValueError("a passing stage result cannot be retryable")
+
+
+@dataclass(frozen=True)
+class BuiltImageArtifact:
+    """A locally exported, content-addressed Docker image archive."""
+
+    path: str
+    sha256: str
+    size_bytes: int
+    image_id: str
+    image_ref: str
+
+
+class _ScreenedImageTooLargeError(ValueError):
+    """The miner-controlled image deterministically exceeds the archive cap."""
+
+
+class _ScreenedImageExportError(RuntimeError):
+    """The host could not export an otherwise passing screened image."""
+
+
+class _LeaseDeadlineError(TimeoutError):
+    """An image export/publication operation exhausted the screening lease."""
 
 
 @dataclass(frozen=True)
@@ -398,6 +424,7 @@ class BuildGate:
         download_url: str,
         progress: Callable[[ScreenerProgressStage], None] | None = None,
         deadline: float | None = None,
+        publish_image: Callable[[BuiltImageArtifact], Awaitable[None]] | None = None,
     ) -> ScreeningDecision:
         """Screen one agent end-to-end; never raises.
 
@@ -536,7 +563,7 @@ class BuildGate:
             if remaining is not None:
                 build_timeout = min(build_timeout, remaining)
             started = asyncio.get_running_loop().time()
-            built, build_detail = await self._build(
+            built, build_detail, built_image_id = await self._build(
                 tmp_path, tag, timeout=build_timeout
             )
             build_elapsed_ms = round(
@@ -562,6 +589,8 @@ class BuildGate:
                         else f"build failed: {build_detail}"
                     ),
                 )
+            if built_image_id is None:
+                raise RuntimeError("successful Docker build did not return an image id")
 
             report("starting")
             exhausted = self._lease_exhausted(deadline, "serve check")
@@ -569,7 +598,7 @@ class BuildGate:
                 return exhausted
             started = asyncio.get_running_loop().time()
             serve_result, audit_runtime = await self._run_and_probe(
-                tag,
+                built_image_id,
                 container,
                 gateway_container=gateway_container,
                 network=network,
@@ -641,6 +670,71 @@ class BuildGate:
                 decision, self._image_binding_advisory(tmp_path)
             )
             self._journal.record(context=context, decision=decision)
+            if decision.outcome == ScreeningOutcome.PASS and publish_image is not None:
+                report("submitting")
+                if (
+                    exhausted := self._lease_exhausted(deadline, "image export")
+                ) is not None:
+                    return exhausted
+                try:
+                    image = await self._export_image(
+                        built_image_id,
+                        image_ref=tag,
+                        deadline=deadline,
+                    )
+                except _ScreenedImageTooLargeError as error:
+                    return core_decision(
+                        ScreeningOutcome.DETERMINISTIC_REJECT,
+                        code="screened-image-too-large",
+                        summary="screened Docker image exceeded the archive size limit",
+                        detail=str(error),
+                    )
+                except _LeaseDeadlineError:
+                    return self._lease_exhausted(
+                        deadline, "image export"
+                    ) or core_decision(
+                        ScreeningOutcome.RETRYABLE_INFRA,
+                        code="lease-budget-exhausted",
+                        summary="screening lease budget exhausted before completion",
+                        detail=(
+                            "screener error: lease budget exhausted during image export"
+                        ),
+                    )
+                except Exception as error:  # noqa: BLE001 - classify export infra
+                    return core_decision(
+                        ScreeningOutcome.RETRYABLE_INFRA,
+                        code="screened-image-export-failed",
+                        summary="screened Docker image export failed",
+                        detail=f"screener error: image export failed: {error}",
+                    )
+                try:
+                    remaining = self._lease_remaining(deadline)
+                    if remaining is None:
+                        await publish_image(image)
+                    elif remaining <= 0:
+                        raise _LeaseDeadlineError
+                    else:
+                        async with asyncio.timeout(remaining):
+                            await publish_image(image)
+                except (TimeoutError, _LeaseDeadlineError):
+                    return core_decision(
+                        ScreeningOutcome.RETRYABLE_INFRA,
+                        code="lease-budget-exhausted",
+                        summary="screening lease budget exhausted before completion",
+                        detail=(
+                            "screener error: lease budget exhausted during image upload"
+                        ),
+                    )
+                except Exception as error:  # noqa: BLE001 - publish is retryable infra
+                    return core_decision(
+                        ScreeningOutcome.RETRYABLE_INFRA,
+                        code="image-upload-failed",
+                        summary="screened Docker image upload failed",
+                        detail=f"screener error: image upload failed: {error}",
+                    )
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(image.path)
             return decision
         except Exception as e:  # noqa: BLE001 - the loop must never die on one agent
             logger.exception("gate error for agent_id=%s", agent_id)
@@ -709,6 +803,105 @@ class BuildGate:
         return None
 
     # --- stages -----------------------------------------------------------
+
+    async def _export_image(
+        self,
+        image_id: str,
+        *,
+        image_ref: str,
+        deadline: float | None,
+    ) -> BuiltImageArtifact:
+        """Export the exact screened image before teardown and hash its bytes."""
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            raise _ScreenedImageExportError("Docker returned an invalid image id")
+        path: str | None = None
+        try:
+            inspect_timeout = self._lease_timeout(deadline, 30.0, "image inspection")
+            code, raw_size = await self._run(
+                ["image", "inspect", "--format", "{{.Size}}", image_id],
+                timeout=inspect_timeout,
+            )
+            if code != 0:
+                raise _ScreenedImageExportError(
+                    f"docker image inspect failed: {_log_tail(raw_size)}"
+                )
+            try:
+                image_size = int(raw_size.strip())
+            except ValueError as error:
+                raise _ScreenedImageExportError(
+                    "docker returned an invalid image size"
+                ) from error
+            if image_size > _MAX_SCREENED_IMAGE_BYTES:
+                raise _ScreenedImageTooLargeError(
+                    f"screened image exceeds {_MAX_SCREENED_IMAGE_BYTES} byte cap"
+                )
+
+            fd, path = tempfile.mkstemp(prefix="ditto-screened-image-", suffix=".tar")
+            os.close(fd)
+            free_bytes = shutil.disk_usage(Path(path).parent).free
+            required_bytes = image_size + _IMAGE_EXPORT_DISK_RESERVE_BYTES
+            if free_bytes < required_bytes:
+                raise _ScreenedImageExportError(
+                    "insufficient temporary disk for screened image export "
+                    f"(need {required_bytes} bytes, have {free_bytes})"
+                )
+            export_timeout = self._lease_timeout(deadline, 600.0, "image export")
+            code, output = await self._run(
+                ["image", "save", "--output", path, image_id],
+                timeout=export_timeout,
+            )
+            if code != 0:
+                raise _ScreenedImageExportError(
+                    f"docker image export failed: {_log_tail(output)}"
+                )
+            size_bytes = os.path.getsize(path)
+            if size_bytes > _MAX_SCREENED_IMAGE_BYTES:
+                raise _ScreenedImageTooLargeError(
+                    "screened image archive exceeds "
+                    f"{_MAX_SCREENED_IMAGE_BYTES} byte cap"
+                )
+            sha256 = await self._hash_image_archive(path, deadline=deadline)
+            return BuiltImageArtifact(
+                path=path,
+                sha256=sha256,
+                size_bytes=size_bytes,
+                image_id=image_id,
+                image_ref=image_ref,
+            )
+        except BaseException:
+            if path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+            raise
+
+    def _lease_timeout(self, deadline: float | None, cap: float, stage: str) -> float:
+        """Clamp one operation to remaining lease time without post-expiry grace."""
+        remaining = self._lease_remaining(deadline)
+        if remaining is None:
+            return cap
+        if remaining <= 0:
+            raise _LeaseDeadlineError(f"lease expired before {stage}")
+        return min(cap, remaining)
+
+    async def _hash_image_archive(self, path: str, *, deadline: float | None) -> str:
+        """Hash the archive incrementally while enforcing the lease deadline."""
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            while True:
+                timeout = self._lease_timeout(deadline, 30.0, "image hashing")
+                try:
+                    chunk = await asyncio.wait_for(
+                        asyncio.to_thread(handle.read, _IMAGE_HASH_CHUNK_BYTES),
+                        timeout=timeout,
+                    )
+                except TimeoutError as error:
+                    raise _LeaseDeadlineError(
+                        "lease expired during image hashing"
+                    ) from error
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
 
     async def _download_verified(
         self, url: str, expected_sha256: str
@@ -905,13 +1098,16 @@ class BuildGate:
 
     async def _build(
         self, tar_path: str, tag: str, *, timeout: float | None = None
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, str | None]:
         """``docker build`` from the tarball-on-stdin; returns (ok, log_tail).
 
         ``timeout`` overrides the configured build cap so the worker can clamp a
         build to the remaining lease budget; it defaults to the full cap.
         """
-        args = ["build", "-t", tag, "-f", "Dockerfile"]
+        fd, iid_path = tempfile.mkstemp(prefix="ditto-screen-iid-")
+        os.close(fd)
+        os.unlink(iid_path)
+        args = ["build", "--iidfile", iid_path, "-t", tag, "-f", "Dockerfile"]
         env = dict(os.environ)
         env["DOCKER_BUILDKIT"] = "1"
         # No build-time credential is mounted. The build context (a
@@ -926,20 +1122,36 @@ class BuildGate:
         args.append("-")  # build context comes from stdin
         if timeout is None:
             timeout = self._config.build_timeout_seconds
-        with open(tar_path, "rb") as stdin_f:
-            code, out = await self._run(args, stdin=stdin_f, timeout=timeout, env=env)
-        if code == 0:
-            return True, ""
+        try:
+            with open(tar_path, "rb") as stdin_f:
+                code, out = await self._run(
+                    args, stdin=stdin_f, timeout=timeout, env=env
+                )
+            if code == 0:
+                try:
+                    image_id = Path(iid_path).read_text().strip()
+                except OSError as error:
+                    return False, f"Docker did not write iidfile: {error}", None
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                    return False, "Docker wrote an invalid image id", None
+                return True, "", image_id
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(iid_path)
         if code < 0:
             signal_name = signal.Signals(-code).name
-            return False, (
-                f"docker command exited with signal {signal_name}: {_log_tail(out)}"
+            return (
+                False,
+                (f"docker command exited with signal {signal_name}: {_log_tail(out)}"),
+                None,
             )
         if code in {137, 143}:
-            return False, (
-                f"docker command exited after signal ({code}): {_log_tail(out)}"
+            return (
+                False,
+                (f"docker command exited after signal ({code}): {_log_tail(out)}"),
+                None,
             )
-        return False, _log_tail(out)
+        return False, _log_tail(out), None
 
     async def _run_and_probe(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 import pytest
@@ -23,14 +24,15 @@ def test_message_matches_platform_format() -> None:
     # Must byte-for-byte match the platform's
     # f"{screener_hotkey}:{agent_id}:{passed}".encode() — including Python's
     # bool str form ("True"/"False").
-    msg = verdict_signing_message(screener_hotkey=_HOTKEY, agent_id=_AGENT, passed=True)
-    assert msg == f"{_HOTKEY}:{_AGENT}:True:{SCREENING_POLICY_VERSION}".encode()
-    assert msg.endswith(f":True:{SCREENING_POLICY_VERSION}".encode())
+    msg = verdict_signing_message(
+        screener_hotkey=_HOTKEY, agent_id=_AGENT, passed=True, policy_version=8
+    )
+    assert msg == f"{_HOTKEY}:{_AGENT}:True:8".encode()
 
     msg_false = verdict_signing_message(
-        screener_hotkey=_HOTKEY, agent_id=_AGENT, passed=False
+        screener_hotkey=_HOTKEY, agent_id=_AGENT, passed=False, policy_version=8
     )
-    assert msg_false.endswith(f":False:{SCREENING_POLICY_VERSION}".encode())
+    assert msg_false.endswith(b":False:8")
 
 
 class _FakeKeypair:
@@ -46,9 +48,15 @@ class _FakeKeypair:
 
 def test_sign_verdict_signs_canonical_message() -> None:
     kp = _FakeKeypair()
-    sig = sign_verdict(kp, screener_hotkey=_HOTKEY, agent_id=_AGENT, passed=False)
+    sig = sign_verdict(
+        kp,
+        screener_hotkey=_HOTKEY,
+        agent_id=_AGENT,
+        passed=False,
+        policy_version=8,
+    )
     assert sig == ("ab" * 64)
-    assert kp.signed == f"{_HOTKEY}:{_AGENT}:False:{SCREENING_POLICY_VERSION}".encode()
+    assert kp.signed == f"{_HOTKEY}:{_AGENT}:False:8".encode()
 
 
 def test_attempt_signature_binds_exact_lease() -> None:
@@ -59,13 +67,11 @@ def test_attempt_signature_binds_exact_lease() -> None:
         agent_id=_AGENT,
         attempt_id=_ATTEMPT,
         passed=True,
+        policy_version=8,
     )
     assert (
         kp.signed
-        == (
-            "ditto-screen-verdict:v2:"
-            f"{_HOTKEY}:{_AGENT}:{_ATTEMPT}:True:{SCREENING_POLICY_VERSION}"
-        ).encode()
+        == (f"ditto-screen-verdict:v2:{_HOTKEY}:{_AGENT}:{_ATTEMPT}:True:8").encode()
     )
 
 
@@ -80,14 +86,31 @@ def test_typed_quarantine_signature_binds_private_evidence_digests() -> None:
         finding_digest="34" * 32,
         reason_code="agentic-source-review-tripwire",
     )
-    assert (
-        message
-        == (
-            "ditto-screen-result:v3:"
-            f"{_HOTKEY}:{_AGENT}:{_ATTEMPT}:quarantine:{SCREENING_POLICY_VERSION}:"
-            f"{'12' * 32}:{'34' * 32}:agentic-source-review-tripwire"
-        ).encode()
-    )
+    payload = json.loads(message.removeprefix(b"ditto-screen-result:v5:").decode())
+    assert payload == {
+        "agent_id": str(_AGENT),
+        "attempt_id": str(_ATTEMPT),
+        "finding_digest": "34" * 32,
+        "image_id": None,
+        "image_ref": None,
+        "image_sha256": None,
+        "image_size_bytes": None,
+        "image_upload_id": None,
+        "manifest_digest": "12" * 32,
+        "outcome": "quarantine",
+        "policy_version": SCREENING_POLICY_VERSION,
+        "reason_code": "agentic-source-review-tripwire",
+        "screener_hotkey": _HOTKEY,
+    }
+
+
+def test_policy_v9_signature_requires_typed_outcome() -> None:
+    with pytest.raises(ValueError, match="requires typed outcome"):
+        verdict_signing_message(
+            screener_hotkey=_HOTKEY,
+            agent_id=_AGENT,
+            passed=True,
+        )
 
 
 def test_heartbeat_signature_binds_allowlisted_coarse_metrics() -> None:

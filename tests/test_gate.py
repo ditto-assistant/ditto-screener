@@ -19,10 +19,13 @@ import pytest
 
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.gate import (
+    _MAX_SCREENED_IMAGE_BYTES,
     BuildGate,
     _detail_tail,
     _format_stage_timings,
     _log_tail,
+    _ScreenedImageExportError,
+    _ScreenedImageTooLargeError,
     dockerfile_at_root,
     image_binding_advisory,
 )
@@ -89,9 +92,15 @@ def _ok_run(calls: list[list[str]] | None = None) -> Callable[..., Any]:
             calls.append(args)
         if args[0] == "build" and stdin is not None:
             stdin.read()
+            _write_iidfile(args)
         return 0, ""
 
     return run
+
+
+def _write_iidfile(args: list[str]) -> None:
+    """Emulate Docker BuildKit's immutable image-id output in unit tests."""
+    Path(args[args.index("--iidfile") + 1]).write_text("sha256:" + "34" * 32)
 
 
 async def _screen(  # type: ignore[no-untyped-def]
@@ -113,6 +122,125 @@ def test_root_and_log_helpers() -> None:
     assert not dockerfile_at_root(["sub/Dockerfile"])
     assert _log_tail("  hi  ") == "hi"
     assert len(_detail_tail("x" * 5000)) == 3900
+
+
+async def test_export_image_hashes_exact_docker_archive(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    archive = b"synthetic docker save archive"
+    image_id = "sha256:" + "34" * 32
+    gate = _gate_with(make_config(), _ok_run(), tarball=_valid_tar())
+
+    async def run(args: list[str], **_: Any) -> tuple[int, str]:
+        if args[:3] == ["image", "save", "--output"]:
+            Path(args[3]).write_bytes(archive)
+            return 0, ""
+        if args[:3] == ["image", "inspect", "--format"]:
+            return 0, str(len(archive))
+        raise AssertionError(args)
+
+    gate._run = run  # type: ignore[method-assign]
+    exported = await gate._export_image(
+        image_id,
+        image_ref=f"ditto-screen/{_AGENT}:latest",
+        deadline=None,
+    )
+    try:
+        assert exported.sha256 == hashlib.sha256(archive).hexdigest()
+        assert exported.size_bytes == len(archive)
+        assert exported.image_id == image_id
+        assert Path(exported.path).read_bytes() == archive
+    finally:
+        os.unlink(exported.path)
+
+
+async def test_export_rejects_oversize_before_save(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    image_id = "sha256:" + "34" * 32
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(), tarball=_valid_tar())
+
+    async def run(args: list[str], **_: Any) -> tuple[int, str]:
+        calls.append(args)
+        assert args[:3] == ["image", "inspect", "--format"]
+        return 0, str(_MAX_SCREENED_IMAGE_BYTES + 1)
+
+    gate._run = run  # type: ignore[method-assign]
+    with pytest.raises(_ScreenedImageTooLargeError, match="exceeds"):
+        await gate._export_image(
+            image_id,
+            image_ref=f"ditto-screen/{_AGENT}:latest",
+            deadline=None,
+        )
+    assert not any(call[:2] == ["image", "save"] for call in calls)
+
+
+async def test_export_failure_removes_partial_archive(
+    make_config: Callable[..., ScreenerConfig], monkeypatch: Any, tmp_path: Path
+) -> None:
+    image_id = "sha256:" + "34" * 32
+    partial = tmp_path / "partial.tar"
+    gate = _gate_with(make_config(), _ok_run(), tarball=_valid_tar())
+    real_mkstemp = tempfile.mkstemp
+
+    def mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+        if kwargs.get("prefix") == "ditto-screened-image-":
+            fd = os.open(partial, os.O_CREAT | os.O_TRUNC | os.O_RDWR, 0o600)
+            return fd, str(partial)
+        return real_mkstemp(*args, **kwargs)
+
+    async def run(args: list[str], **_: Any) -> tuple[int, str]:
+        if args[:3] == ["image", "inspect", "--format"]:
+            return 0, "1"
+        if args[:3] == ["image", "save", "--output"]:
+            partial.write_bytes(b"partial")
+            return 1, "no space left on device"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
+    gate._run = run  # type: ignore[method-assign]
+    with pytest.raises(_ScreenedImageExportError, match="no space left"):
+        await gate._export_image(
+            image_id,
+            image_ref=f"ditto-screen/{_AGENT}:latest",
+            deadline=None,
+        )
+    assert not partial.exists()
+
+
+async def test_publish_failure_demotes_pass_with_dedicated_reason(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+
+    async def run(args: list[str], *, stdin: Any = None, **_: Any) -> tuple[int, str]:
+        if args[0] == "build":
+            if stdin is not None:
+                stdin.read()
+            _write_iidfile(args)
+        elif args[:3] == ["image", "inspect", "--format"]:
+            return 0, "32"
+        elif args[:3] == ["image", "save", "--output"]:
+            Path(args[3]).write_bytes(b"screened-image")
+        return 0, ""
+
+    async def fail_publish(_image: Any) -> None:
+        raise RuntimeError("object storage unavailable")
+
+    gate = _gate_with(make_config(), run, tarball=tarball)
+    async with gate._client:
+        result = await gate.screen(
+            agent_id=_AGENT,
+            attempt_id=_ATTEMPT,
+            miner_hotkey=_MINER,
+            sha256=hashlib.sha256(tarball).hexdigest(),
+            download_url=_URL,
+            publish_image=fail_publish,
+        )
+    assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
+    assert result.evidence[-1].code == "image-upload-failed"
+    assert "object storage unavailable" in result.detail
 
 
 def test_image_binding_flags_prebuilt_entrypoint_without_build() -> None:
@@ -272,6 +400,7 @@ async def test_source_review_overlaps_the_build(
             await asyncio.sleep(0)
             events.append("build_finished")
             review_may_finish.set()
+            _write_iidfile(args)
         return 0, ""
 
     tarball = _valid_tar()
@@ -388,9 +517,7 @@ async def test_fake_gateway_is_internal_and_resource_capped(
     )
     assert {"--read-only", "--cap-drop", "no-new-privileges"} <= set(gateway)
     harness = next(
-        call
-        for call in calls
-        if call[0] == "run" and call[-1].startswith("ditto-screen/")
+        call for call in calls if call[0] == "run" and call[-1] == "sha256:" + "34" * 32
     )
     assert "CHUTES_BASE_URL=http://fake-gateway:8080/v1" in harness
     assert "--memory" in harness and "--pids-limit" in harness
@@ -490,6 +617,7 @@ async def test_build_and_health_failures_are_deterministic(
     ) -> tuple[int, str]:
         if args[0] == "build" and stdin is not None:
             stdin.read()
+            _write_iidfile(args)
         if args[0] == "exec" and any("http://harness:" in arg for arg in args):
             return 1, "HTTP 503"
         return 0, ""
@@ -534,6 +662,7 @@ async def test_gateway_start_failure_is_retryable_infrastructure(
     ) -> tuple[int, str]:
         if args[0] == "build" and stdin is not None:
             stdin.read()
+            _write_iidfile(args)
         if args[:2] == ["network", "create"]:
             return 1, "Cannot connect to the Docker daemon"
         return 0, ""

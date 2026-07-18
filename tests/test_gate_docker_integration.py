@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from ditto_screener.config import ScreenerConfig
-from ditto_screener.gate import BuildGate
+from ditto_screener.gate import BuildGate, BuiltImageArtifact
 from ditto_screener.policy import (
     CORE_ONLY_MANIFEST,
     BehavioralChallengePackModule,
@@ -35,7 +35,8 @@ async def test_current_starter_kit_builds_and_health_checks_without_run(
     archive_raw = os.environ.get("DITTO_STARTER_KIT_ARCHIVE")
     starter_dir_raw = os.environ.get("DITTO_STARTER_KIT_DIR")
     if archive_raw:
-        tarball = Path(archive_raw).resolve().read_bytes()
+        source_archive = Path(archive_raw).resolve()
+        tarball = source_archive.read_bytes()
     else:
         if not starter_dir_raw:
             pytest.skip("set DITTO_STARTER_KIT_DIR to a current canonical checkout")
@@ -47,6 +48,7 @@ async def test_current_starter_kit_builds_and_health_checks_without_run(
                 check=True,
                 stdout=output,
             )
+        source_archive = archive
         tarball = archive.read_bytes()
 
     def artifact(request: httpx.Request) -> httpx.Response:
@@ -74,6 +76,56 @@ async def test_current_starter_kit_builds_and_health_checks_without_run(
         return await real_challenge(*args, **kwargs)
 
     gate._run_private_challenge = observed_challenge  # type: ignore[method-assign]
+    published: BuiltImageArtifact | None = None
+
+    async def verify_export(image: BuiltImageArtifact) -> None:
+        nonlocal published
+        archive = Path(image.path)
+        assert archive.stat().st_size == image.size_bytes
+        with archive.open("rb") as stream:
+            assert hashlib.file_digest(stream, "sha256").hexdigest() == image.sha256
+        loaded = subprocess.run(
+            ["docker", "image", "load", "--input", image.path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        # Saving by immutable image ID deliberately makes the archive independent
+        # of a mutable daemon tag. Docker therefore reports a loaded image ID;
+        # the validator-side loader verifies that ID and applies image_ref itself.
+        assert image.image_id in loaded.stdout or image.image_ref in loaded.stdout
+        inspected = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image.image_id],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert inspected.stdout.strip() == image.image_id
+        dittobench_dir = os.environ.get("DITTOBENCH_API_DIR")
+        if dittobench_dir:
+            env = {
+                **os.environ,
+                "DITTOBENCH_SCREENED_IMAGE_ARCHIVE": image.path,
+                "DITTOBENCH_SCREENED_SOURCE_ARCHIVE": str(source_archive),
+                "DITTOBENCH_SCREENED_IMAGE_REF": image.image_ref,
+                "DITTOBENCH_SCREENED_IMAGE_ID": image.image_id,
+            }
+            subprocess.run(
+                [
+                    "go",
+                    "test",
+                    "./internal/sandbox",
+                    "-run",
+                    "^TestScreenerArchiveLoadsWithoutRebuild$",
+                    "-count=1",
+                    "-v",
+                ],
+                cwd=Path(dittobench_dir).resolve(),
+                env=env,
+                check=True,
+            )
+        published = image
+
     async with client:
         result = await gate.screen(
             agent_id=uuid4(),
@@ -81,10 +133,13 @@ async def test_current_starter_kit_builds_and_health_checks_without_run(
             miner_hotkey="5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm",
             sha256=hashlib.sha256(tarball).hexdigest(),
             download_url="https://artifact.test/starter-kit.tar.gz",
+            publish_image=verify_export,
         )
 
     assert result.passed, result.detail
     assert challenge_calls == 0
+    assert published is not None
+    assert not Path(published.path).exists()
 
 
 @pytest.mark.integration

@@ -11,7 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCREENING_POLICY_VERSION = 8
+SCREENING_POLICY_VERSION = 9
 
 _SS58_PATTERN = r"^[1-9A-HJ-NP-Za-km-z]{47,48}$"
 _SIGNATURE_HEX_PATTERN = r"^[0-9a-fA-F]{128}$"
@@ -56,6 +56,108 @@ class ArtifactResponse(BaseModel):
     expires_at: Annotated[
         datetime, Field(description="When the download URL expires (UTC).")
     ]
+
+
+class ScreenedImageUploadRequest(BaseModel):
+    """Lease-bound metadata used to mint a pre-signed image upload URL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: UUID
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    size_bytes: Annotated[int, Field(gt=0, le=8 * 1024**3)]
+    image_id: Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
+    image_ref: Annotated[str, Field(pattern=r"^ditto-screen/[0-9a-f-]{36}:latest$")]
+
+
+class ScreenedImageUploadResponse(BaseModel):
+    """Lease-bound multipart upload initiated by the platform."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image_upload_id: UUID
+    storage_upload_id: Annotated[str, Field(min_length=1, max_length=1024)]
+    part_size_bytes: Annotated[int, Field(ge=5 * 1024**2, le=5 * 1024**3)]
+    expires_at: datetime
+
+
+class ScreenedImagePartUploadRequest(BaseModel):
+    """Request a presigned URL for one part of an active image upload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: UUID
+    storage_upload_id: Annotated[str, Field(min_length=1, max_length=1024)]
+    part_number: Annotated[int, Field(ge=1, le=10_000)]
+    size_bytes: Annotated[int, Field(gt=0, le=5 * 1024**3)]
+
+
+class ScreenedImagePartUploadResponse(BaseModel):
+    """Short-lived direct-to-object-storage URL for one multipart part."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    upload_url: str
+    expires_at: datetime
+    required_headers: dict[str, str]
+
+
+class ScreenedImageCompletedPart(BaseModel):
+    """One uploaded multipart part and the storage ETag returned for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    part_number: Annotated[int, Field(ge=1, le=10_000)]
+    etag: Annotated[str, Field(min_length=1, max_length=256)]
+
+
+class ScreenedImageUploadCompleteRequest(BaseModel):
+    """Finalize a multipart image upload and request full-byte verification."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: UUID
+    storage_upload_id: Annotated[str, Field(min_length=1, max_length=1024)]
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    size_bytes: Annotated[int, Field(gt=0, le=8 * 1024**3)]
+    image_id: Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
+    image_ref: Annotated[str, Field(pattern=r"^ditto-screen/[0-9a-f-]{36}:latest$")]
+    parts: Annotated[
+        list[ScreenedImageCompletedPart], Field(min_length=1, max_length=10_000)
+    ]
+
+    @model_validator(mode="after")
+    def validate_part_sequence(self) -> ScreenedImageUploadCompleteRequest:
+        if [part.part_number for part in self.parts] != list(
+            range(1, len(self.parts) + 1)
+        ):
+            raise ValueError("completed image parts must be contiguous and ordered")
+        return self
+
+
+class ScreenedImageUploadCompleteResponse(BaseModel):
+    """Acknowledgement that platform verification matched the signed archive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verified: Literal[True]
+
+
+class ScreenedImageUploadAbortRequest(BaseModel):
+    """Abort an unfinished multipart upload owned by a screening attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: UUID
+    storage_upload_id: Annotated[str, Field(min_length=1, max_length=1024)]
+
+
+class ScreenedImageUploadAbortResponse(BaseModel):
+    """Acknowledgement that an unfinished multipart upload was aborted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    aborted: bool
 
 
 class ScreenerQueueItem(BaseModel):
@@ -276,6 +378,13 @@ class ScreenResultRequest(BaseModel):
     reason_code: Annotated[str | None, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")] = (
         None
     )
+    image_sha256: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
+    image_size_bytes: Annotated[int | None, Field(gt=0, le=8 * 1024**3)] = None
+    image_id: Annotated[str | None, Field(pattern=r"^sha256:[0-9a-f]{64}$")] = None
+    image_ref: Annotated[
+        str | None, Field(pattern=r"^ditto-screen/[0-9a-f-]{36}:latest$")
+    ] = None
+    image_upload_id: UUID | None = None
     evidence: Annotated[
         list[ScreenEvidenceItem] | None,
         Field(
@@ -331,6 +440,19 @@ class ScreenResultRequest(BaseModel):
     @model_validator(mode="after")
     def validate_typed_outcome(self) -> ScreenResultRequest:
         if self.outcome is None:
+            if self.policy_version >= SCREENING_POLICY_VERSION:
+                raise ValueError("policy-v9 result requires typed outcome")
+            if any(
+                value is not None
+                for value in (
+                    self.image_sha256,
+                    self.image_size_bytes,
+                    self.image_id,
+                    self.image_ref,
+                    self.image_upload_id,
+                )
+            ):
+                raise ValueError("legacy result cannot carry screened image metadata")
             return self
         if self.passed != (self.outcome == ScreenResultOutcome.PASS):
             raise ValueError("passed must agree with outcome")
@@ -347,6 +469,18 @@ class ScreenResultRequest(BaseModel):
             self.manifest_digest is None or self.reason_code is None
         ):
             raise ValueError("quarantine requires manifest_digest and reason_code")
+        image_fields = (
+            self.image_sha256,
+            self.image_size_bytes,
+            self.image_id,
+            self.image_ref,
+            self.image_upload_id,
+        )
+        if self.outcome == ScreenResultOutcome.PASS:
+            if any(value is None for value in image_fields):
+                raise ValueError("passing policy-v9 result requires screened image")
+        elif any(value is not None for value in image_fields):
+            raise ValueError("screened image metadata requires passing outcome")
         return self
 
     @model_validator(mode="after")

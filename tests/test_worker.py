@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.errors import PlatformError
+from ditto_screener.gate import BuiltImageArtifact
 from ditto_screener.policy import (
     PolicyEvidence,
     ScreeningDecision,
@@ -65,10 +66,25 @@ class _FakeGate:
         self.deadlines: list[float | None] = []
 
     async def screen(
-        self, *, agent_id: UUID, deadline: float | None = None, **_: Any
+        self,
+        *,
+        agent_id: UUID,
+        deadline: float | None = None,
+        publish_image: Any = None,
+        **_: Any,
     ) -> ScreeningDecision:
         self.calls.append(agent_id)
         self.deadlines.append(deadline)
+        if self.result.outcome == ScreeningOutcome.PASS and publish_image is not None:
+            await publish_image(
+                BuiltImageArtifact(
+                    path="/tmp/fake-screened-image.tar",
+                    sha256="12" * 32,
+                    size_bytes=123,
+                    image_id="sha256:" + "34" * 32,
+                    image_ref=f"ditto-screen/{agent_id}:latest",
+                )
+            )
         return self.result
 
 
@@ -83,6 +99,11 @@ class _FakePlatform:
         self.heartbeats: list[Any] = []
         self.heartbeat_error: Exception | None = None
         self.artifact_calls: list[UUID] = []
+        self.image_uploads: list[dict[str, Any]] = []
+
+    async def upload_screened_image(self, agent_id: UUID, **metadata: Any) -> UUID:
+        self.image_uploads.append({"agent_id": agent_id, **metadata})
+        return UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
     async def submit_heartbeat(self, request: Any) -> Any:
         if self.heartbeat_error is not None:
@@ -169,10 +190,32 @@ async def test_screen_one_pass_posts_signed_pass_verdict(
     assert v["policy_version"] == SCREENING_POLICY_VERSION
     assert v["attempt_id"] is not None
     assert v["outcome"] == ScreenResultOutcome.PASS
+    assert v["image_sha256"] == "12" * 32
+    assert v["image_size_bytes"] == 123
+    assert v["image_id"] == "sha256:" + "34" * 32
+    assert v["image_upload_id"] == UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    assert len(platform.image_uploads) == 1
     assert platform.heartbeats[0].state == "screening"
     assert platform.heartbeats[0].progress.stage == "preparing"
     assert platform.heartbeats[-1].state == "polling"
     assert platform.heartbeats[-1].progress is None
+
+
+async def test_passing_gate_without_verified_image_posts_no_verdict(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+
+    async def skip_publication(*, agent_id: UUID, **_: Any) -> ScreeningDecision:
+        gate.calls.append(agent_id)
+        return gate.result
+
+    gate.screen = skip_publication  # type: ignore[method-assign]
+    worker = _worker(make_config(), platform, gate)
+    await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
+    assert platform.image_uploads == []
+    assert platform.verdicts == []
 
 
 async def test_screen_one_fail_forwards_detail(
