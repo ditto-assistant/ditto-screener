@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.11.2 (2026-07-18)
+
+### Bug Fixes
+
+- Detect coordinated generator mirroring
+  ([#28](https://github.com/ditto-assistant/ditto-screener/pull/28),
+  [`83f0fb3`](https://github.com/ditto-assistant/ditto-screener/commit/83f0fb31af08cb87ac614976e4ec48b7a89967be))
+
+- Tighten screener evidence boundary
+  ([#28](https://github.com/ditto-assistant/ditto-screener/pull/28),
+  [`83f0fb3`](https://github.com/ditto-assistant/ditto-screener/commit/83f0fb31af08cb87ac614976e4ec48b7a89967be))
+
+
 ## v0.11.1 (2026-07-18)
 
 ### Bug Fixes
