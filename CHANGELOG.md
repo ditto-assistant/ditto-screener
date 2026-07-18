@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.12.0 (2026-07-18)
+
+### Features
+
+- Publish screened Docker images ([#26](https://github.com/ditto-assistant/ditto-screener/pull/26),
+  [`e9fd80a`](https://github.com/ditto-assistant/ditto-screener/commit/e9fd80a043aea1dae0c024fcfaffac057c5593fb))
+
+
 ## v0.11.2 (2026-07-18)
 
 ### Bug Fixes
