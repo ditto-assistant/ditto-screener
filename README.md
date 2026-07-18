@@ -6,10 +6,19 @@ The stable core leases one submission at a time from `ditto-platform`,
 downloads and verifies its tarball, enforces safe archive and root Rust package
 rules, builds the Docker image, starts it with resource caps and an internal fake
 gateway, waits for `/health`, then performs a bounded, read-only Luna source
-review before submitting a lease-bound sr25519 result. Medium- and high-risk
-results are quarantined for operator review, never automatically rejected. The
-default manifest never calls `POST /run`. It never reads or writes the platform
-database.
+review before submitting a lease-bound sr25519 result. An optional, default-off
+Kimi K3 level-2 reviewer can resolve only medium/high L1 leads with an
+isolated, no-network coding-analysis harness; OpenRouter may fail over in order
+to GLM 5.2 and then GPT-5.6 SOL. A complete, very-high-confidence medium-risk
+certificate from primary Kimi may clear directly; every static/high-risk,
+fallback-model, incomplete, or lower-confidence safe result requires the
+independent GPT-5.6 SOL level-3 critic. A SOL challenge is decided by a second,
+low-reasoning SOL adjudicator rather than becoming an automatic violation.
+Obvious single-mechanism violations stop at L2; mixed benchmark/scorer/tool
+violations use a bounded SOL cause adjudicator before retaining quarantine.
+Medium- and high-risk results are
+quarantined for operator review, never automatically rejected. The default
+manifest never calls `POST /run`. It never reads or writes the platform database.
 
 The health smoke mirrors the validator runtime contract: UID/GID 65532, a
 read-only root filesystem, a bounded noexec `/tmp` tmpfs, dropped capabilities,
@@ -90,6 +99,21 @@ Required values are supplied through the production host's protected
 - `SCREENER_SOURCE_REVIEW_API_KEY_FILE`: required mode-0400 OpenRouter key file
   for the private read-only source reviewer. The default model is
   `openai/gpt-5.6-luna`.
+- `SCREENER_L2_REVIEW_MODE`: `off` (default), `shadow`, or `enforce`.
+- `SCREENER_L2_REVIEW_MODEL`: locked to `moonshotai/kimi-k3`, with
+  `SCREENER_L2_FALLBACK_MODELS=z-ai/glm-5.2,openai/gpt-5.6-sol`.
+- `SCREENER_L3_REVIEW_MODEL`: locked to `openai/gpt-5.6-sol`; both layers use
+  OpenRouter ZDR routing and deny data collection.
+- `SCREENER_L2_ANALYZER_IMAGE`: locked to the updater-built
+  `ditto-screener-l2-analyzer:active` image.
+- `SCREENER_L2_CACHE_DIR` and `SCREENER_L2_AUDIT_JOURNAL_FILE`: protected
+  sanitized cache/audit locations. Raw source and transcripts are never stored.
+
+Static source matches remain pre-execution leads. In `shadow`/`enforce`, the
+inert reviewer resolves them before any submission Dockerfile runs; only an L3
+clearance may permit a high-risk static lead to continue to the build boundary.
+An unresolved lead remains retryable, inconclusive, or quarantined and never
+becomes a terminal automatic rejection.
 
 Source-review requests follow OpenRouter's app-attribution contract with
 `HTTP-Referer: https://heyditto.ai` and `X-OpenRouter-Title: Ditto`.
@@ -99,5 +123,7 @@ boundary, [docs/source-review-policy.md](docs/source-review-policy.md) for the
 allowed-optimization and benchmark-emulation boundary,
 [docs/binary-analysis.md](docs/binary-analysis.md) for the bounded opaque-file
 inspection contract, and
+[docs/l2-source-review.md](docs/l2-source-review.md) for the Kimi/GLM/SOL models,
+isolated coding harness, evidence, budgets, and canary/rollback contract, and
 [docs/deployment.md](docs/deployment.md) for deployment secrets, health checks,
 cache maintenance, and the compatible rollout sequence.

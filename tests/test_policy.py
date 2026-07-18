@@ -185,6 +185,53 @@ async def test_agentic_source_review_can_only_select_quarantine() -> None:
 
 
 @pytest.mark.parametrize(
+    ("failure_disposition", "expected"),
+    [
+        ("retryable_infra", ScreeningOutcome.RETRYABLE_INFRA),
+        ("inconclusive", ScreeningOutcome.INCONCLUSIVE),
+    ],
+)
+async def test_l2_failure_disposition_fails_closed_without_rejection(
+    failure_disposition: str, expected: ScreeningOutcome
+) -> None:
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError
+
+    async def review() -> SourceReviewObservation:
+        return SourceReviewObservation(
+            ok=False,
+            risk_level=None,
+            finding_digest=None,
+            categories=(),
+            error_code="l2-review-unavailable",
+            failure_disposition=failure_disposition,
+        )
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="l2-failure-safety",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="private-source-review"),),
+    )
+    decision = await engine.evaluate(_context(challenge, review))
+
+    assert decision.outcome == expected
+    assert decision.outcome != ScreeningOutcome.DETERMINISTIC_REJECT
+
+
+def test_l2_enforcement_is_manifest_bound_but_shadow_is_not() -> None:
+    off = load_policy_engine(None, l2_mode="off").manifest
+    shadow = load_policy_engine(None, l2_mode="shadow").manifest
+    enforce = load_policy_engine(None, l2_mode="enforce").manifest
+
+    assert off.digest == shadow.digest
+    assert enforce.digest != off.digest
+    assert enforce.policy_version == off.policy_version
+    assert "sol-l2" in enforce.rotation_id
+
+
+@pytest.mark.parametrize(
     ("category", "expected_code"),
     [
         ("benchmark_emulation", "source-safety-private-challenge-risk"),
@@ -733,6 +780,32 @@ def _finding_payload(risk: str) -> dict[str, object]:
         ),
         summary="bounded operator summary",
     ).model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    ("failure_disposition", "outcome"),
+    [
+        ("retryable_infra", ScreeningOutcome.RETRYABLE_INFRA),
+        ("inconclusive", ScreeningOutcome.INCONCLUSIVE),
+    ],
+)
+def test_preexecution_review_failure_never_releases_or_rejects(
+    failure_disposition: str, outcome: ScreeningOutcome
+) -> None:
+    observation = SourceReviewObservation(
+        ok=False,
+        risk_level=None,
+        finding_digest=None,
+        categories=(),
+        error_code="l2-bounded-failure",
+        failure_disposition=failure_disposition,
+    )
+    decision = PolicyEngine(CORE_ONLY_MANIFEST).preexecution_source_decision(
+        observation
+    )
+    assert decision.outcome == outcome
+    assert decision.outcome != ScreeningOutcome.DETERMINISTIC_REJECT
+    assert not decision.submits_verdict or not decision.passed
 
 
 async def test_source_review_finding_travels_to_quarantine_decision() -> None:

@@ -118,6 +118,26 @@ class ScreenerConfig:
     source_review_timeout_seconds: float
     source_review_max_steps: int
 
+    l2_review_mode: str
+    l2_review_model: str
+    l2_review_provider: str
+    l2_fallback_models: tuple[str, ...]
+    l3_review_model: str
+    l3_review_provider: str
+    l2_analyzer_image: str
+    l2_cache_dir: str
+    l2_audit_journal_file: str
+    l2_timeout_seconds: float
+    l2_max_steps: int
+    l2_max_input_tokens: int
+    l2_max_output_tokens: int
+    l2_max_completion_tokens: int
+    l2_max_cost_usd: float
+    l2_analyst_reasoning_effort: str
+    l2_critic_reasoning_effort: str
+    l2_cache_ttl_seconds: float
+    l2_audit_retention_days: int
+
     def signing_source_present(self) -> bool:
         """Whether a usable signing key source is configured."""
         return bool(self.screener_mnemonic) or bool(
@@ -162,6 +182,12 @@ def _parse_env_pairs(name: str, default: str) -> tuple[tuple[str, str], ...]:
             )
         pairs.append((key.strip(), value))
     return tuple(pairs)
+
+
+def _parse_csv(name: str, default: str) -> tuple[str, ...]:
+    return tuple(
+        raw.strip() for raw in os.environ.get(name, default).split(",") if raw.strip()
+    )
 
 
 def parse_screener_config_from_env() -> ScreenerConfig:
@@ -224,6 +250,46 @@ def parse_screener_config_from_env() -> ScreenerConfig:
             "SCREENER_SOURCE_REVIEW_TIMEOUT_SECONDS", "180"
         ),
         source_review_max_steps=_parse_int("SCREENER_SOURCE_REVIEW_MAX_STEPS", "10"),
+        l2_review_mode=os.environ.get("SCREENER_L2_REVIEW_MODE", "off"),
+        l2_review_model=os.environ.get(
+            "SCREENER_L2_REVIEW_MODEL", "moonshotai/kimi-k3"
+        ),
+        l2_review_provider=os.environ.get("SCREENER_L2_REVIEW_PROVIDER", "openrouter"),
+        l2_fallback_models=_parse_csv(
+            "SCREENER_L2_FALLBACK_MODELS", "z-ai/glm-5.2,openai/gpt-5.6-sol"
+        ),
+        l3_review_model=os.environ.get(
+            "SCREENER_L3_REVIEW_MODEL", "openai/gpt-5.6-sol"
+        ),
+        l3_review_provider=os.environ.get("SCREENER_L3_REVIEW_PROVIDER", "openrouter"),
+        l2_analyzer_image=os.environ.get(
+            "SCREENER_L2_ANALYZER_IMAGE", "ditto-screener-l2-analyzer:active"
+        ),
+        l2_cache_dir=os.environ.get(
+            "SCREENER_L2_CACHE_DIR", "/opt/ditto/screener/state/l2-cache"
+        ),
+        l2_audit_journal_file=os.environ.get(
+            "SCREENER_L2_AUDIT_JOURNAL_FILE",
+            "/opt/ditto/screener/state/l2-audit.jsonl",
+        ),
+        l2_timeout_seconds=_parse_float("SCREENER_L2_TIMEOUT_SECONDS", "900"),
+        l2_max_steps=_parse_int("SCREENER_L2_MAX_STEPS", "18"),
+        l2_max_input_tokens=_parse_int("SCREENER_L2_MAX_INPUT_TOKENS", "400000"),
+        l2_max_output_tokens=_parse_int("SCREENER_L2_MAX_OUTPUT_TOKENS", "20000"),
+        l2_max_completion_tokens=_parse_int(
+            "SCREENER_L2_MAX_COMPLETION_TOKENS", "2400"
+        ),
+        l2_max_cost_usd=_parse_float("SCREENER_L2_MAX_COST_USD", "2.00"),
+        l2_analyst_reasoning_effort=os.environ.get(
+            "SCREENER_L2_ANALYST_REASONING_EFFORT", "model_default"
+        ),
+        l2_critic_reasoning_effort=os.environ.get(
+            "SCREENER_L2_CRITIC_REASONING_EFFORT", "medium"
+        ),
+        l2_cache_ttl_seconds=_parse_float(
+            "SCREENER_L2_CACHE_TTL_SECONDS", str(7 * 86_400)
+        ),
+        l2_audit_retention_days=_parse_int("SCREENER_L2_AUDIT_RETENTION_DAYS", "30"),
     )
     if not config.signing_source_present():
         raise ScreenerConfigError(
@@ -239,5 +305,61 @@ def parse_screener_config_from_env() -> ScreenerConfig:
     if not 1 <= config.source_review_max_steps <= 20:
         raise ScreenerConfigError(
             "SCREENER_SOURCE_REVIEW_MAX_STEPS must be between 1 and 20"
+        )
+    if config.l2_review_mode not in {"off", "shadow", "enforce"}:
+        raise ScreenerConfigError(
+            "SCREENER_L2_REVIEW_MODE must be off, shadow, or enforce"
+        )
+    if config.l2_review_model != "moonshotai/kimi-k3":
+        raise ScreenerConfigError("SCREENER_L2_REVIEW_MODEL must be moonshotai/kimi-k3")
+    if config.l2_review_provider != "openrouter":
+        raise ScreenerConfigError("SCREENER_L2_REVIEW_PROVIDER must be openrouter")
+    if config.l2_fallback_models != ("z-ai/glm-5.2", "openai/gpt-5.6-sol"):
+        raise ScreenerConfigError(
+            "SCREENER_L2_FALLBACK_MODELS must be z-ai/glm-5.2,openai/gpt-5.6-sol"
+        )
+    if config.l3_review_model != "openai/gpt-5.6-sol":
+        raise ScreenerConfigError("SCREENER_L3_REVIEW_MODEL must be openai/gpt-5.6-sol")
+    if config.l3_review_provider != "openrouter":
+        raise ScreenerConfigError("SCREENER_L3_REVIEW_PROVIDER must be openrouter")
+    if config.l2_analyzer_image != "ditto-screener-l2-analyzer:active":
+        raise ScreenerConfigError(
+            "SCREENER_L2_ANALYZER_IMAGE must be ditto-screener-l2-analyzer:active"
+        )
+    if not 1 <= config.l2_max_steps <= 20:
+        raise ScreenerConfigError("SCREENER_L2_MAX_STEPS must be between 1 and 20")
+    if not 30 <= config.l2_timeout_seconds <= 900:
+        raise ScreenerConfigError(
+            "SCREENER_L2_TIMEOUT_SECONDS must be between 30 and 900"
+        )
+    if not 1 <= config.l2_max_output_tokens <= 128_000:
+        raise ScreenerConfigError(
+            "SCREENER_L2_MAX_OUTPUT_TOKENS must be between 1 and 128000"
+        )
+    if not 1 <= config.l2_max_completion_tokens <= config.l2_max_output_tokens:
+        raise ScreenerConfigError(
+            "SCREENER_L2_MAX_COMPLETION_TOKENS must be within the output budget"
+        )
+    if not 1 <= config.l2_max_input_tokens <= 1_000_000:
+        raise ScreenerConfigError(
+            "SCREENER_L2_MAX_INPUT_TOKENS must be between 1 and 1000000"
+        )
+    if not 0 < config.l2_max_cost_usd <= 10:
+        raise ScreenerConfigError("SCREENER_L2_MAX_COST_USD must be in (0, 10]")
+    if config.l2_analyst_reasoning_effort != "model_default":
+        raise ScreenerConfigError(
+            "SCREENER_L2_ANALYST_REASONING_EFFORT must be model_default"
+        )
+    if config.l2_critic_reasoning_effort not in {"low", "medium"}:
+        raise ScreenerConfigError(
+            "SCREENER_L2_CRITIC_REASONING_EFFORT must be low or medium"
+        )
+    if not 60 <= config.l2_cache_ttl_seconds <= 30 * 86_400:
+        raise ScreenerConfigError(
+            "SCREENER_L2_CACHE_TTL_SECONDS must be between 60 and 2592000"
+        )
+    if not 1 <= config.l2_audit_retention_days <= 365:
+        raise ScreenerConfigError(
+            "SCREENER_L2_AUDIT_RETENTION_DAYS must be between 1 and 365"
         )
     return config

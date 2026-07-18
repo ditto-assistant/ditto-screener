@@ -66,8 +66,11 @@ check_untyped_defs = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = ["integration: tests requiring a real Docker daemon"]
-addopts = ["-m", "not integration"]
+markers = [
+  "integration: tests requiring a real Docker daemon",
+  "live: opt-in tests that call a billed external model API",
+]
+addopts = ["-m", "not integration and not live"]
 
 [tool.semantic_release]
 allow_zero_version = true

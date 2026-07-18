@@ -637,11 +637,31 @@ class TarSourceRepository:
         hits: dict[str, dict[str, tuple[str, int]]] = {
             dimension: {} for dimension in _GENERATOR_MIRRORING_PATTERNS
         }
+        path_hits: dict[str, dict[str, dict[str, int]]] = {}
+        service_paths: set[str] = set()
         scanned = 0
         for path, text in readable:
             if not _is_generator_runtime_source(path):
                 continue
             scanned += 1
+            folded_text = text.casefold()
+            if (
+                path.endswith(".rs")
+                and re.search(
+                    r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?"
+                    r"(?:async\s+)?fn\s+run\b",
+                    folded_text,
+                )
+                and re.search(
+                    r"(?:model|chat|completion|inference|harness\s*\.\s*run)",
+                    folded_text,
+                )
+                and re.search(
+                    r"(?:final_text|runresponse|\banswer\b|\babstain\b)",
+                    folded_text,
+                )
+            ):
+                service_paths.add(path)
             for line_number, line in enumerate(text.splitlines(), 1):
                 folded = line.casefold()
                 for dimension, (
@@ -650,8 +670,13 @@ class TarSourceRepository:
                 ) in _GENERATOR_MIRRORING_PATTERNS.items():
                     dimension_hits = hits[dimension]
                     for marker, pattern in patterns:
-                        if marker not in dimension_hits and pattern.search(folded):
+                        if not pattern.search(folded):
+                            continue
+                        if marker not in dimension_hits:
                             dimension_hits[marker] = (path, line_number)
+                        path_hits.setdefault(path, {}).setdefault(
+                            dimension, {}
+                        ).setdefault(marker, line_number)
 
         dimensions: dict[str, dict[str, object]] = {}
         matched: list[str] = []
@@ -685,8 +710,41 @@ class TarSourceRepository:
             }.issubset(matched_grammar)
             and "deterministic_answer_path" in matched
         )
+        served_locations: list[dict[str, object]] = []
+        for path in sorted(service_paths):
+            local = path_hits.get(path, {})
+            required = {
+                "question_templates",
+                "retrieval_vocabulary_bridge",
+                "deterministic_answer_path",
+            }
+            if not required <= set(local):
+                continue
+            local_minimums = {
+                "question_templates": 2,
+                "retrieval_vocabulary_bridge": 6,
+                "deterministic_answer_path": 4,
+            }
+            if any(
+                len(local[dimension]) < minimum
+                for dimension, minimum in local_minimums.items()
+            ):
+                continue
+            for dimension in sorted(required):
+                marker_lines = local[dimension]
+                if marker_lines:
+                    served_locations.append(
+                        {
+                            "path": path,
+                            "line": min(marker_lines.values()),
+                            "dimension": dimension,
+                        }
+                    )
+        served_candidate = len(served_locations) >= 3
         return {
             "aggregate_candidate": aggregate_candidate,
+            "served_runtime_candidate": served_candidate,
+            "served_runtime_locations": served_locations[:8],
             "matched_dimensions": matched,
             "dimensions": dimensions,
             "scanned_runtime_source_files": scanned,
@@ -858,6 +916,12 @@ class TarSourceRepository:
             while chunk := extracted.read(1024 * 1024):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def member_sha256(self, path: str) -> str:
+        """Return the digest of one validated regular archive member."""
+        if path not in self._members:
+            raise ValueError("source reviewer cited an unknown archive member")
+        return self._member_sha256(path)
 
 
 class OpenRouterSourceReviewAgent:
@@ -1235,18 +1299,24 @@ def _load_provenance_manifest(path: Path) -> dict[str, object]:
     if len(raw) > 128_000:
         raise ValueError("provenance manifest is too large")
     value = json.loads(raw)
-    if not isinstance(value, dict) or set(value) != {
+    if not isinstance(value, dict):
+        raise ValueError("provenance manifest has unexpected fields")
+    version = value.get("version")
+    expected_keys = {
         "version",
         "origin",
         "revision",
         "files",
-    }:
+        *({"rust_functions"} if version == 2 else set()),
+    }
+    if set(value) != expected_keys:
         raise ValueError("provenance manifest has unexpected fields")
-    if value["version"] != 1:
+    if version not in {1, 2}:
         raise ValueError("provenance manifest version is unsupported")
     origin = value["origin"]
     revision = value["revision"]
     files = value["files"]
+    rust_functions = value.get("rust_functions", [])
     if (
         not isinstance(origin, str)
         or not origin
@@ -1254,6 +1324,8 @@ def _load_provenance_manifest(path: Path) -> dict[str, object]:
         or not revision
         or not isinstance(files, dict)
         or len(files) > _MAX_INVENTORY_FILES
+        or not isinstance(rust_functions, list)
+        or len(rust_functions) > 2_048
     ):
         raise ValueError("provenance manifest fields are invalid")
     for item_path, digest in files.items():
@@ -1267,6 +1339,20 @@ def _load_provenance_manifest(path: Path) -> dict[str, object]:
             or set(digest) - set("0123456789abcdef")
         ):
             raise ValueError("provenance manifest file entry is invalid")
+    for item in rust_functions:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "name", "ordinal", "sha256"}
+            or not isinstance(item["path"], str)
+            or not isinstance(item["name"], str)
+            or not isinstance(item["ordinal"], int)
+            or isinstance(item["ordinal"], bool)
+            or item["ordinal"] < 0
+            or not isinstance(item["sha256"], str)
+            or len(item["sha256"]) != 64
+            or set(item["sha256"]) - set("0123456789abcdef")
+        ):
+            raise ValueError("provenance manifest Rust function entry is invalid")
     return value
 
 

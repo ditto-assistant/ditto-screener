@@ -27,9 +27,11 @@ gc_marker="$gc_state_dir/last-cache-gc"
 # what is RUNNING — unlike git HEAD, which a run interrupted between `reset` and
 # a healthy restart leaves pointing at a not-yet-running commit.
 deployed_marker="$gc_state_dir/deployed-sha"
+l2_mode_marker="$gc_state_dir/deployed-l2-mode"
 secret_dir="$SCREENER_ROOT/secrets"
 source_review_key="$secret_dir/source-review-openrouter.key"
 lock_file="$(dirname "$SCREENER_ROOT")/.screener-deploy.lock"
+l2_analyzer_image="ditto-screener-l2-analyzer:active"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "update-screener.sh must run as root" >&2
@@ -58,6 +60,11 @@ ensure_enabled() {
 record_deployed_sha() {
   mkdir -p "$gc_state_dir"
   printf '%s\n' "$1" >"$deployed_marker"
+}
+
+record_l2_mode() {
+  mkdir -p "$gc_state_dir"
+  printf '%s\n' "$1" >"$l2_mode_marker"
 }
 
 ensure_imds_guard() {
@@ -211,6 +218,36 @@ materialize_source_review_key() {
   upsert_env SCREENER_SOURCE_REVIEW_API_KEY_FILE "$source_review_key"
 }
 
+l2_mode() {
+  grep '^SCREENER_L2_REVIEW_MODE=' "$env_file" 2>/dev/null \
+    | tail -n 1 | cut -d= -f2- || true
+}
+
+ensure_l2_analyzer() {
+  local sha="$1" mode current_label
+  mode="$(l2_mode)"
+  [[ "$mode" == "shadow" || "$mode" == "enforce" ]] || return 0
+  current_label="$(docker image inspect --format \
+    '{{index .Config.Labels "ai.heyditto.screener.sha"}}' \
+    "$l2_analyzer_image" 2>/dev/null || true)"
+  if [[ "$current_label" != "$sha" ]]; then
+    echo "==> building trusted L2 analyzer for $sha"
+    docker build \
+      --file "$checkout/deploy/l2-analyzer.Dockerfile" \
+      --label "ai.heyditto.screener.sha=$sha" \
+      --tag "$l2_analyzer_image" \
+      "$checkout"
+  fi
+  # Execute an inert command through the same non-root/no-network boundary so
+  # a successful image build cannot hide an architecture/import/runtime error.
+  printf '{}' | docker run -i --rm \
+    --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --pids-limit 64 --memory 256m --cpus 0.5 \
+    --mount "type=bind,src=$checkout,dst=/workspace,readonly" \
+    --tmpfs /scratch:rw,noexec,nosuid,nodev,size=33554432,mode=1777 \
+    "$l2_analyzer_image" build_structure >/dev/null
+}
+
 wait_for_health() {
   local consecutive_healthy=0
   for attempt in $(seq 1 30); do
@@ -321,12 +358,18 @@ probe_docker_dns
 
 deployed_sha=""
 [[ -f "$deployed_marker" ]] && deployed_sha="$(cat "$deployed_marker")"
+deployed_l2_mode="off"
+[[ -f "$l2_mode_marker" ]] && deployed_l2_mode="$(cat "$l2_mode_marker")"
+requested_l2_mode="$(l2_mode)"
+[[ -n "$requested_l2_mode" ]] || requested_l2_mode="off"
 # Fast path gates on the RUNNING-verified SHA (marker), not git HEAD: a prior
 # run that reset HEAD to the new SHA but died before a healthy restart must not
 # be reported as deployed just because HEAD matches and the OLD process is up.
 if [[ -n "$deployed_sha" ]] && [[ "$deployed_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
   [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
+  [[ "$deployed_l2_mode" == "$requested_l2_mode" ]] && \
   systemctl is-active --quiet "$SCREENER_UNIT"; then
+  ensure_l2_analyzer "$SCREENER_EXPECTED_SHA"
   probe_platform
   ensure_enabled
   maintain_daemon_config
@@ -354,12 +397,17 @@ runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$resolved_sha"
 runuser -u "$SCREENER_USER" -- git -C "$checkout" clean -fd -- ditto
 runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
   "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+ensure_l2_analyzer "$resolved_sha"
 
 if [[ ! -f "$unit_source" ]]; then
   echo "required screener unit is missing: $unit_source" >&2
   runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$current_sha"
   runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
     "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+  if [[ "$requested_l2_mode" != "$deployed_l2_mode" ]]; then
+    upsert_env SCREENER_L2_REVIEW_MODE "$deployed_l2_mode"
+  fi
+  ensure_l2_analyzer "$current_sha"
   exit 1
 fi
 
@@ -384,6 +432,10 @@ if ! wait_for_health; then
   runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$current_sha"
   runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
     "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+  if [[ "$requested_l2_mode" != "$deployed_l2_mode" ]]; then
+    upsert_env SCREENER_L2_REVIEW_MODE "$deployed_l2_mode"
+  fi
+  ensure_l2_analyzer "$current_sha"
   if [[ "$unit_existed" == true ]]; then
     install -o root -g root -m 0644 "$unit_backup" "$unit_file"
   else
@@ -403,6 +455,7 @@ fi
 # Only now is the new SHA proven running + healthy: record it so the next run's
 # fast path can trust it (and so an interrupted future run cannot be misread).
 record_deployed_sha "$actual_sha"
+record_l2_mode "$requested_l2_mode"
 maintain_daemon_config
 maintain_cache
 maintain_logs

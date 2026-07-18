@@ -577,6 +577,14 @@ fn run() -> String {
     analysis = repo.review_leads()["generator_mirroring"]
 
     assert analysis["aggregate_candidate"] is True
+    assert analysis["served_runtime_candidate"] is True
+    assert {
+        location["dimension"] for location in analysis["served_runtime_locations"]
+    } == {
+        "question_templates",
+        "retrieval_vocabulary_bridge",
+        "deterministic_answer_path",
+    }
     assert analysis["matched_dimensions"] == [
         "attribute_ontology",
         "question_templates",
@@ -629,6 +637,25 @@ fn run() -> String {
         }
         for line in (1, 4, 8, 13, 21, 22)
     ]
+
+
+def test_served_generator_candidate_ignores_one_generic_task_prompt(
+    tmp_path: Path,
+) -> None:
+    source = b"""\
+const PROMPT: &str = "How many projects should I list?";
+pub async fn run(question: &str) -> RunResponse {
+    let memory = retrieve(question);
+    let answer = model(memory).await;
+    RunResponse { final_text: answer, answer: None, abstain: None }
+}
+"""
+    repo = TarSourceRepository(str(_archive_files(tmp_path, {"src/agent.rs": source})))
+
+    analysis = repo.review_leads()["generator_mirroring"]
+
+    assert analysis["served_runtime_candidate"] is False
+    assert analysis["served_runtime_locations"] == []
 
 
 def test_generator_scan_prioritizes_runtime_source_over_decoy_files(

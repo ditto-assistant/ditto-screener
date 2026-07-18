@@ -57,4 +57,5 @@ jobs:
           DITTO_STARTER_KIT_DIR: ${{ github.workspace }}/dittobench-starter-kit
         run: >-
           uv run pytest -m integration
-          tests/test_gate_docker_integration.py -vv
+          tests/test_gate_docker_integration.py
+          tests/test_l2_review.py -vv
