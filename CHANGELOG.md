@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.11.1 (2026-07-18)
+
+### Bug Fixes
+
+- Attribute OpenRouter requests to Ditto
+  ([#33](https://github.com/ditto-assistant/ditto-screener/pull/33),
+  [`6d2ef3b`](https://github.com/ditto-assistant/ditto-screener/commit/6d2ef3b4692fa81cc844e52fd1e388a59f9ef6b2))
+
+
 ## v0.11.0 (2026-07-17)
 
 ### Documentation
