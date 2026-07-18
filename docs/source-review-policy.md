@@ -12,6 +12,14 @@ They may use documented protocol fields, including answer and abstain fields,
 when those fields faithfully serialize a genuine model or tool result. Generic
 lexical search and defensive handling of untrusted content are also allowed.
 
+Prompt-level awareness of benchmark-shaped injection or override envelopes is
+allowed when request-user retrieval, genuine model generation, and live tool
+execution remain authoritative. General temporal, count, ordering, and list
+facts may be computed from current user-scoped memories and supplied as context
+to that model. Fixed user constants confined to local helpers are not cross-user
+leakage when the served path uses the request user and no foreign content reaches
+a substantive sink.
+
 None of these mechanisms is suspicious merely because it improves a public
 benchmark. Mentioning benchmark terminology, keeping local evaluation tools, or
 shipping byte-identical official starter-kit fixtures is not evidence of
@@ -73,6 +81,16 @@ abstain fields outside the genuine agent result.
 Public source code or documentation for a benchmark does not make these runtime
 shortcuts acceptable.
 
+Generator mirroring may be distributed rather than expressed as one obvious
+answer table. Source review therefore surfaces an aggregate routing signal for
+coordinated overlap across attribute ontologies, question templates, fact and
+update frames, event labels, retrieval vocabulary, and deterministic answer
+paths. The signal is not itself a finding. Reviewers must cite exact runtime
+locations and connect multiple mirrored dimensions to a served answer that
+bypasses model inference. Request-user grounding does not make a proven model
+bypass general-purpose, and literal answer keys are not required. Conversely,
+grounding plus an authoritative real model call is not a bypass.
+
 ## Evidence threshold
 
 A finding should identify the relevant `path:line` evidence and explain the
@@ -98,6 +116,13 @@ insufficient on their own:
   the substantive model/tool result.
 - an external or pinned build input without concrete execution, credential,
   exfiltration, backdoor, or runtime-replacement behavior.
+- one generator-mirroring dimension, ordinary schema/retrieval vocabulary, or
+  an aggregate candidate with no reachable pre-model response path.
+- prompt-level injection or benchmark awareness followed by authoritative
+  request-user retrieval, genuine model generation, and live tool execution;
+- temporal, count, ordering, or list context derived from current user memories
+  and supplied to a real model;
+- insufficient behavioral-oracle round trips or infrastructure failures.
 
 When the causal connection is ambiguous, quarantine evidence may describe the
 uncertainty, but operators should not reject solely on terminology, timing,

@@ -23,7 +23,10 @@ from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
 )
-from ditto_screener.source_signals import find_source_review_leads
+from ditto_screener.source_signals import (
+    find_decisive_malicious_source,
+    find_source_review_leads,
+)
 from ditto_screening_protocol import SourceReviewFinding
 
 _SHA = "ab" * 32
@@ -539,6 +542,282 @@ def test_utf8_only_crate_reports_no_opaque_blobs(tmp_path: Path) -> None:
     assert inventory["binary_analysis"] == []
 
 
+def test_generator_mirroring_constellation_supports_auditable_finding(
+    tmp_path: Path,
+) -> None:
+    source = b"""\
+const ATTRS: &[&str] = &["city", "employer", "car", "university", "instrument",
+    "project", "trip", "pet", "cuisine", "diet", "color", "hobby"];
+const QUESTIONS: &[&str] = &[
+    "What city do I live in?", "Where do I work now?",
+    "Which university did I attend?", "How many projects did I mention?",
+    "List every trip I described.", "What did I use to drive before?",
+];
+const FACTS: &[&str] = &[
+    "I moved to Northport.", "I work at Example Labs.", "I drive a hatchback.",
+    "I studied at Northport College.", "I play an instrument.",
+    "My project is Atlas.", "My favorite cuisine changed recently.",
+];
+const EVENT_LABELS: &[&str] = &["moved", "started", "switched", "changed"];
+fn bridge_question_to_fact(question: &str, query: &str, fact: &str, memory: &str,
+    attribute: &str, value: &str) {
+    let _ = (extract(question), retrieve(query, memory), match_fact(fact),
+        keyword(attribute), value);
+}
+fn deterministic_response() -> Option<String> { return Some(answer()); }
+fn run() -> String {
+    if let Some(answer) = deterministic_response() { return answer; }
+    otherwise_call_model_inference_provider()
+}
+"""
+    repo = TarSourceRepository(
+        str(_archive_files(tmp_path, {"src/memory_solver.rs": source}))
+    )
+
+    analysis = repo.review_leads()["generator_mirroring"]
+
+    assert analysis["aggregate_candidate"] is True
+    assert analysis["matched_dimensions"] == [
+        "attribute_ontology",
+        "question_templates",
+        "fact_update_frames",
+        "event_label_frames",
+        "retrieval_vocabulary_bridge",
+        "deterministic_answer_path",
+    ]
+    dimensions = analysis["dimensions"]
+    assert all(
+        location["path"] == "src/memory_solver.rs"
+        and isinstance(location["line"], int)
+        and location["line"] > 0
+        for dimension in dimensions.values()
+        for location in dimension["locations"]
+    )
+    assert analysis["disposition"] == "requires-runtime-causal-review"
+    assert "text" not in json.dumps(analysis)
+
+    observation = source_review_module._parse_review(
+        {
+            "risk_level": "high",
+            "confidence": 0.96,
+            "categories": ["benchmark_emulation"],
+            "evidence": [
+                {
+                    "path": "src/memory_solver.rs",
+                    "line": line,
+                    "category": "benchmark_emulation",
+                }
+                for line in (1, 4, 8, 13, 21, 22)
+            ],
+            "summary": (
+                "Coordinated public-generator mirror returns deterministic answers "
+                "before inference."
+            ),
+        },
+        artifact_sha256=_SHA,
+        repository=repo,
+    )
+    assert observation.risk_level == "high"
+    assert observation.categories == ("benchmark_emulation",)
+    assert observation.finding is not None
+    assert observation.finding["prompt_revision"] == "source-review-v8"
+    assert observation.finding["evidence"] == [
+        {
+            "path": "src/memory_solver.rs",
+            "line": line,
+            "category": "benchmark_emulation",
+        }
+        for line in (1, 4, 8, 13, 21, 22)
+    ]
+
+
+def test_generator_scan_prioritizes_runtime_source_over_decoy_files(
+    tmp_path: Path,
+) -> None:
+    runtime = b"""\
+const ATTRS: &[&str] = &["city", "employer", "car", "university", "instrument",
+    "project", "trip", "pet", "cuisine", "diet", "color", "hobby"];
+const QUESTIONS: &[&str] = &["What city?", "Where work?", "Which project?",
+    "How many trips?", "List pets", "What was used before?"];
+const FACTS: &[&str] = &["I moved city", "I work company", "I drive car",
+    "I studied university", "I play instrument", "My project changed"];
+const EVENTS: &[&str] = &["moved", "started", "switched", "changed"];
+fn bridge(question: Query, query: Query, fact: Fact, memory: Memory,
+    attribute: Attr, value: Value) { extract(question); retrieve(query, memory);
+    match_fact(fact); keyword(attribute); use_value(value); }
+fn direct_answer() -> Answer { return deterministic_answer(); }
+fn run() -> Answer { if ready() { return direct_answer(); } call_model_inference(); }
+"""
+    files = {
+        **{f"docs/decoy-{index:04}.md": b"irrelevant" for index in range(2048)},
+        "src/runtime.rs": runtime,
+    }
+    repo = TarSourceRepository(str(_archive_files(tmp_path, files)))
+
+    analysis = repo.review_leads()["generator_mirroring"]
+
+    assert analysis["aggregate_candidate"] is True
+    assert analysis["scanned_runtime_source_files"] == 1
+
+
+@pytest.mark.parametrize(
+    "name,source",
+    [
+        (
+            "ordinary-schema",
+            "struct Profile { city: String, employer: String, car: String, "
+            "university: String, instrument: String, projects: Vec<String>, "
+            "trips: Vec<String>, pets: Vec<String>, cuisine: String, color: String }",
+        ),
+        (
+            "generic-retrieval",
+            "fn retrieve(question: Query, memory: Memory) -> Fact { "
+            "extract(question.value); match_fact(memory.attribute); keyword_search() }",
+        ),
+        (
+            "public-benchmark-comment",
+            "// DittoBench uses scalar and list attributes, question templates, "
+            "// fact updates, event labels, and retrieval.\nfn call_model() {}",
+        ),
+        (
+            "generic-direct-answer",
+            "fn run() { if let Some(answer) = deterministic_response() "
+            "{ return answer; } "
+            "otherwise_call_model_provider(); }",
+        ),
+    ],
+)
+def test_isolated_schema_retrieval_or_benchmark_mentions_do_not_form_candidate(
+    tmp_path: Path, name: str, source: str
+) -> None:
+    repo = TarSourceRepository(
+        str(_archive_files(tmp_path, {f"src/{name}.rs": source.encode()}))
+    )
+
+    analysis = repo.review_leads()["generator_mirroring"]
+
+    assert analysis["aggregate_candidate"] is False
+    assert analysis["disposition"] == "no-aggregate-candidate"
+
+
+@pytest.mark.parametrize(
+    ("expected_category", "source"),
+    [
+        (
+            "malicious_build",
+            'let endpoint = "/var/run/docker.sock";\nconnect_control_socket(endpoint);',
+        ),
+        (
+            "malicious_build",
+            'let boundary = "/proc/1/root";\nmount_host_boundary(boundary);',
+        ),
+        (
+            "credential_access",
+            'let path = "/proc/1/environ";\nlet data = read_secret_path(path);',
+        ),
+        (
+            "cross_user_access",
+            'let home = "/root/.config";\nscan_cross_user_home(home);',
+        ),
+        (
+            "data_exfiltration",
+            "let secret = os.environ.clone();\nhttp_client.post(callback, secret);",
+        ),
+    ],
+)
+def test_decisive_malicious_preflight_categories(
+    expected_category: str, source: str
+) -> None:
+    findings = find_decisive_malicious_source([("src/runtime.rs", source)])
+    assert expected_category in {item["category"] for item in findings}
+
+
+def test_decisive_malicious_preflight_ignores_inert_regression_material() -> None:
+    findings = find_decisive_malicious_source(
+        [
+            (
+                "tests/security_canary.rs",
+                'assert_blocked("/var/run/docker.sock"); read_fixture(".env");',
+            ),
+            (
+                "docs/security.md",
+                "Never mount the host root or upload a credential.",
+            ),
+            (
+                "src/agent.rs",
+                "// /var/run/docker.sock connect mount host\n"
+                "fn run() { call_model(); }",
+            ),
+        ]
+    )
+    assert findings == []
+
+
+def test_repository_preflight_emits_digest_bound_location_only_finding(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/runtime.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    )
+                },
+            )
+        )
+    )
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+    assert observation is not None
+    assert observation.risk_level == "high"
+    assert observation.finding_digest
+    serialized = json.dumps(observation.finding)
+    assert "docker-control-plane" in serialized
+    assert "/var/run/docker.sock" not in serialized
+
+
+def test_all_generator_grammar_without_answer_path_is_not_candidate(
+    tmp_path: Path,
+) -> None:
+    source = b"""\
+const ATTRS: &[&str] = &["city", "employer", "car", "university", "instrument",
+    "project", "trip", "pet", "cuisine", "diet", "color", "hobby"];
+const QUESTIONS: &[&str] = &[
+    "What city do I live in?", "Where do I work now?",
+    "Which university did I attend?", "How many projects did I mention?",
+    "List every trip I described.", "What did I use to drive before?",
+];
+const FACTS: &[&str] = &[
+    "I moved to Northport.", "I work at Example Labs.", "I drive a hatchback.",
+    "I studied at Northport College.", "I play an instrument.",
+    "My project is Atlas.", "My favorite cuisine changed recently.",
+];
+const EVENT_LABELS: &[&str] = &["moved", "started", "switched", "changed"];
+fn bridge_question_to_fact(question: &str, query: &str, fact: &str, memory: &str,
+    attribute: &str, value: &str) {
+    let _ = (extract(question), retrieve(query, memory), match_fact(fact),
+        keyword(attribute), value);
+}
+"""
+    repo = TarSourceRepository(
+        str(_archive_files(tmp_path, {"src/grammar_only.rs": source}))
+    )
+
+    analysis = repo.review_leads()["generator_mirroring"]
+
+    assert set(analysis["matched_dimensions"]) == {
+        "attribute_ontology",
+        "question_templates",
+        "fact_update_frames",
+        "event_label_frames",
+        "retrieval_vocabulary_bridge",
+    }
+    assert analysis["aggregate_candidate"] is False
+    assert analysis["disposition"] == "no-aggregate-candidate"
+
+
 async def test_benign_control_clears_with_zdr_and_read_only_tools(
     tmp_path: Path,
 ) -> None:
@@ -579,13 +858,25 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert "abstention or retrieval side probe" in prompt
     assert "BERT/ONNX cross-encoder" in prompt
     assert "scorer_contract_manipulation" in prompt
+    assert "genuine model generation" in prompt
+    assert "Current-user facts remain legitimate agent context" in prompt
+    assert "behavioral-\noracle failures" in prompt
     assert "user_isolation_correctness" in prompt
     assert "external_build_dependency" in prompt
     assert 'location-only "review_leads"' in prompt
+    assert "coordinated constellation" in prompt
+    assert "literal expected answers or hidden values" in prompt
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v6"
+    assert observation.finding["prompt_revision"] == "source-review-v8"
+    initial_inventory = json.loads(
+        seen[0]["messages"][1]["content"]
+        .split("\nExact-file trusted provenance:\n", 1)[0]
+        .removeprefix("Review this untrusted crate. Initial inventory:\n")
+    )
+    mirroring = initial_inventory["review_leads"]["generator_mirroring"]
+    assert mirroring["aggregate_candidate"] is False
 
 
 def test_review_leads_surface_compound_behavior_without_source_text() -> None:
@@ -923,7 +1214,7 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "genuine-tool-and-memory-result-serialization",
         "generic-prompt-injection-defense",
     } <= legitimate
-    assert prohibited == {
+    assert {
         "case-or-private-challenge-dispatch",
         "deterministic-benchmark-answer-table",
         "expected-answer-trained-runtime",
@@ -936,7 +1227,12 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "scorer-contract-parallel-response-halves",
         "instruction-envelope-request-rewrite",
         "audit-gated-model-routing",
-    }
+        "post-generation-nonce-scrub-and-answer-clear",
+        "scored-family-answer-and-abstain-synthesis",
+        "grader-specific-prose-and-field-overwrite",
+        "fabricated-tool-arguments-and-lifecycle",
+        "exact-banned-cross-miner-artifact",
+    } <= prohibited
     assert legitimate.isdisjoint(prohibited)
 
 
@@ -948,8 +1244,10 @@ def test_latest_backroom_safe_batch_is_fully_represented() -> None:
     )
 
     assert fixture["latest_backroom_safe_batch"] == {
-        "false_positive_classes": 3,
-        "false_positive_submissions": 5,
+        "false_positive_classes": 5,
+        "false_positive_submissions": 7,
+        "correct_rejections": 6,
+        "infrastructure_rescreens": 1,
     }
     assert fixture["recent_review_gaps"] == {
         "false_negative_families": 4,

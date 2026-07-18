@@ -82,6 +82,7 @@ from ditto_screener.policy import (
 from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     SourceReviewObservation,
+    TarSourceRepository,
 )
 
 if TYPE_CHECKING:
@@ -466,6 +467,44 @@ class BuildGate:
                     detail=contract_error,
                 )
             source_digest, source_paths = self._source_metadata(tmp_path)
+
+            # Decisive static rules run before any submission-controlled
+            # Dockerfile or image. They use bounded, read-only archive access
+            # and emit only path/line/category evidence.
+            preflight = TarSourceRepository(tmp_path).malicious_preflight(
+                artifact_sha256=sha256.lower()
+            )
+            if preflight is not None:
+                logger.error(
+                    "malicious-source quarantine agent_id=%s attempt_id=%s "
+                    "categories=%s execution_started=false",
+                    agent_id,
+                    attempt_id,
+                    ",".join(preflight.categories),
+                )
+                decision = self._policy.malicious_preflight_decision(preflight)
+
+                async def unreachable_challenge(
+                    _challenge_id: str,
+                    _request: Mapping[str, object],
+                    _timeout: float,
+                ) -> ChallengeObservation:
+                    raise RuntimeError("static preflight never starts a challenge")
+
+                context = PolicyContext(
+                    agent_id=agent_id,
+                    attempt_id=attempt_id,
+                    miner_hotkey=miner_hotkey,
+                    artifact_sha256=sha256.lower(),
+                    source_digest=source_digest,
+                    source_paths=source_paths,
+                    build_elapsed_ms=0,
+                    health_elapsed_ms=0,
+                    run_challenge=unreachable_challenge,
+                    review_source=None,
+                )
+                self._journal.record(context=context, decision=decision)
+                return decision
 
             # The agentic source review reads only the validated tarball, so
             # it can run CONCURRENTLY with the docker build + serve + oracle

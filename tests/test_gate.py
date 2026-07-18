@@ -167,6 +167,32 @@ async def test_default_v6_builds_and_health_checks_without_run(
     assert not any("http://harness:8080/run" in arg for call in calls for arg in call)
 
 
+async def test_static_malicious_preflight_quarantines_before_docker(
+    make_config: Callable[..., ScreenerConfig],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tarball = _valid_tar(
+        **{
+            "src/main.rs": (
+                b'let endpoint = "/var/run/docker.sock";\n'
+                b"connect_control_socket(endpoint);\n"
+            )
+        }
+    )
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+
+    assert result.outcome == ScreeningOutcome.QUARANTINE
+    assert not any(call[0] in {"build", "run", "exec"} for call in calls)
+    assert result.finding is not None
+    assert result.finding["prompt_revision"] == "static-malicious-preflight-v1"
+    assert "/var/run/docker.sock" not in str(result.finding)
+    assert "malicious-source quarantine" in caplog.text
+    assert "execution_started=false" in caplog.text
+
+
 async def test_reports_only_coarse_pipeline_stages(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:

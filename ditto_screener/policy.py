@@ -19,7 +19,6 @@ import hmac
 import json
 import logging
 import os
-import random
 import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -714,12 +713,11 @@ class BehavioralOracleModule(_BaseModule):
     the round-trip cannot produce the right final answer, returns in ~1 call,
     and answers in milliseconds.
 
-    TRUST-BOUNDARY NOTE: a wrong gateway-encoded answer, insufficient call
-    count, or implausibly fast round-trip is reproducible escalation evidence,
-    but it is not sole terminal proof. Provider behavior, retries, caching, and
-    harness architecture can produce legitimate anomalies. The PolicyEngine
-    therefore routes these observations to ``QUARANTINE`` and reserves
-    ``deterministic_reject`` for stable-core artifact/build/serve failures.
+    TRUST-BOUNDARY NOTE: a wrong gateway-encoded answer or an implausibly fast
+    successful round-trip is reproducible escalation evidence, but it is not
+    sole terminal proof. An insufficient call count is weaker because provider
+    behavior, retries, infrastructure, and harness architecture can produce it;
+    that observation is inconclusive rather than a cheating quarantine.
 
     ARCHITECTURE-NEUTRAL MODEL-USE CHECK: the pass condition is a single model
     turn whose output is relayed, not a forced two-turn tool loop. The gateway
@@ -784,7 +782,7 @@ class BehavioralOracleModule(_BaseModule):
         request: Mapping[str, object] = {
             "case_id": "c" + secrets.token_hex(8),
             "system_prompt": _ORACLE_SYSTEM_PROMPT,
-            "user_input": random.choice(_ORACLE_USER_INPUTS).format(subject=subject),
+            "user_input": secrets.choice(_ORACLE_USER_INPUTS).format(subject=subject),
             "tools": _oracle_tools(),
         }
         observation = await context.run_challenge(
@@ -809,17 +807,19 @@ class BehavioralOracleModule(_BaseModule):
                     ),
                 ),
             )
-        if observation.gateway_calls < self.min_gateway_calls:
+        if observation.gateway_calls < self.min_gateway_calls or (
+            observation.gateway_calls == 1 and not observation.gateway_token_observed
+        ):
             # No model call at all: a static lookup that never touches the gateway.
             # Alternate honest provider loops can still differ, so this remains
             # operator escalation rather than a terminal reject.
             return ModuleResult(
-                ModuleDisposition.QUARANTINE,
+                ModuleDisposition.INCONCLUSIVE,
                 (
                     PolicyEvidence(
                         self.module_id,
                         "behavioral-oracle-insufficient-round-trips",
-                        "behavioral oracle observed too few gateway round-trips",
+                        "behavioral oracle had too few round-trips for a decision",
                         observation.response_digest,
                     ),
                 ),
@@ -950,6 +950,26 @@ class PolicyEngine:
             manifest_digest=self.manifest.digest,
             evidence=bounded,
             finding=finding,
+        )
+
+    def malicious_preflight_decision(
+        self, observation: SourceReviewObservation
+    ) -> ScreeningDecision:
+        """Quarantine a decisive static finding before build or runtime."""
+        if not observation.ok or observation.risk_level != "high":
+            raise ValueError("malicious preflight requires a high-risk finding")
+        code, summary = _source_review_reason(observation.categories)
+        return self._decision(
+            ScreeningOutcome.QUARANTINE,
+            (
+                PolicyEvidence(
+                    "static-malicious-preflight",
+                    code,
+                    summary,
+                    observation.finding_digest,
+                ),
+            ),
+            observation.finding,
         )
 
 

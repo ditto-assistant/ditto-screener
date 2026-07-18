@@ -15,6 +15,7 @@ from dataclasses import dataclass
 _MAX_LEADS = 32
 _MAX_LEADS_PER_RULE_FILE = 4
 _WINDOW_LINES = 18
+_MAX_STATIC_FINDINGS = 16
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,13 @@ class _Rule:
     kind: str
     roles: tuple[_Role, ...]
     build_files_only: bool = False
+
+
+@dataclass(frozen=True)
+class _StaticRule:
+    category: str
+    kind: str
+    roles: tuple[_Role, ...]
 
 
 def _words(value: str) -> re.Pattern[str]:
@@ -207,6 +215,110 @@ _RULES = (
 )
 
 
+# These preflight rules are deliberately narrower than the advisory leads
+# above. Each requires a dangerous target plus an operational effect in nearby
+# executable source. Matches stop the artifact before any Docker build or run;
+# documentation, tests, examples, and comments on their own never qualify.
+_STATIC_MALICIOUS_RULES = (
+    _StaticRule(
+        "malicious_build",
+        "docker-control-plane",
+        (
+            _Role(
+                "docker-endpoint",
+                _words(
+                    r"(?:/var/run/docker\.sock|/run/(?:user/[0-9]+/)?docker\.sock|"
+                    r"\bDOCKER_HOST\b|tcp://[^\s]+:237[56]|/v1\.[0-9]+/(?:containers|images|volumes))"
+                ),
+            ),
+            _Role(
+                "control-effect",
+                _words(
+                    r"\b(?:connect|request|post|create|start|exec|build|mount|"
+                    r"run|socket|client|daemon)\w*\b"
+                ),
+            ),
+        ),
+    ),
+    _StaticRule(
+        "malicious_build",
+        "host-mount-or-namespace",
+        (
+            _Role(
+                "host-boundary",
+                _words(
+                    r"(?:--privileged\b|--(?:pid|ipc|network)(?:=|\s+)host\b|"
+                    r"(?:source|src)(?:=|:)\s*/(?:\s|[,\"'])|"
+                    r"(?:-v|--volume)\s+/(?:\s*):|/proc/1/root)"
+                ),
+            ),
+            _Role(
+                "boundary-effect",
+                _words(
+                    r"\b(?:mount|bind|volume|namespace|container|docker|podman)\w*\b"
+                ),
+            ),
+        ),
+    ),
+    _StaticRule(
+        "credential_access",
+        "credential-discovery",
+        (
+            _Role(
+                "credential-path",
+                _words(
+                    r"(?:/proc/(?:1|self)/environ|(?:^|[/\\])\.env\b|"
+                    r"(?:^|[/\\])\.(?:ssh|aws|azure)(?:[/\\]|\b)|"
+                    r"\.config[/\\]gcloud|\.bittensor[/\\]wallets|"
+                    r"credentials?(?:\.json|[/\\]))"
+                ),
+            ),
+            _Role(
+                "read-effect",
+                _words(r"\b(?:read|open|cat|load|scan|walk|glob|copy|collect)\w*\b"),
+            ),
+        ),
+    ),
+    _StaticRule(
+        "cross_user_access",
+        "cross-user-host-access",
+        (
+            _Role(
+                "cross-user-path",
+                _words(r"(?:/root(?:/|\b)|/home/|/Users/|/proc/1/root|/host(?:/|\b))"),
+            ),
+            _Role(
+                "access-effect",
+                _words(r"\b(?:read|open|scan|walk|glob|copy|write|remove|upload)\w*\b"),
+            ),
+        ),
+    ),
+    _StaticRule(
+        "data_exfiltration",
+        "sensitive-data-exfiltration",
+        (
+            _Role(
+                "sensitive-source",
+                _words(
+                    r"(?:/proc/(?:1|self)/environ|(?:^|[/\\])\.env\b|"
+                    r"(?:^|[/\\])\.(?:ssh|aws|azure)(?:[/\\]|\b)|"
+                    r"\.config[/\\]gcloud|\.bittensor[/\\]wallets|"
+                    r"std::env::vars|env::vars|os\.environ|"
+                    r"GetEnvironmentVariables|private[-_ ]?key|mnemonic)"
+                ),
+            ),
+            _Role(
+                "outbound-effect",
+                _words(
+                    r"\b(?:upload|exfiltrat|webhook|callback|send|post|put|"
+                    r"curl|wget|http[-_ ]?client|reqwest|requests?)\w*\b"
+                ),
+            ),
+        ),
+    ),
+)
+
+
 def find_source_review_leads(
     files: Iterable[tuple[str, str]],
 ) -> list[dict[str, object]]:
@@ -258,6 +370,55 @@ def find_source_review_leads(
     return leads
 
 
+def find_decisive_malicious_source(
+    files: Iterable[tuple[str, str]],
+) -> list[dict[str, object]]:
+    """Return high-confidence, location-only findings for pre-build quarantine."""
+    findings: list[dict[str, object]] = []
+    for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
+        if not _is_executable_source_path(path):
+            continue
+        lines = text.splitlines()
+        if not lines:
+            continue
+        for rule in _STATIC_MALICIOUS_RULES:
+            role_hits = {
+                role.name: [
+                    line_number
+                    for line_number, line in enumerate(lines, 1)
+                    if role.pattern.search(line[:4096])
+                    and not line.lstrip().startswith(("//", "#", "/*", "*"))
+                ]
+                for role in rule.roles
+            }
+            if any(not hits for hits in role_hits.values()):
+                continue
+            for anchor in sorted(
+                {line for hits in role_hits.values() for line in hits}
+            ):
+                locations: list[dict[str, object]] = []
+                for role in rule.roles:
+                    nearby = min(
+                        role_hits[role.name],
+                        key=lambda line: (abs(line - anchor), line),
+                    )
+                    if abs(nearby - anchor) > _WINDOW_LINES:
+                        break
+                    locations.append({"path": path, "line": nearby, "role": role.name})
+                else:
+                    finding: dict[str, object] = {
+                        "category": rule.category,
+                        "kind": rule.kind,
+                        "locations": locations,
+                    }
+                    if finding not in findings:
+                        findings.append(finding)
+                    break
+            if len(findings) >= _MAX_STATIC_FINDINGS:
+                return findings
+    return findings
+
+
 def _is_build_file(path: str) -> bool:
     normalized = path.casefold()
     name = normalized.rsplit("/", 1)[-1]
@@ -265,6 +426,31 @@ def _is_build_file(path: str) -> bool:
         name in {"dockerfile", "cargo.toml", "cargo.lock", "build.rs"}
         or name.endswith((".sh", ".bash", ".zsh"))
         or normalized.startswith(".github/workflows/")
+    )
+
+
+def _is_non_runtime_path(path: str) -> bool:
+    normalized = path.casefold().removeprefix("./")
+    return normalized.startswith(
+        ("tests/", "test/", "docs/", "examples/", "benches/", ".github/")
+    ) or normalized.rsplit("/", 1)[-1] in {
+        "readme",
+        "readme.md",
+        "security.md",
+        "license",
+    }
+
+
+def _is_executable_source_path(path: str) -> bool:
+    normalized = path.casefold().removeprefix("./")
+    if _is_non_runtime_path(normalized):
+        return False
+    name = normalized.rsplit("/", 1)[-1]
+    return (
+        normalized.startswith("src/")
+        or name == "build.rs"
+        or name.startswith("dockerfile")
+        or name.endswith((".rs", ".py", ".go", ".js", ".ts", ".sh", ".bash", ".zsh"))
     )
 
 
@@ -279,4 +465,4 @@ def _path_priority(path: str) -> tuple[int, str]:
     return (2, normalized)
 
 
-__all__ = ["find_source_review_leads"]
+__all__ = ["find_decisive_malicious_source", "find_source_review_leads"]
