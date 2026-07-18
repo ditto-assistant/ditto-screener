@@ -73,6 +73,9 @@ Required values are supplied through the production host's protected
   for the private read-only source reviewer. The default model is
   `openai/gpt-5.6-luna`.
 
+Source-review requests follow OpenRouter's app-attribution contract with
+`HTTP-Referer: https://heyditto.ai` and `X-OpenRouter-Title: Ditto`.
+
 See [docs/policy-modules.md](docs/policy-modules.md) for the private module
 boundary, [docs/source-review-policy.md](docs/source-review-policy.md) for the
 allowed-optimization and benchmark-emulation boundary,

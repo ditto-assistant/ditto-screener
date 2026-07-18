@@ -70,6 +70,8 @@ def _transport(final: dict[str, object], seen: list[dict[str, object]]):
         payload = json.loads(request.content)
         seen.append(payload)
         assert request.headers["authorization"] == "Bearer sk-test-private-review"
+        assert request.headers["http-referer"] == "https://heyditto.ai"
+        assert request.headers["x-openrouter-title"] == "Ditto"
         if calls == 0:
             tool_calls = [
                 _tool(

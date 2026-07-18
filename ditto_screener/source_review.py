@@ -62,6 +62,11 @@ _MULTI_LOCATION_CATEGORIES = frozenset(
     {"benchmark_emulation", "scorer_contract_manipulation"}
 )
 _RETRY_DELAYS_SECONDS = (0.5, 1.0)
+_OPENROUTER_ATTRIBUTION_HEADERS = {
+    # https://openrouter.ai/docs/app-attribution
+    "HTTP-Referer": "https://heyditto.ai",
+    "X-OpenRouter-Title": "Ditto",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -651,7 +656,7 @@ class OpenRouterSourceReviewAgent:
                     f"{self._base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
-                        "X-Title": "Ditto private source review",
+                        **_OPENROUTER_ATTRIBUTION_HEADERS,
                     },
                     json=request,
                     timeout=timeout if timeout is not None else self._timeout_seconds,
