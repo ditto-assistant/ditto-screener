@@ -25,6 +25,7 @@ from ditto_screener.l2_review import (
     L2_PROMPT_REVISION,
     L2_SAFETY_PROMPT_REVISION,
     L2_STATIC_HOLD_REVISION,
+    L2_STARTER_MANIFESTS,
     L3_MODEL,
     IsolatedCodingHarness,
     KimiSolSourceReviewAgent,
@@ -143,6 +144,10 @@ async def _main() -> None:
             "dossier": L2_DOSSIER_REVISION,
             "harness": L2_HARNESS_REVISION,
             "pricing": L2_PRICING_REVISION,
+            "starters": [
+                json.loads(path.read_text())["revision"]
+                for path in L2_STARTER_MANIFESTS
+            ],
         },
         "budgets": {
             "timeout_seconds": 900,

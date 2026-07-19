@@ -44,13 +44,13 @@ L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v20"
 L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v3"
 L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v14"
 L2_STATIC_HOLD_REVISION = "l2-served-generator-hold-v2"
-L2_DOSSIER_REVISION = "l1-compressed-dossier-v6"
+L2_DOSSIER_REVISION = "l1-compressed-dossier-v7"
 L2_CAUSE_REASONING_EFFORT = "medium"
 L2_SAFETY_ADJUDICATOR_REASONING_EFFORT = "low"
 L2_CAUSE_MAX_STEPS = 8
 L2_CAUSE_TIEBREAKER_MAX_STEPS = 6
 L2_SAFETY_ADJUDICATOR_MAX_STEPS = 6
-L2_HARNESS_REVISION = "l2-isolated-coding-harness-v15"
+L2_HARNESS_REVISION = "l2-isolated-coding-harness-v16"
 L2_PRICING_REVISION = (
     "openrouter-catalog-2026-07-18-kimi-k3-glm-5-2-sol-reported-cost-v2"
 )
@@ -68,7 +68,9 @@ L2_PROMPT_CACHE_KEY = (
         ).encode()
     ).hexdigest()[:32]
 )
-L2_STARTER_MANIFEST = Path(__file__).parent / "data" / "starter-kit-provenance-v1.json"
+L2_STARTER_MANIFESTS = tuple(
+    sorted((Path(__file__).parent / "data").glob("starter-kit-provenance-*.json"))
+)
 _MAX_ARCHIVE_FILES = 512
 _MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 _MAX_TOOL_BYTES = 256_000
@@ -670,7 +672,7 @@ _TOOLS: list[dict[str, object]] = [
         "type": "function",
         "name": "starter_diff",
         "description": (
-            "Compare all workspace file digests with the pinned canonical starter."
+            "Compare workspace digests with the closest supported canonical starter."
         ),
         "parameters": {
             "type": "object",
@@ -684,7 +686,7 @@ _TOOLS: list[dict[str, object]] = [
         "name": "starter_function_diff",
         "description": (
             "List snippet-free added and modified Rust function ranges versus "
-            "the pinned canonical starter."
+            "the closest supported canonical starter."
         ),
         "parameters": {
             "type": "object",
@@ -1077,8 +1079,18 @@ class KimiSolSourceReviewAgent:
         self._critic_provider = critic_provider
         self._transport = transport
         self._local_address = local_address
-        manifest = json.loads(L2_STARTER_MANIFEST.read_text())
-        self._starter_revision = str(manifest["revision"])
+        self._starter_revisions = tuple(
+            str(json.loads(path.read_text())["revision"])
+            for path in L2_STARTER_MANIFESTS
+        )
+        if not self._starter_revisions:
+            raise ValueError("at least one starter provenance manifest is required")
+        self._starter_revision = (
+            "starter-set-"
+            + hashlib.sha256(":".join(self._starter_revisions).encode()).hexdigest()[
+                :16
+            ]
+        )
 
     async def review(
         self,
@@ -2158,11 +2170,18 @@ class KimiSolSourceReviewAgent:
         deterministic["main_call_graph"] = _compress_call_graph(graph)
         tools.append("call_graph")
         inventory = json.loads(repository.inventory())
+        starter_diff = deterministic.get("starter_diff")
+        selected_starter_revision = (
+            str(starter_diff.get("revision"))
+            if isinstance(starter_diff, Mapping)
+            else self._starter_revision
+        )
         return (
             {
                 "dossier_revision": L2_DOSSIER_REVISION,
                 "artifact_sha256": artifact_sha256,
-                "starter_revision": self._starter_revision,
+                "starter_revision": selected_starter_revision,
+                "supported_starter_revisions": list(self._starter_revisions),
                 "l1": {
                     "finding_digest": l1_observation.finding_digest,
                     "risk": l1_observation.risk_level,
@@ -2657,6 +2676,7 @@ class KimiSolSourceReviewAgent:
             "harness_revision": L2_HARNESS_REVISION,
             "pricing_revision": L2_PRICING_REVISION,
             "starter_revision": self._starter_revision,
+            "starter_revisions": list(self._starter_revisions),
             "reasoning_efforts": {
                 "analyst": self._analyst_reasoning_effort,
                 "critic": self._critic_reasoning_effort,
@@ -2811,6 +2831,7 @@ class KimiSolSourceReviewAgent:
                 "harness_revision": L2_HARNESS_REVISION,
                 "pricing_revision": L2_PRICING_REVISION,
                 "starter_revision": self._starter_revision,
+                "starter_revisions": list(self._starter_revisions),
                 "analyzed_files": list(result.analyzed_files),
                 "causal_path": list(result.causal_path),
                 "tools": list(result.tools),

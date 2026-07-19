@@ -32,6 +32,7 @@ from ditto_screener.l2_review import (
     L2_PROMPT_REVISION,
     L2_SAFETY_PROMPT_REVISION,
     L2_STATIC_HOLD_REVISION,
+    L2_STARTER_MANIFESTS,
     IsolatedCodingHarness,
     L2AuditJournal,
     L2InconclusiveError,
@@ -53,6 +54,17 @@ from ditto_screener.source_review import TarSourceRepository
 
 ROOT = Path(__file__).resolve().parents[1]
 ATTEMPT = UUID("96af45fd-65da-4f59-87f8-8ddf5d57f88c")
+
+
+def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
+    manifests = [json.loads(path.read_text()) for path in L2_STARTER_MANIFESTS]
+    assert [manifest["revision"] for manifest in manifests] == [
+        "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
+        "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
+    ]
+    assert all(manifest["origin"] == "ditto-assistant/dittobench-starter-kit" for manifest in manifests)
+    assert all(len(manifest["files"]) == 38 for manifest in manifests)
+    assert [len(manifest["rust_functions"]) for manifest in manifests] == [98, 103]
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
@@ -1349,6 +1361,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     )
     assert all(record["dossier_revision"] == L2_DOSSIER_REVISION for record in records)
     assert all(record["harness_revision"] == L2_HARNESS_REVISION for record in records)
+    assert all(len(record["starter_revisions"]) == 2 for record in records)
     assert all(record["budgets"]["max_cost_usd"] == 1.5 for record in records)
     assert all(record["budgets"]["max_analyzer_calls"] == 24 for record in records)
     assert all(
@@ -2712,13 +2725,14 @@ async def test_real_analyzer_container_isolated_and_canonical_starter_clean(
     assert build.returncode == 0, output.decode(errors="replace")[-4_000:]
     harness = IsolatedCodingHarness(docker_bin="docker", image=image)
     diff = json.loads(await harness.run(starter, "starter_diff", {}))
-    assert diff["revision"] == "959cd69a1a8d3b0defbfb8296518adb7d4f17c14"
+    assert diff["revision"] == "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd"
     assert not diff["modified"]
     assert not diff["added"]
     assert not diff["removed"]
     assert len(diff["unchanged"]) == 38
     function_diff = json.loads(await harness.run(starter, "starter_function_diff", {}))
-    assert function_diff["unchanged_count"] == 98
+    assert function_diff["revision"] == "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd"
+    assert function_diff["unchanged_count"] == 103
     assert not function_diff["modified"]
     assert not function_diff["added"]
     assert not function_diff["removed"]

@@ -22,7 +22,7 @@ import tree_sitter_rust
 from tree_sitter import Language, Node, Parser
 
 ROOT = Path("/workspace")
-MANIFEST = Path("/opt/starter-manifest.json")
+MANIFESTS = Path("/opt/starter-manifests")
 RUST_LANGUAGE = Language(tree_sitter_rust.language())
 MAX_FILES = 512
 MAX_WALK_ENTRIES = 1_024
@@ -503,9 +503,16 @@ def call_graph(request: dict[str, object]) -> object:
     }
 
 
-def starter_diff(_: dict[str, object]) -> object:
-    manifest = json.loads(MANIFEST.read_text())
-    expected = manifest["files"]
+def _starter_manifests() -> list[dict[str, object]]:
+    manifests = [
+        json.loads(path.read_text()) for path in sorted(MANIFESTS.glob("*.json"))
+    ]
+    if not manifests:
+        raise ValueError("no starter manifests are installed")
+    return manifests
+
+
+def _workspace_digests() -> tuple[dict[str, str], list[dict[str, object]], bool]:
     actual: dict[str, str] = {}
     files, truncated = _files_with_truncation()
     omitted: list[dict[str, object]] = []
@@ -514,19 +521,68 @@ def starter_diff(_: dict[str, object]) -> object:
             actual[_relative(path)] = _file_sha256(path)
         else:
             omitted.append({"path": _relative(path), "reason": "digest_cap"})
+    return actual, omitted, truncated
+
+
+def _starter_delta(
+    manifest: dict[str, object], actual: dict[str, str]
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    raw_expected = manifest.get("files")
+    if not isinstance(raw_expected, dict):
+        raise ValueError("starter manifest file index is invalid")
+    expected = {str(path): str(digest) for path, digest in raw_expected.items()}
+    unchanged = sorted(
+        path for path, digest in actual.items() if expected.get(path) == digest
+    )
+    modified = sorted(
+        path
+        for path, digest in actual.items()
+        if path in expected and expected[path] != digest
+    )
+    added = sorted(set(actual) - set(expected))
+    removed = sorted(set(expected) - set(actual))
+    return unchanged, modified, added, removed
+
+
+def _select_starter_manifest(
+    actual: dict[str, str],
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    ranked: list[
+        tuple[
+            int,
+            str,
+            dict[str, object],
+            tuple[list[str], list[str], list[str], list[str]],
+        ]
+    ] = []
+    for manifest in _starter_manifests():
+        revision = str(manifest.get("revision", ""))
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise ValueError("starter manifest revision is invalid")
+        delta = _starter_delta(manifest, actual)
+        changed = sum(len(items) for items in delta[1:])
+        ranked.append((changed, revision, manifest, delta))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    candidates = [
+        {"revision": revision, "changed_file_count": changed}
+        for changed, revision, _manifest, _delta in ranked
+    ]
+    return ranked[0][2], candidates
+
+
+def starter_diff(_: dict[str, object]) -> object:
+    actual, omitted, truncated = _workspace_digests()
+    manifest, candidates = _select_starter_manifest(actual)
+    unchanged, modified, added, removed = _starter_delta(manifest, actual)
     return {
         "origin": manifest["origin"],
         "revision": manifest["revision"],
-        "unchanged": sorted(
-            path for path, digest in actual.items() if expected.get(path) == digest
-        ),
-        "modified": sorted(
-            path
-            for path, digest in actual.items()
-            if path in expected and expected[path] != digest
-        ),
-        "added": sorted(set(actual) - set(expected)),
-        "removed": sorted(set(expected) - set(actual)),
+        "selection": "minimum_file_delta",
+        "candidates": candidates,
+        "unchanged": unchanged,
+        "modified": modified,
+        "added": added,
+        "removed": removed,
         "omitted": omitted[:32],
         "omitted_count": len(omitted),
         "truncated": truncated or bool(omitted),
@@ -574,8 +630,9 @@ def _workspace_rust_functions() -> tuple[
 
 
 def starter_function_diff(_: dict[str, object]) -> object:
-    """Return snippet-free changed Rust-function ranges versus the pinned starter."""
-    manifest = json.loads(MANIFEST.read_text())
+    """Return changed Rust functions versus the closest supported starter."""
+    workspace_digests, _omitted, _workspace_truncated = _workspace_digests()
+    manifest, candidates = _select_starter_manifest(workspace_digests)
     raw_expected = manifest.get("rust_functions")
     if not isinstance(raw_expected, list):
         raise ValueError("starter manifest has no Rust function index")
@@ -616,6 +673,8 @@ def starter_function_diff(_: dict[str, object]) -> object:
     return {
         "origin": manifest["origin"],
         "revision": manifest["revision"],
+        "selection": "minimum_file_delta",
+        "candidates": candidates,
         "unchanged_count": sum(
             key in expected and value["sha256"] == expected[key]
             for key, value in actual.items()
@@ -922,28 +981,28 @@ def scorer_field_flow(_: dict[str, object]) -> object:
         }
     )
     candidates: list[dict[str, object]] = []
-    for candidate_path, function in function_keys:
+    for candidate_path, candidate_function in function_keys:
         controls = [
             item
             for item in score_controls
-            if item["path"] == candidate_path and item["function"] == function
+            if item["path"] == candidate_path and item["function"] == candidate_function
         ]
         clears = [
             item
             for item in field_clears
-            if item["path"] == candidate_path and item["function"] == function
+            if item["path"] == candidate_path and item["function"] == candidate_function
         ]
         populations = [
             item
             for item in field_populations
-            if item["path"] == candidate_path and item["function"] == function
+            if item["path"] == candidate_path and item["function"] == candidate_function
         ]
         if not (controls and clears and populations):
             continue
         candidates.append(
             {
                 "path": candidate_path,
-                "function": function,
+                "function": candidate_function,
                 "score_controls": [
                     {
                         "condition_line": item["condition_line"],

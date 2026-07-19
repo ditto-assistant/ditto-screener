@@ -68,8 +68,12 @@ digests, prompt revisions `l2-kimi-source-review-v19`,
 `l3-sol-adversarial-critic-v12`, `l3-sol-violation-cause-v20`,
 `l3-sol-cause-disagreement-v3`, `l3-sol-safety-adjudicator-v14`, and
 `l2-served-generator-hold-v2`, dossier revision
-`l1-compressed-dossier-v6`, harness revision
-`l2-isolated-coding-harness-v15`, and canonical starter revision.
+`l1-compressed-dossier-v7`, harness revision
+`l2-isolated-coding-harness-v16`, and the supported canonical-starter revision
+set. The inert analyzer chooses the canonical v2 or v3 baseline with the fewest
+file-digest deltas and reports the selected exact revision in the dossier; this
+keeps historical artifacts and current v3 starter submissions comparable
+without trusting submission metadata.
 
 An earlier opt-in live acceptance on 2026-07-18 used the exact canonical starter
 revision. Kimi made 14 targeted analyzer calls and SOL made 14 independent
