@@ -10,9 +10,11 @@ result can clear directly only when a deterministic certificate verifies a
 medium-risk L1 lead, confidence of at least 0.98, complete L1-file coverage, a
 targeted analyzer call, no violation evidence, and a context-to-authoritative-
 decision-to-answer-sink path. An obvious single-mechanism Kimi violation stops
-at L2. Benchmark-family or mixed scorer/tool violations use a bounded,
-medium-reasoning SOL cause adjudicator so quarantine records the primary causal
-mechanism rather than whichever downstream effect was easiest to name.
+at L2 only when Kimi has not narrowed away a distinct L1 mechanism family.
+Benchmark-family or mixed benchmark, scorer, tool, provider, scope, credential,
+or exfiltration leads use a bounded, medium-reasoning SOL cause adjudicator so
+quarantine records the primary causal mechanism rather than whichever
+downstream effect was easiest to name.
 High-risk/static, fallback-model, incomplete, or
 lower-confidence safe results require the independent GPT-5.6 SOL L3 critic. A
 critic-safe result remains provisional and is independently checked against the
@@ -23,6 +25,8 @@ may clear either path. A served-runtime constellation that independently binds
 generator-shaped request templates, retrieval/selection, and deterministic
 answer authority cannot be released by model agreement alone; it remains a
 non-terminal quarantine recommendation and skips needless SOL clearance calls.
+When that deterministic hold contains multiple mechanism families, SOL may
+adjudicate its cause for detailed feedback but cannot overturn the hold.
 The same fail-closed hold applies when runtime source explicitly describes a
 review channel and probe shape next to the model call that implements the
 special route. Review terminology, retry logic, or comments alone are
@@ -71,8 +75,8 @@ when the provider omits cost. A stable instructions/tool/dossier prefix,
 reuse without enabling response replay caching. The result-cache key includes
 all budgets, model/fallback/critic routing, reasoning settings, artifact/L1
 digests, prompt revisions `l2-kimi-source-review-v21`,
-`l3-sol-adversarial-critic-v15`, `l3-sol-violation-cause-v21`,
-`l3-sol-cause-disagreement-v4`, `l3-sol-safety-adjudicator-v17`, and
+`l3-sol-adversarial-critic-v15`, `l3-sol-violation-cause-v22`,
+`l3-sol-cause-disagreement-v5`, `l3-sol-safety-adjudicator-v17`, and
 `l2-integrity-static-hold-v3`, dossier revision
 `l1-compressed-dossier-v8`, harness revision
 `l2-isolated-coding-harness-v17`, and the supported canonical-starter revision

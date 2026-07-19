@@ -24,6 +24,7 @@ from ditto_screener.l2_review import (
     _SAFETY_ADJUDICATOR_TASK,
     _SYSTEM_PROMPT,
     _TOOLS,
+    _VIOLATION_CAUSE_DISAGREEMENT_TASK,
     _VIOLATION_CAUSE_TASK,
     L2_CAUSE_PROMPT_REVISION,
     L2_CAUSE_TIEBREAKER_PROMPT_REVISION,
@@ -45,7 +46,9 @@ from ditto_screener.l2_review import (
     _cost,
     _dossier_has_scorer_attention,
     _extract_readonly_workspace,
+    _has_mixed_causal_families,
     _make_writable,
+    _needs_violation_adjudication,
     _parse_l2_review,
     _qualifies_for_direct_clear,
     _require_complete_analysis,
@@ -76,8 +79,8 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
     assert L2_PROMPT_REVISION == "l2-kimi-source-review-v21"
-    assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v21"
-    assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v4")
+    assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v22"
+    assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v5")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
     assert "without those copied input-construction" in _VIOLATION_CAUSE_TASK
     assert "expected-tool registry" in _VIOLATION_CAUSE_TASK
@@ -86,6 +89,8 @@ def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() 
         _VIOLATION_CAUSE_TASK
     )
     assert "already-formed inputs" in _VIOLATION_CAUSE_TASK
+    assert "Generic domain records" in _VIOLATION_CAUSE_TASK
+    assert "fresh-input counterfactual" in _VIOLATION_CAUSE_DISAGREEMENT_TASK
     assert "classifier that only decides whether to suppress" in _VIOLATION_CAUSE_TASK
     assert "Require the alleged answer engine to produce" in _VIOLATION_CAUSE_TASK
     assert "trace that exact value into the served scored" in _VIOLATION_CAUSE_TASK
@@ -136,6 +141,32 @@ def test_scorer_attention_is_independent_of_l1_category() -> None:
     assert not _dossier_has_scorer_attention(
         {"deterministic": {"scorer_field_flow": {"score_controls": []}}}
     )
+
+
+def test_l1_mechanism_narrowed_away_by_kimi_still_requires_sol() -> None:
+    analyst = L2RunResult(
+        observation=SourceReviewObservation(
+            ok=True,
+            risk_level="high",
+            finding_digest="b" * 64,
+            categories=("cross_user_access",),
+        ),
+        analyzed_files=(),
+        causal_path=(),
+        tools=(),
+        usage=L2Usage(),
+        cache_hit=False,
+        resolution_basis="cross_user_data_flow",
+    )
+    l1 = SourceReviewObservation(
+        ok=True,
+        risk_level="high",
+        finding_digest="a" * 64,
+        categories=("cross_user_access", "scorer_contract_manipulation"),
+    )
+
+    assert _has_mixed_causal_families(analyst, l1)
+    assert _needs_violation_adjudication(analyst, l1)
 
 
 def test_request_local_identical_tool_memoization_is_not_fabrication() -> None:
@@ -1648,6 +1679,118 @@ fn run() -> Answer {
     assert result.clearance_path == "deterministic_served_generator_hold"
     assert result.critic_disposition == "not_required_static_hold"
     assert result.response_models == ("moonshotai/kimi-k3-20260715",)
+
+
+async def test_mixed_l1_static_hold_gets_sol_causal_enrichment(
+    tmp_path: Path,
+) -> None:
+    source = """\
+const ATTRS: &[&str] = &["city", "employer", "car", "university", "instrument",
+    "project", "trip", "pet", "cuisine", "diet", "color", "hobby"];
+const QUESTIONS: &[&str] = &["What city?", "Where work?", "Which project?",
+    "How many trips?", "List pets", "What was used before?"];
+const FACTS: &[&str] = &["I moved city", "I work company", "I drive car",
+    "I studied university", "I play instrument", "My project changed"];
+const EVENTS: &[&str] = &["moved", "started", "switched", "changed"];
+fn bridge(question: Query, query: Query, fact: Fact, memory: Memory,
+    attribute: Attr, value: Value) { extract(question); retrieve(query, memory);
+    match_fact(fact); keyword(attribute); use_value(value); }
+fn direct_answer() -> Answer { return deterministic_answer(); }
+fn run() -> Answer {
+    if ready() { return direct_answer(); }
+    call_model_inference()
+}
+"""
+    archive, artifact_sha = _tar(tmp_path, source)
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    requests: list[dict[str, object]] = []
+    safe = _clearance_certificate(
+        {
+            "disposition": "safe",
+            "risk_level": "low",
+            "confidence": 1.0,
+            "resolution_basis": "authoritative_model_tool_path",
+            "categories": ["none"],
+            "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+            "evidence": [],
+            "summary": "sanitized",
+        }
+    )
+    cause = {
+        "disposition": "violation",
+        "risk_level": "high",
+        "confidence": 0.99,
+        "resolution_basis": "scorer_field_manipulation",
+        "categories": ["benchmark_emulation", "scorer_contract_manipulation"],
+        "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+        "evidence": [
+            {
+                "path": "src/main.rs",
+                "line": line,
+                "file_sha256": digest,
+                "category": category,
+                "role": role,
+            }
+            for category in ("benchmark_emulation", "scorer_contract_manipulation")
+            for line, role in ((1, "trigger"), (2, "effect"))
+        ],
+        "causal_path": [
+            {"path": "src/main.rs", "line": 1, "role": "trigger"},
+            {"path": "src/main.rs", "line": 2, "role": "effect"},
+        ],
+        "generator_components": [],
+        "summary": "sanitized",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        result = safe if len(requests) == 1 else cause
+        model = (
+            "moonshotai/kimi-k3-20260715"
+            if len(requests) == 1
+            else "openai/gpt-5.6-sol-20260709"
+        )
+        return _response(
+            [_tool_call(str(len(requests)), "submit_l2_review", result)],
+            model=model,
+        )
+
+    l1 = SourceReviewObservation(
+        ok=True,
+        risk_level="high",
+        finding_digest="a" * 64,
+        categories=("benchmark_emulation", "scorer_contract_manipulation"),
+        finding={
+            "risk_level": "high",
+            "confidence": 0.9,
+            "categories": ["benchmark_emulation", "scorer_contract_manipulation"],
+            "evidence": [
+                {
+                    "path": "src/main.rs",
+                    "line": 1,
+                    "category": "benchmark_emulation",
+                },
+                {
+                    "path": "src/main.rs",
+                    "line": 2,
+                    "category": "scorer_contract_manipulation",
+                },
+            ],
+            "summary": "bounded mixed routing lead",
+        },
+    )
+    result = await _sol_agent(tmp_path, _FakeHarness(), handler).review(
+        str(archive),
+        artifact_sha256=artifact_sha,
+        attempt_id=ATTEMPT,
+        l1_observation=l1,
+        deadline=None,
+    )
+
+    assert len(requests) == 3
+    assert result.resolution_basis == "scorer_field_manipulation"
+    assert result.clearance_path == "l3_adjudicated_violation_cause_tiebreak"
+    assert result.adjudicator_disposition == "resolve_violation_cause_disagreement"
 
 
 async def test_reasoning_only_turn_gets_one_bounded_tool_retry(tmp_path: Path) -> None:
