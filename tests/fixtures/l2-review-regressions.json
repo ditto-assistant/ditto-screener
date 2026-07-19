@@ -72,6 +72,12 @@
     "source": "fn run(req: Request) { let branch = mirrored_dispatch(req); deterministic_reply(branch); }\nfn deterministic_reply(branch: Branch) { return_answer(lookup(branch)); }"
   },
   {
+    "id": "violation-review-adaptive-model-routing",
+    "disposition": "violation",
+    "category": "benchmark_emulation",
+    "source": "// The audit oracle quarantines one model turn for an empty session.\n// Always make a second call that carries the first turn's nonce.\nfn run(req: Request) { let notes = chat(req); return_response(chat(notes)); }"
+  },
+  {
     "id": "violation-hidden-dispatch",
     "disposition": "violation",
     "category": "provider_bypass",

@@ -48,6 +48,7 @@ from ditto_screener.l2_review import (
     _parse_l2_review,
     _qualifies_for_direct_clear,
     _require_complete_analysis,
+    _review_adaptation_hold,
     _served_generator_hold,
     _write_all,
 )
@@ -469,6 +470,84 @@ def test_served_generator_constellation_cannot_auto_clear(
     )
     assert scorer_hold is not None
     assert scorer_hold.resolution_basis == "scorer_field_manipulation"
+
+
+def test_review_adaptive_model_routing_cannot_auto_clear(tmp_path: Path) -> None:
+    archive, artifact_sha = _tar(
+        tmp_path,
+        "// audit oracle uses a second call nonce\nfn run() { chat(); }\n",
+    )
+    repository = TarSourceRepository(str(archive))
+    digest = repository.member_sha256("src/main.rs")
+    analyst = L2RunResult(
+        **{
+            **_clearance_candidate().__dict__,
+            "analyzed_files": ({"path": "src/main.rs", "sha256": digest},),
+        }
+    )
+    dossier = {
+        "bounded_source_inventory": {
+            "review_leads": {
+                "review_adaptive_model_routing": {
+                    "candidate": True,
+                    "constellations": [
+                        {
+                            "locations": [
+                                {
+                                    "path": "src/main.rs",
+                                    "line": 1,
+                                    "role": "review_channel",
+                                },
+                                {
+                                    "path": "src/main.rs",
+                                    "line": 1,
+                                    "role": "probe_shape",
+                                },
+                                {
+                                    "path": "src/main.rs",
+                                    "line": 2,
+                                    "role": "model_effect",
+                                },
+                            ]
+                        }
+                    ],
+                }
+            }
+        }
+    }
+
+    held = _review_adaptation_hold(
+        dossier=dossier,
+        repository=repository,
+        artifact_sha256=artifact_sha,
+        l1_observation=_l1(),
+        analyst=analyst,
+        dossier_tools=("starter_function_diff",),
+        analyst_cache_hit=False,
+    )
+
+    assert held is not None
+    assert held.observation.risk_level == "medium"
+    assert "benchmark_emulation" in held.observation.categories
+    assert held.resolution_basis == "benchmark_answer_replacement"
+    assert held.clearance_path == "deterministic_review_adaptation_hold"
+    assert held.critic_disposition == "not_required_static_hold"
+    assert {item["role"] for item in held.causal_path} == {
+        "context",
+        "trigger",
+        "effect",
+    }
+
+    no_hold = _review_adaptation_hold(
+        dossier={"bounded_source_inventory": {"review_leads": {}}},
+        repository=repository,
+        artifact_sha256=artifact_sha,
+        l1_observation=_l1(),
+        analyst=analyst,
+        dossier_tools=(),
+        analyst_cache_hit=False,
+    )
+    assert no_hold is None
 
 
 @pytest.mark.parametrize(

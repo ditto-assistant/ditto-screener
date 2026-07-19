@@ -43,8 +43,8 @@ L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v14"
 L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v21"
 L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v4"
 L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v16"
-L2_STATIC_HOLD_REVISION = "l2-served-generator-hold-v2"
-L2_DOSSIER_REVISION = "l1-compressed-dossier-v7"
+L2_STATIC_HOLD_REVISION = "l2-integrity-static-hold-v3"
+L2_DOSSIER_REVISION = "l1-compressed-dossier-v8"
 L2_CAUSE_REASONING_EFFORT = "medium"
 L2_SAFETY_ADJUDICATOR_REASONING_EFFORT = "low"
 L2_CAUSE_MAX_STEPS = 8
@@ -1714,6 +1714,17 @@ class KimiSolSourceReviewAgent:
             )
             if static_hold is not None:
                 return static_hold
+            review_adaptation_hold = _review_adaptation_hold(
+                dossier=dossier,
+                repository=repository,
+                artifact_sha256=artifact_sha256,
+                l1_observation=l1_observation,
+                analyst=analyst,
+                dossier_tools=dossier_tools,
+                analyst_cache_hit=analyst_cache_hit,
+            )
+            if review_adaptation_hold is not None:
+                return review_adaptation_hold
             if _qualifies_for_direct_clear(
                 l1_observation, analyst
             ) and not _dossier_has_scorer_attention(dossier):
@@ -3550,6 +3561,141 @@ def _read_key(path_value: str | None) -> str:
     if len(key) < 20:
         raise OSError("L2 API key is unavailable")
     return key
+
+
+def _review_adaptation_hold(
+    *,
+    dossier: Mapping[str, object],
+    repository: TarSourceRepository,
+    artifact_sha256: str,
+    l1_observation: SourceReviewObservation,
+    analyst: L2RunResult,
+    dossier_tools: tuple[str, ...],
+    analyst_cache_hit: bool,
+) -> L2RunResult | None:
+    """Prevent model agreement from clearing self-attested review adaptation."""
+    inventory = dossier.get("bounded_source_inventory")
+    if not isinstance(inventory, Mapping):
+        return None
+    review_leads = inventory.get("review_leads")
+    if not isinstance(review_leads, Mapping):
+        return None
+    adaptation = review_leads.get("review_adaptive_model_routing")
+    if not isinstance(adaptation, Mapping) or not adaptation.get("candidate"):
+        return None
+    constellations = adaptation.get("constellations")
+    if not isinstance(constellations, list):
+        return None
+    required_roles = {"review_channel", "probe_shape", "model_effect"}
+    locations: list[dict[str, object]] = []
+    for constellation in constellations[:4]:
+        if not isinstance(constellation, Mapping):
+            continue
+        raw_locations = constellation.get("locations")
+        if not isinstance(raw_locations, list):
+            continue
+        candidate_locations: list[dict[str, object]] = []
+        for item in raw_locations:
+            if not isinstance(item, Mapping):
+                continue
+            path, line, role = item.get("path"), item.get("line"), item.get("role")
+            if (
+                isinstance(path, str)
+                and isinstance(line, int)
+                and not isinstance(line, bool)
+                and line >= 1
+                and role in required_roles
+                and repository.has_member(path)
+            ):
+                candidate_locations.append(
+                    {"path": path, "line": line, "role": str(role)}
+                )
+        if {str(item["role"]) for item in candidate_locations} == required_roles:
+            locations = candidate_locations
+            break
+    if not locations:
+        return None
+
+    categories = set(
+        sorted(
+            category
+            for category in l1_observation.categories
+            if category in _ALLOWED_CATEGORIES and category != "none"
+        )[:7]
+    )
+    categories.add("benchmark_emulation")
+    evidence = [
+        SourceReviewEvidenceItem.model_validate(item)
+        for item in _l1_evidence(l1_observation)
+        if str(item["category"]) in categories
+    ]
+    evidence.extend(
+        SourceReviewEvidenceItem(
+            path=str(item["path"]),
+            line=cast(int, item["line"]),
+            category="benchmark_emulation",
+        )
+        for item in locations
+    )
+    evidence = list(
+        {(item.path, item.line, item.category): item for item in evidence}.values()
+    )[:16]
+    finding = SourceReviewFinding(
+        artifact_sha256=artifact_sha256,
+        prompt_revision=L2_STATIC_HOLD_REVISION,
+        risk_level="medium",
+        confidence=0.99,
+        categories=sorted(categories),
+        evidence=evidence,
+        summary=(
+            "reachable model routing is explicitly tied to a review-probe shape; "
+            "model agreement cannot self-clear"
+        ),
+    )
+    detector_files = tuple(
+        {
+            str(item["path"]): {
+                "path": str(item["path"]),
+                "sha256": repository.member_sha256(str(item["path"])),
+            }
+            for item in locations
+        }.values()
+    )
+    role_map = {
+        "review_channel": "context",
+        "probe_shape": "trigger",
+        "model_effect": "effect",
+    }
+    return L2RunResult(
+        observation=SourceReviewObservation(
+            ok=True,
+            risk_level="medium",
+            finding_digest=finding.canonical_digest(),
+            categories=tuple(sorted(categories)),
+            finding=finding.model_dump(mode="json"),
+        ),
+        analyzed_files=_merge_digest_items(analyst.analyzed_files, detector_files),
+        causal_path=tuple(
+            {
+                "path": str(item["path"]),
+                "line": cast(int, item["line"]),
+                "role": role_map[str(item["role"])],
+            }
+            for item in locations
+        ),
+        tools=dossier_tools + analyst.tools,
+        usage=analyst.usage,
+        cache_hit=False,
+        analyst_tools=analyst.tools,
+        critic_disposition="not_required_static_hold",
+        response_models=analyst.response_models,
+        response_providers=analyst.response_providers,
+        resolution_basis="benchmark_answer_replacement",
+        clearance_path="deterministic_review_adaptation_hold",
+        dossier_complete=analyst.dossier_complete,
+        direct_clear_graph_complete=analyst.direct_clear_graph_complete,
+        analyst_cache_hit=analyst_cache_hit,
+    )
 
 
 def _served_generator_hold(

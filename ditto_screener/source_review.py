@@ -221,6 +221,22 @@ _GENERATOR_MIRRORING_SOURCE_SUFFIXES = frozenset(
 _GENERATOR_MIRRORING_EXCLUDED_PARTS = frozenset(
     {".github", "docs", "examples", "fixtures", "target", "test", "tests", "vendor"}
 )
+_REVIEW_ADAPTATION_REVIEW = re.compile(
+    r"\b(?:screener|quarantin(?:e|ed)|review(?:er)?|audit|canary|oracle|grader|scorer)\b",
+    re.IGNORECASE,
+)
+_REVIEW_ADAPTATION_PROBE = re.compile(
+    r"\b(?:nonce|second[-_ ]?(?:model[-_ ]?)?call|two[-_ ]?(?:model[-_ ]?)?calls|"
+    r"call[-_ ]?count|single[-_ ]?call|no[-_ ]?seed|without[-_ ]?(?:a[-_ ]?)?seed|"
+    r"empty[-_ ]?(?:memory|context|transcript))\b",
+    re.IGNORECASE,
+)
+_REVIEW_ADAPTATION_MODEL_EFFECT = re.compile(
+    r"(?:\bchat\s*\(|\b(?:call|invoke|run)[-_ ]?model\s*\(|"
+    r"\b(?:completion|responses?|inference)\s*\()",
+    re.IGNORECASE,
+)
+_REVIEW_ADAPTATION_WINDOW_LINES = 24
 
 
 def _is_generator_runtime_source(path: str) -> bool:
@@ -544,10 +560,85 @@ class TarSourceRepository:
         return {
             "items": find_source_review_leads(readable),
             "generator_mirroring": self._generator_mirroring_analysis(readable),
+            "review_adaptive_model_routing": (
+                self._review_adaptive_model_routing_analysis(readable)
+            ),
             "files_scanned": files_scanned,
             "members_considered": members_considered,
             "bytes_scanned": bytes_scanned,
             "truncated": truncated,
+        }
+
+    @staticmethod
+    def _review_adaptive_model_routing_analysis(
+        readable: list[tuple[str, str]],
+    ) -> dict[str, object]:
+        """Locate self-attested model routing built for a review probe.
+
+        A review term alone is ordinary documentation, and a retrying model loop
+        alone is ordinary reliability work. This lead requires a runtime-source
+        comment that jointly describes the review channel and a probe shape,
+        plus a nearby executable model call. It remains a quarantine lead, not a
+        terminal source verdict.
+        """
+        constellations: list[dict[str, object]] = []
+        for path, text in readable:
+            if not _is_generator_runtime_source(path):
+                continue
+            lines = text.splitlines()
+            review_lines: list[int] = []
+            probe_lines: list[int] = []
+            model_lines: list[int] = []
+            for line_number, line in enumerate(lines, 1):
+                stripped = line.lstrip()
+                is_comment = stripped.startswith(("#", "//", "/*", "*"))
+                if is_comment and _REVIEW_ADAPTATION_REVIEW.search(line):
+                    review_lines.append(line_number)
+                if is_comment and _REVIEW_ADAPTATION_PROBE.search(line):
+                    probe_lines.append(line_number)
+                if not is_comment and _REVIEW_ADAPTATION_MODEL_EFFECT.search(line):
+                    model_lines.append(line_number)
+            for review_line in review_lines:
+                probe_line = min(
+                    probe_lines,
+                    key=lambda value: (abs(value - review_line), value),
+                    default=None,
+                )
+                model_line = min(
+                    model_lines,
+                    key=lambda value: (abs(value - review_line), value),
+                    default=None,
+                )
+                if probe_line is None or model_line is None:
+                    continue
+                if max(abs(probe_line - review_line), abs(model_line - review_line)) > (
+                    _REVIEW_ADAPTATION_WINDOW_LINES
+                ):
+                    continue
+                constellations.append(
+                    {
+                        "locations": [
+                            {
+                                "path": path,
+                                "line": review_line,
+                                "role": "review_channel",
+                            },
+                            {"path": path, "line": probe_line, "role": "probe_shape"},
+                            {"path": path, "line": model_line, "role": "model_effect"},
+                        ]
+                    }
+                )
+                break
+            if len(constellations) >= 8:
+                break
+        return {
+            "candidate": bool(constellations),
+            "constellations": constellations,
+            "disposition": (
+                "requires-runtime-causal-review"
+                if constellations
+                else "no-review-adaptation-candidate"
+            ),
         }
 
     def malicious_preflight(

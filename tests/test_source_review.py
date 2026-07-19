@@ -972,6 +972,63 @@ fn answer(req: Request) {
     assert "case_id" not in encoded
 
 
+def test_review_leads_surface_review_adaptive_model_routing(tmp_path: Path) -> None:
+    source = """\
+fn answer(req: Request) {
+    // The audit oracle quarantines a single call on an empty transcript.
+    // Always make a second model call that carries the first call's nonce.
+    let notes = chat(req.question);
+    let answer = chat(notes);
+    return_response(answer)
+}
+"""
+    repo = TarSourceRepository(str(_archive(tmp_path, source)))
+
+    analysis = repo.review_leads()["review_adaptive_model_routing"]
+
+    assert analysis["candidate"] is True
+    locations = analysis["constellations"][0]["locations"]
+    assert {location["role"] for location in locations} == {
+        "review_channel",
+        "probe_shape",
+        "model_effect",
+    }
+    assert "nonce" not in json.dumps(analysis)
+
+
+def test_review_adaptation_requires_probe_claim_and_runtime_effect(
+    tmp_path: Path,
+) -> None:
+    benign = """\
+fn answer(req: Request) {
+    // Retry an empty response so ordinary users get a useful answer.
+    let notes = chat(req.question);
+    if notes.is_empty() { return chat(req.question); }
+    return_response(notes)
+}
+"""
+    decoy = """\
+// The audit oracle quarantines a single call on an empty transcript.
+// Always make a second model call that carries the first call's nonce.
+fn example(req: Request) { chat(req.question); }
+"""
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": benign.encode(),
+                    "docs/reviewer-example.rs": decoy.encode(),
+                },
+            )
+        )
+    )
+
+    analysis = repo.review_leads()["review_adaptive_model_routing"]
+
+    assert analysis["candidate"] is False
+
+
 def test_review_leads_do_not_flag_model_use_gated_by_tool_presence_alone() -> None:
     # A harness that runs the real model always and merely uses tools when the
     # request carries them has no deterministic route, so it is not the bypass.
