@@ -23,6 +23,12 @@ may clear either path. A served-runtime constellation that independently binds
 generator-shaped request templates, retrieval/selection, and deterministic
 answer authority cannot be released by model agreement alone; it remains a
 non-terminal quarantine recommendation and skips needless SOL clearance calls.
+The same fail-closed hold applies when runtime source explicitly describes a
+review channel and probe shape next to the model call that implements the
+special route. Review terminology, retry logic, or comments alone are
+insufficient: the three location-bound facts must co-locate in executable
+source. This preserves ordinary reliability retries and ignores decoy docs
+while preventing multiple agreeing models from clearing review-adaptive code.
 Any inconclusive result or infrastructure failure cannot clear.
 Neither layer can reject or ban.
 
@@ -67,8 +73,8 @@ all budgets, model/fallback/critic routing, reasoning settings, artifact/L1
 digests, prompt revisions `l2-kimi-source-review-v21`,
 `l3-sol-adversarial-critic-v14`, `l3-sol-violation-cause-v21`,
 `l3-sol-cause-disagreement-v4`, `l3-sol-safety-adjudicator-v16`, and
-`l2-served-generator-hold-v2`, dossier revision
-`l1-compressed-dossier-v7`, harness revision
+`l2-integrity-static-hold-v3`, dossier revision
+`l1-compressed-dossier-v8`, harness revision
 `l2-isolated-coding-harness-v17`, and the supported canonical-starter revision
 set. The inert analyzer chooses the canonical v2 or v3 baseline with the fewest
 file-digest deltas and reports the selected exact revision in the dossier; this

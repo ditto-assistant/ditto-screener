@@ -16,6 +16,9 @@ independent GPT-5.6 SOL level-3 critic. A SOL challenge is decided by a second,
 low-reasoning SOL adjudicator rather than becoming an automatic violation.
 Obvious single-mechanism violations stop at L2; mixed benchmark/scorer/tool
 violations use a bounded SOL cause adjudicator before retaining quarantine.
+Reachable generator-shaped or review-adaptive model routing cannot be released
+by model agreement alone; a location-bound deterministic hold preserves
+quarantine without becoming a terminal rejection.
 Medium- and high-risk results are
 quarantined for operator review, never automatically rejected. The default
 manifest never calls `POST /run`. It never reads or writes the platform database.
