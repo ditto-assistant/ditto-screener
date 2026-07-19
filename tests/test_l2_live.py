@@ -131,13 +131,20 @@ async def test_live_l2_analyst_and_sol_critic_clear_canonical_starter(
         fallback_models=fallback_models,
     )
     started = time.monotonic()
-    result = await agent.review(
-        str(archive),
-        artifact_sha256=artifact_sha,
-        attempt_id=ATTEMPT,
-        l1_observation=l1,
-        deadline=None,
-    )
+    attempts = 0
+    while attempts < 3:
+        attempts += 1
+        result = await agent.review(
+            str(archive),
+            artifact_sha256=artifact_sha,
+            attempt_id=ATTEMPT,
+            l1_observation=l1,
+            deadline=None,
+        )
+        if result.observation.ok or (
+            result.observation.failure_disposition != "retryable_infra"
+        ):
+            break
     elapsed = time.monotonic() - started
 
     assert result.observation.ok
@@ -148,7 +155,8 @@ async def test_live_l2_analyst_and_sol_critic_clear_canonical_starter(
     assert result.response_models[-1].startswith("openai/gpt-5.6-sol")
     assert result.response_providers[0]
     assert result.response_providers[-1] in {"Azure", "OpenAI"}
-    record = json.loads(audit.read_text())
+    records = [json.loads(line) for line in audit.read_text().splitlines()]
+    record = records[-1]
     assert record["critic_disposition"] == "confirm_safe"
     assert record["analyst_model"] == analyst_model
     assert record["analyst_fallback_models"] == list(fallback_models)
@@ -169,6 +177,7 @@ async def test_live_l2_analyst_and_sol_critic_clear_canonical_starter(
                 "reasoning_tokens": result.usage.reasoning_tokens,
                 "reported_cost_usd": result.usage.reported_cost_usd,
                 "elapsed_seconds": round(elapsed, 3),
+                "attempts": attempts,
             },
             sort_keys=True,
         )
