@@ -11,6 +11,11 @@ results are quarantined for operator review, never automatically rejected. The
 default manifest never calls `POST /run`. It never reads or writes the platform
 database.
 
+The health smoke mirrors the validator runtime contract: UID/GID 65532, a
+read-only root filesystem, a bounded noexec `/tmp` tmpfs, dropped capabilities,
+and a locked `DITTOBENCH_DB=/tmp/dittobench.db`. An image is never exported if
+it only boots as root or depends on writing elsewhere in its root filesystem.
+
 On a pass, the worker exports the exact verified image with `docker image save`,
 hashes the archive, and uploads it sequentially in bounded multipart chunks.
 Each storage request has a finite timeout and bounded retry policy; failures

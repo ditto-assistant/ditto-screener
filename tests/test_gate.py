@@ -502,7 +502,12 @@ async def test_fake_gateway_is_internal_and_resource_capped(
 ) -> None:
     tarball = _valid_tar()
     calls: list[list[str]] = []
-    config = make_config(smoke_env=(("OPENROUTER_API_KEY", "dummy"),))
+    config = make_config(
+        smoke_env=(
+            ("OPENROUTER_API_KEY", "dummy"),
+            ("DITTOBENCH_DB", "/app/attacker.db"),
+        )
+    )
     gate = _gate_with(config, _ok_run(calls), tarball=tarball)
     async with gate._client:
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
@@ -520,7 +525,13 @@ async def test_fake_gateway_is_internal_and_resource_capped(
         call for call in calls if call[0] == "run" and call[-1] == "sha256:" + "34" * 32
     )
     assert "CHUTES_BASE_URL=http://fake-gateway:8080/v1" in harness
-    assert "--memory" in harness and "--pids-limit" in harness
+    assert {"--memory", "3g", "--pids-limit", "512"} <= set(harness)
+    assert {"--init", "--user", "65532:65532", "--read-only"} <= set(harness)
+    assert {"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=512m"} <= set(harness)
+    assert {"--cpus", "2", "--ulimit", "nofile=1024:1024"} <= set(harness)
+    assert {"--cap-drop", "ALL", "--security-opt", "no-new-privileges"} <= set(harness)
+    assert harness.count("DITTOBENCH_DB=/tmp/dittobench.db") == 1
+    assert "DITTOBENCH_DB=/app/attacker.db" not in harness
 
 
 async def test_sha_mismatch_is_deterministic_and_cleans_temp_file(
