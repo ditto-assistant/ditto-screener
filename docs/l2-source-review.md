@@ -258,9 +258,10 @@ A bounded rollout is: merge without activation; deploy with `off`; durably set
 one idle fleet worker to `shadow`; review false positives, inconclusive rate,
 p95 latency, tokens, and cost; then enable `enforce` on one worker before
 expanding. Do not mix enforcement manifests unintentionally across workers.
-The screened-image path and policy 9 are already deployed. DittoBench is in a
-hybrid active-v2/desired-v4 collection phase, so rollout must preserve both
-versioned starter baselines and current per-agent benchmark authority. Existing
+The screened-image path and policy 9 are already deployed. DittoBench v4 is
+activated, while one of four online validators still reports legacy-v2-only
+scorer capability. Rollout must preserve both versioned starter baselines and
+current per-agent benchmark authority until that skew is resolved. Existing
 submissions, scores, quarantine decisions, and attempts are not migrated or
 rewritten. This private rotation affects new or explicitly rescreened attempts
 only. Historical rescreening must use an explicit guarded operation, not an
