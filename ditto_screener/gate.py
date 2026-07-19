@@ -112,6 +112,12 @@ _CANARY_IMAGE = (
 )
 _GATEWAY_ALIAS = "fake-gateway"
 _HARNESS_ALIAS = "harness"
+_VALIDATOR_SANDBOX_USER = "65532:65532"
+_VALIDATOR_SANDBOX_TMPFS = "/tmp:rw,noexec,nosuid,nodev,size=512m"
+_VALIDATOR_SANDBOX_MEMORY = "3g"
+_VALIDATOR_SANDBOX_CPUS = "2"
+_VALIDATOR_SANDBOX_PIDS = "512"
+_VALIDATOR_SANDBOX_DB = "/tmp/dittobench.db"
 _DOCKER_INFRASTRUCTURE_MARKERS = (
     "cannot connect to the docker daemon",
     "error during connect",
@@ -1186,18 +1192,34 @@ class BuildGate:
             "run",
             "-d",
             "--rm",
+            "--init",
             "--name",
             container,
+            "--user",
+            _VALIDATOR_SANDBOX_USER,
+            "--read-only",
+            "--tmpfs",
+            _VALIDATOR_SANDBOX_TMPFS,
             "--network",
             network,
             "--network-alias",
             _HARNESS_ALIAS,
             "--memory",
-            self._config.build_memory,
+            _VALIDATOR_SANDBOX_MEMORY,
+            "--cpus",
+            _VALIDATOR_SANDBOX_CPUS,
             "--pids-limit",
-            str(self._config.pids_limit),
+            _VALIDATOR_SANDBOX_PIDS,
+            "--ulimit",
+            "nofile=1024:1024",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
         ]
         for key, value in self._config.smoke_env:
+            if key == "DITTOBENCH_DB":
+                continue
             run_args += ["-e", f"{key}={value}"]
         # Mirror the production scorer's locked provider contract. These are
         # appended last so an operator's legacy smoke env cannot bypass the
@@ -1210,6 +1232,9 @@ class BuildGate:
             "OPENAI_BASE_URL": f"{gateway}/v1",
             "OPENAI_API_KEY": "relay",
             "OLLAMA_BASE_URL": gateway,
+            # The validator root filesystem is read-only. Its bounded /tmp
+            # tmpfs is the canonical writable location for the harness DB.
+            "DITTOBENCH_DB": _VALIDATOR_SANDBOX_DB,
         }
         for key, value in gateway_env.items():
             run_args += ["-e", f"{key}={value}"]
