@@ -64,12 +64,12 @@ when the provider omits cost. A stable instructions/tool/dossier prefix,
 `prompt_cache_key`, and artifact-scoped `session_id` maximize provider cache
 reuse without enabling response replay caching. The result-cache key includes
 all budgets, model/fallback/critic routing, reasoning settings, artifact/L1
-digests, prompt revisions `l2-kimi-source-review-v19`,
-`l3-sol-adversarial-critic-v12`, `l3-sol-violation-cause-v20`,
-`l3-sol-cause-disagreement-v3`, `l3-sol-safety-adjudicator-v14`, and
+digests, prompt revisions `l2-kimi-source-review-v21`,
+`l3-sol-adversarial-critic-v14`, `l3-sol-violation-cause-v21`,
+`l3-sol-cause-disagreement-v4`, `l3-sol-safety-adjudicator-v16`, and
 `l2-served-generator-hold-v2`, dossier revision
 `l1-compressed-dossier-v7`, harness revision
-`l2-isolated-coding-harness-v16`, and the supported canonical-starter revision
+`l2-isolated-coding-harness-v17`, and the supported canonical-starter revision
 set. The inert analyzer chooses the canonical v2 or v3 baseline with the fewest
 file-digest deltas and reports the selected exact revision in the dossier; this
 keeps historical artifacts and current v3 starter submissions comparable
@@ -120,7 +120,10 @@ cross-file call graph, complete canonical-starter file and Rust-function AST/bod
 diffs, a snippet-free Rust scorer-field-flow map, and inert
 Cargo/Docker build metadata. The scorer-field-flow analyzer
 locates score/A-B-controlled clearing and the prior-population sites that must
-be causally checked; it is an attention map rather than policy evidence.
+be causally checked; it is an attention map rather than policy evidence. Any
+nonempty scorer controls/populations/clears force cross-invariant inspection
+and prevent direct clearance regardless of L1's category, because L1 can point
+at the wrong interface while an independent response-authority violation exists.
 Submission source is extracted without links or
 path traversal, kept owner-readable only, mounted read-only, and removed after
 the review. The analyzer container runs as the worker's non-root UID/GID (and
@@ -185,6 +188,14 @@ trajectory. Cache-hit stages contribute zero new usage to the retry audit.
 Results produced after the local or platform lease
 deadline are discarded as retryable infrastructure failures.
 
+The backward-compatible heartbeat projection now reserves the first half of
+source-review progress for L1 and the second half for L2/L3, including static
+preflight escalation, so miners do not see a completed review while paid
+adjudication is still running. It intentionally exposes no source paths or
+private conclusions. Durable per-layer events, public finding cards, signed
+packets, and miner-authenticated exhaustive feedback require the append-only
+platform contract tracked in issue #224.
+
 ## Offline calibration
 
 `scripts/run_l2_calibration.py` accepts a protected SHA-bound manifest plus a
@@ -226,14 +237,20 @@ must pass disposition and causal-basis gates before enforcement can be enabled.
 - `enforce`: a distinct manifest rotation is signed; L2 safe/violation/failure
   dispositions become authoritative within the quarantine-only policy boundary.
 
-A bounded rollout is: merge without activation; deploy with `off`; set one idle
-fleet worker to `shadow`; review false positives, inconclusive rate, p95 latency,
-tokens, and cost; then enable `enforce` on one worker before expanding. Do not
-mix enforcement manifests unintentionally across workers. Existing submissions,
-scores, quarantine decisions, and attempts are not migrated or rewritten. This
-private rotation affects new or explicitly rescreened attempts only. A full
-historical rescreen requires the platform's coordinated policy-version bump and
-oldest-first queue; it must not race the separate policy-9 screened-image wave.
+A bounded rollout is: merge without activation; deploy with `off`; durably set
+one idle fleet worker to `shadow`; review false positives, inconclusive rate,
+p95 latency, tokens, and cost; then enable `enforce` on one worker before
+expanding. Do not mix enforcement manifests unintentionally across workers.
+The screened-image path and policy 9 are already deployed. DittoBench is in a
+hybrid active-v2/desired-v3 collection phase, so rollout must preserve both
+versioned starter baselines and current per-agent benchmark authority. Existing
+submissions, scores, quarantine decisions, and attempts are not migrated or
+rewritten. This private rotation affects new or explicitly rescreened attempts
+only. Historical rescreening must use an explicit guarded operation, not an
+automatic policy-bump side effect; platform PR #222 must land or be reconciled
+before any automated rejection or rescreen. Durable signed miner-visible review
+packets and enforcement-manifest binding are tracked in platform issue #224 and
+are prerequisites for automatic rejection, not for a bounded shadow canary.
 
 Rollback is configuration-only: return workers to `shadow` or `off`, run the
 exact-SHA updater, and verify the worker heartbeat/manifest. The updater rebuilds

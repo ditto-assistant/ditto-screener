@@ -23,6 +23,7 @@ from ditto_screener.l2_review import (
     _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK,
     _SAFETY_ADJUDICATOR_TASK,
     _SYSTEM_PROMPT,
+    _TOOLS,
     _VIOLATION_CAUSE_TASK,
     L2_CAUSE_PROMPT_REVISION,
     L2_CAUSE_TIEBREAKER_PROMPT_REVISION,
@@ -72,9 +73,9 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v20"
-    assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v20"
-    assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v3")
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v21"
+    assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v21"
+    assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v4")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
     assert "without those copied input-construction" in _VIOLATION_CAUSE_TASK
     assert "expected-tool registry" in _VIOLATION_CAUSE_TASK
@@ -113,6 +114,8 @@ def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() 
     assert "unused parser/debug candidate" in _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK
     assert "starter_function_diff" in _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK
     assert "retrieval innovation" in _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK
+    submit_tool = next(tool for tool in _TOOLS if tool["name"] == "submit_l2_review")
+    assert "generator_components" in submit_tool["parameters"]["required"]  # type: ignore[index]
 
 
 def test_scorer_attention_is_independent_of_l1_category() -> None:

@@ -38,11 +38,11 @@ L2_MODEL = "moonshotai/kimi-k3"
 L2_FALLBACK_MODELS = ("z-ai/glm-5.2", "openai/gpt-5.6-sol")
 L3_MODEL = "openai/gpt-5.6-sol"
 L3_PROVIDER = "openrouter"
-L2_PROMPT_REVISION = "l2-kimi-source-review-v20"
-L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v13"
-L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v20"
-L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v3"
-L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v15"
+L2_PROMPT_REVISION = "l2-kimi-source-review-v21"
+L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v14"
+L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v21"
+L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v4"
+L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v16"
 L2_STATIC_HOLD_REVISION = "l2-served-generator-hold-v2"
 L2_DOSSIER_REVISION = "l1-compressed-dossier-v7"
 L2_CAUSE_REASONING_EFFORT = "medium"
@@ -50,7 +50,7 @@ L2_SAFETY_ADJUDICATOR_REASONING_EFFORT = "low"
 L2_CAUSE_MAX_STEPS = 8
 L2_CAUSE_TIEBREAKER_MAX_STEPS = 6
 L2_SAFETY_ADJUDICATOR_MAX_STEPS = 6
-L2_HARNESS_REVISION = "l2-isolated-coding-harness-v16"
+L2_HARNESS_REVISION = "l2-isolated-coding-harness-v17"
 L2_PRICING_REVISION = (
     "openrouter-catalog-2026-07-18-kimi-k3-glm-5-2-sol-reported-cost-v2"
 )
@@ -381,6 +381,10 @@ context, the authoritative model/tool decision, and the returned answer sink.
 Keep the final tool call compact: list only files
 materially consulted for the decision, never echo the full dossier/index, and
 normally use at most 12 analyzed files.
+Always include generator_components in the final tool call. Use an empty list
+unless the resolution basis is generator_mirroring; for that basis include two
+to four exact digest-bound input-construction locations that also appear in the
+violation evidence and causal path.
 For a clean safe result use categories=["none"] and evidence=[]; express the
 legitimate traced path through analyzed_files and causal_path. Evidence denotes
 an actual remaining policy finding, not evidence that a suspicion was cleared.
@@ -439,6 +443,7 @@ generator. A broad copied generator registry that joins multiple construction
 components in one directly served dispatch remains generator_mirroring.
 When and only when choosing generator_mirroring, populate generator_components
 with the two to four exact, digest-bound construction locations and their kinds.
+For every other resolution basis, submit generator_components as an empty list.
 Two definition_registry entries are acceptable only for the broad copied
 registry exception above; otherwise cite at least two distinct component kinds.
 The host rejects a generator basis whose components are absent from both the
@@ -839,6 +844,7 @@ _TOOLS: list[dict[str, object]] = [
                 "analyzed_files",
                 "evidence",
                 "causal_path",
+                "generator_components",
                 "summary",
             ],
             "additionalProperties": False,
