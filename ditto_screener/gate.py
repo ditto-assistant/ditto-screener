@@ -559,6 +559,11 @@ class BuildGate:
                     artifact_sha256=sha256.lower(),
                     attempt_id=attempt_id,
                     l1_observation=preflight,
+                    progress=(
+                        lambda completed, total: report(
+                            source_review_progress_stage(completed, total)
+                        )
+                    ),
                     deadline=deadline,
                 )
                 if resolved_preflight.ok and resolved_preflight.risk_level == "low":

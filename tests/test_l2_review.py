@@ -31,8 +31,8 @@ from ditto_screener.l2_review import (
     L2_MODEL,
     L2_PROMPT_REVISION,
     L2_SAFETY_PROMPT_REVISION,
-    L2_STATIC_HOLD_REVISION,
     L2_STARTER_MANIFESTS,
+    L2_STATIC_HOLD_REVISION,
     IsolatedCodingHarness,
     L2AuditJournal,
     L2InconclusiveError,
@@ -62,7 +62,10 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
         "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
         "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
     ]
-    assert all(manifest["origin"] == "ditto-assistant/dittobench-starter-kit" for manifest in manifests)
+    assert all(
+        manifest["origin"] == "ditto-assistant/dittobench-starter-kit"
+        for manifest in manifests
+    )
     assert all(len(manifest["files"]) == 38 for manifest in manifests)
     assert [len(manifest["rust_functions"]) for manifest in manifests] == [98, 103]
 
@@ -223,6 +226,22 @@ async def test_ambiguous_or_high_l1_invokes_sol(risk: str) -> None:
 
     assert result.risk_level == "low"
     assert l2.calls == 1
+
+
+async def test_l2_progress_occupies_the_second_half_of_source_review() -> None:
+    l1 = _FakeL1(_l1("high"))
+    l2 = _FakeL2(_model_result(_safe()))
+    layered = LayeredSourceReviewAgent(l1=l1, l2=l2, mode="enforce")  # type: ignore[arg-type]
+    progress: list[tuple[int, int]] = []
+
+    await layered.review(
+        "unused",
+        artifact_sha256="c" * 64,
+        attempt_id=ATTEMPT,
+        progress=lambda completed, total: progress.append((completed, total)),
+    )
+
+    assert progress == [(1, 2), (2, 2)]
 
 
 async def test_shadow_records_l2_but_preserves_l1_quarantine() -> None:

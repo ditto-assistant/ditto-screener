@@ -2909,10 +2909,14 @@ class LayeredSourceReviewAgent:
         progress: Callable[[int, int], None] | None = None,
         deadline: float | None = None,
     ) -> SourceReviewObservation:
+        def report_l1(completed: int, total: int) -> None:
+            if progress is not None:
+                progress(completed, total * 2)
+
         l1 = await self._l1.review(
             archive_path,
             artifact_sha256=artifact_sha256,
-            progress=progress,
+            progress=report_l1 if progress is not None else None,
             deadline=deadline,
         )
         return await self.resolve_lead(
@@ -2920,6 +2924,7 @@ class LayeredSourceReviewAgent:
             artifact_sha256=artifact_sha256,
             attempt_id=attempt_id,
             l1_observation=l1,
+            progress=progress,
             deadline=deadline,
         )
 
@@ -2930,6 +2935,7 @@ class LayeredSourceReviewAgent:
         artifact_sha256: str,
         attempt_id: UUID,
         l1_observation: SourceReviewObservation,
+        progress: Callable[[int, int], None] | None = None,
         deadline: float | None = None,
     ) -> SourceReviewObservation:
         """Resolve a precomputed, artifact-bound L1 lead without rerunning L1."""
@@ -2940,7 +2946,11 @@ class LayeredSourceReviewAgent:
             or l1.risk_level == "low"
             or l1.risk_level not in {"medium", "high"}
         ):
+            if progress is not None:
+                progress(2, 2)
             return l1
+        if progress is not None:
+            progress(1, 2)
         result = await self._l2.review(
             archive_path,
             artifact_sha256=artifact_sha256,
@@ -2948,6 +2958,8 @@ class LayeredSourceReviewAgent:
             l1_observation=l1,
             deadline=deadline,
         )
+        if progress is not None:
+            progress(2, 2)
         return l1 if self._mode == "shadow" else result.observation
 
 
