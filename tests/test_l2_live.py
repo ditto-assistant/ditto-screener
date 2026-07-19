@@ -64,7 +64,7 @@ async def test_live_l2_analyst_and_sol_critic_clear_canonical_starter(
         else ("openai/gpt-5.6-sol",)
     )
     timeout_seconds = float(os.environ.get("DITTO_L2_LIVE_TIMEOUT_SECONDS", "600"))
-    max_input_tokens = int(os.environ.get("DITTO_L2_LIVE_MAX_INPUT_TOKENS", "400000"))
+    max_input_tokens = int(os.environ.get("DITTO_L2_LIVE_MAX_INPUT_TOKENS", "425000"))
     max_output_tokens = int(os.environ.get("DITTO_L2_LIVE_MAX_OUTPUT_TOKENS", "8000"))
     max_cost_usd = float(os.environ.get("DITTO_L2_LIVE_MAX_COST_USD", "2.00"))
     starter = Path(starter_raw).resolve()

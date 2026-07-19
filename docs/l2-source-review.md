@@ -55,7 +55,7 @@ The OpenRouter catalog was verified on 2026-07-18:
   costs $5/M input, $0.50/M cached input, and $30/M output below its
   272,000-token price tier.
 
-The screener allows 400,000 cumulative effective input tokens (uncached plus
+The screener allows 425,000 cumulative effective input tokens (uncached plus
 10% of cached input), 20,000 cumulative output tokens, 2,400 output tokens per
 turn, 18 model turns and at most 36 analyzer calls per analyst/critic trajectory,
 eight cause-adjudicator turns and at most 16 analyzer calls, six safety-

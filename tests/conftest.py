@@ -52,7 +52,7 @@ def _default_config(**overrides: Any) -> ScreenerConfig:
         "l2_audit_journal_file": "/tmp/ditto-screener-test/l2/audit.jsonl",
         "l2_timeout_seconds": 900.0,
         "l2_max_steps": 16,
-        "l2_max_input_tokens": 400_000,
+        "l2_max_input_tokens": 425_000,
         "l2_max_output_tokens": 20_000,
         "l2_max_completion_tokens": 2_400,
         "l2_max_cost_usd": 2.0,

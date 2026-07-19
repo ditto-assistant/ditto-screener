@@ -274,7 +274,7 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         ),
         l2_timeout_seconds=_parse_float("SCREENER_L2_TIMEOUT_SECONDS", "900"),
         l2_max_steps=_parse_int("SCREENER_L2_MAX_STEPS", "18"),
-        l2_max_input_tokens=_parse_int("SCREENER_L2_MAX_INPUT_TOKENS", "400000"),
+        l2_max_input_tokens=_parse_int("SCREENER_L2_MAX_INPUT_TOKENS", "425000"),
         l2_max_output_tokens=_parse_int("SCREENER_L2_MAX_OUTPUT_TOKENS", "20000"),
         l2_max_completion_tokens=_parse_int(
             "SCREENER_L2_MAX_COMPLETION_TOKENS", "2400"

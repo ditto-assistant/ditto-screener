@@ -53,7 +53,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.l3_review_provider == "openrouter"
     assert cfg.l2_max_steps == 18
     assert cfg.l2_timeout_seconds == 900
-    assert cfg.l2_max_input_tokens == 400_000
+    assert cfg.l2_max_input_tokens == 425_000
     assert cfg.l2_max_output_tokens == 20_000
     assert cfg.l2_max_cost_usd == 2.0
     assert cfg.l2_analyst_reasoning_effort == "model_default"
