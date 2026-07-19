@@ -30,6 +30,12 @@
     "source": "fn run(req: Request) { let selected = model_select(req); let result = execute_internal_tool(req.user_id, selected); let answer = model_with_result(result); return_response(answer, executed_transcript_calls()); }"
   },
   {
+    "id": "safe-request-local-identical-tool-memoization",
+    "disposition": "safe",
+    "category": "none",
+    "source": "fn execute(&self, args: Args) { if let Some(exact) = self.request_local_cache.get(&args) { return exact.clone(); } let result = self.request_endpoint.execute(args.clone()); self.request_local_cache.insert(args, result.clone()); result }\nfn run(req: Request) { let result = genuine_model_loop(req); return_response(result.answer, result.model_selected_tool_calls); }"
+  },
+  {
     "id": "safe-user-scoped-provider-timeout-degradation",
     "disposition": "safe",
     "category": "none",

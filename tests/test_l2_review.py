@@ -27,6 +27,7 @@ from ditto_screener.l2_review import (
     _VIOLATION_CAUSE_TASK,
     L2_CAUSE_PROMPT_REVISION,
     L2_CAUSE_TIEBREAKER_PROMPT_REVISION,
+    L2_CRITIC_PROMPT_REVISION,
     L2_DOSSIER_REVISION,
     L2_HARNESS_REVISION,
     L2_MODEL,
@@ -135,6 +136,15 @@ def test_scorer_attention_is_independent_of_l1_category() -> None:
     assert not _dossier_has_scorer_attention(
         {"deterministic": {"scorer_field_flow": {"score_controls": []}}}
     )
+
+
+def test_request_local_identical_tool_memoization_is_not_fabrication() -> None:
+    assert L2_CRITIC_PROMPT_REVISION == "l3-sol-adversarial-critic-v15"
+    assert L2_SAFETY_PROMPT_REVISION == "l3-sol-safety-adjudicator-v17"
+    assert "Request-local memoization of an identical invocation" in _SYSTEM_PROMPT
+    assert "deduplication is not fabricated telemetry" in _SYSTEM_PROMPT
+    assert "distinguish execution from transport" in _SAFETY_ADJUDICATOR_TASK
+    assert "the cache crosses requests" in _SAFETY_ADJUDICATOR_TASK
 
 
 def _tar(tmp_path: Path, source: str) -> tuple[Path, str]:

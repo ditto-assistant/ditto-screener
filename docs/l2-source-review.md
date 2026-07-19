@@ -71,8 +71,8 @@ when the provider omits cost. A stable instructions/tool/dossier prefix,
 reuse without enabling response replay caching. The result-cache key includes
 all budgets, model/fallback/critic routing, reasoning settings, artifact/L1
 digests, prompt revisions `l2-kimi-source-review-v21`,
-`l3-sol-adversarial-critic-v14`, `l3-sol-violation-cause-v21`,
-`l3-sol-cause-disagreement-v4`, `l3-sol-safety-adjudicator-v16`, and
+`l3-sol-adversarial-critic-v15`, `l3-sol-violation-cause-v21`,
+`l3-sol-cause-disagreement-v4`, `l3-sol-safety-adjudicator-v17`, and
 `l2-integrity-static-hold-v3`, dossier revision
 `l1-compressed-dossier-v8`, harness revision
 `l2-isolated-coding-harness-v17`, and the supported canonical-starter revision
@@ -80,6 +80,13 @@ set. The inert analyzer chooses the canonical v2 or v3 baseline with the fewest
 file-digest deltas and reports the selected exact revision in the dossier; this
 keeps historical artifacts and current v3 starter submissions comparable
 without trusting submission metadata.
+
+Tool-fidelity review distinguishes model selection from transport. A
+request-local Tool may return the exact memoized result of its first genuine
+endpoint execution for later identical model-selected calls while the model
+transcript faithfully records those invocations. Cross-request replay,
+argument/result mutation, skipping the first execution, or reporting calls the
+model never selected remains a violation.
 
 An earlier opt-in live acceptance on 2026-07-18 used the exact canonical starter
 revision. Kimi made 14 targeted analyzer calls and SOL made 14 independent
