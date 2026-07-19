@@ -41,6 +41,7 @@ from ditto_screener.l2_review import (
     LayeredSourceReviewAgent,
     SolL2SourceReviewAgent,
     _cost,
+    _dossier_has_scorer_attention,
     _extract_readonly_workspace,
     _make_writable,
     _parse_l2_review,
@@ -71,7 +72,7 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v19"
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v20"
     assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v20"
     assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v3")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
@@ -107,10 +108,29 @@ def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() 
     assert "unused local parser/debug candidate" in _VIOLATION_CAUSE_TASK
     assert "assigned into the served response contract" in _SYSTEM_PROMPT
     assert "reported prior-population" in _SAFETY_ADJUDICATOR_TASK
+    assert "regardless of L1's category" in _SAFETY_ADJUDICATOR_TASK
     assert "Pre-assignment suppression" in _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK
     assert "unused parser/debug candidate" in _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK
     assert "starter_function_diff" in _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK
     assert "retrieval innovation" in _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK
+
+
+def test_scorer_attention_is_independent_of_l1_category() -> None:
+    assert _dossier_has_scorer_attention(
+        {
+            "deterministic": {
+                "scorer_field_flow": {
+                    "score_controls": [{"path": "src/main.rs", "line": 1}],
+                    "field_clears": [],
+                    "field_populations": [],
+                    "same_function_candidates": [],
+                }
+            }
+        }
+    )
+    assert not _dossier_has_scorer_attention(
+        {"deterministic": {"scorer_field_flow": {"score_controls": []}}}
+    )
 
 
 def _tar(tmp_path: Path, source: str) -> tuple[Path, str]:
@@ -1013,6 +1033,34 @@ class _PartialHarness(_FakeHarness):
         return json.dumps({"files": [], "truncated": True})
 
 
+class _ScorerAttentionHarness(_FakeHarness):
+    async def run(
+        self,
+        _workspace: Path,
+        command: str,
+        _arguments: dict[str, object],
+        *,
+        deadline: float | None = None,
+    ) -> str:
+        del deadline
+        self.calls.append(command)
+        if command == "call_graph":
+            return json.dumps(
+                {"nodes": [], "ambiguous_calls": [], "unresolved_calls": []}
+            )
+        if command == "scorer_field_flow":
+            return json.dumps(
+                {
+                    "score_controls": [{"path": "src/main.rs", "line": 1}],
+                    "field_clears": [{"path": "src/main.rs", "line": 1}],
+                    "field_populations": [{"path": "src/main.rs", "line": 1}],
+                    "same_function_candidates": [],
+                    "truncated": False,
+                }
+            )
+        return "{}"
+
+
 class _TruncatedGraphHarness(_FakeHarness):
     async def run(
         self,
@@ -1116,6 +1164,56 @@ async def test_local_address_uses_a_fresh_owned_transport_per_client(
     assert first is not second
     await first.aclose()
     await second.aclose()
+
+
+async def test_scorer_attention_blocks_direct_clear_and_requires_sol(
+    tmp_path: Path,
+) -> None:
+    source = "fn main() {}"
+    archive, artifact_sha = _tar(tmp_path, source)
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    safe = _clearance_certificate(
+        {
+            "disposition": "safe",
+            "risk_level": "low",
+            "resolution_basis": "authoritative_model_tool_path",
+            "categories": ["none"],
+            "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+            "evidence": [],
+            "summary": "sanitized",
+        }
+    )
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        calls = (
+            [_tool_call("3", "read_file", {"path": "src/main.rs"})]
+            if len(requests) == 3
+            else [_tool_call(str(len(requests)), "submit_l2_review", safe)]
+        )
+        return _response(
+            calls,
+            model=(
+                "moonshotai/kimi-k3-20260715"
+                if len(requests) == 1
+                else "openai/gpt-5.6-sol-20260709"
+            ),
+        )
+
+    result = await _sol_agent(tmp_path, _ScorerAttentionHarness(), handler).review(
+        str(archive),
+        artifact_sha256=artifact_sha,
+        attempt_id=ATTEMPT,
+        l1_observation=_l1("medium"),
+        deadline=None,
+    )
+
+    assert len(requests) == 4
+    assert requests[2]["reasoning"] == {"effort": "medium"}
+    assert requests[3]["reasoning"] == {"effort": "medium"}
+    assert result.observation.risk_level == "low"
+    assert result.clearance_path == "l3_adjudicated_safe"
 
 
 async def test_partial_dossier_can_prove_violation_but_never_clear(

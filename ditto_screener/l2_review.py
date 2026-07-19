@@ -38,11 +38,11 @@ L2_MODEL = "moonshotai/kimi-k3"
 L2_FALLBACK_MODELS = ("z-ai/glm-5.2", "openai/gpt-5.6-sol")
 L3_MODEL = "openai/gpt-5.6-sol"
 L3_PROVIDER = "openrouter"
-L2_PROMPT_REVISION = "l2-kimi-source-review-v19"
-L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v12"
+L2_PROMPT_REVISION = "l2-kimi-source-review-v20"
+L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v13"
 L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v20"
 L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v3"
-L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v14"
+L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v15"
 L2_STATIC_HOLD_REVISION = "l2-served-generator-hold-v2"
 L2_DOSSIER_REVISION = "l1-compressed-dossier-v7"
 L2_CAUSE_REASONING_EFFORT = "medium"
@@ -285,6 +285,11 @@ refute the flow. A same_function_candidate means score control, population, and
 clearing coexist but are not yet causally joined; trace its reported locations
 and branches rather than dismissing it because the clearing is not lexically
 nested under the score condition.
+This invariant is independent of L1's category. When the compressed dossier's
+scorer_field_flow contains any score controls together with field populations
+or clears, inspect the relevant changed functions even if L1 alleges scope,
+credentials, tools, benchmark emulation, or another mechanism. Clearing L1's
+named lead does not clear an independent response-authority path.
 2. Tool fidelity: every reported tool call must be selected through the genuine
 planner/model path and correspond to a call actually executed by either a
 request-supplied tool endpoint or a genuine harness-owned Tool implementation.
@@ -560,6 +565,11 @@ the reported prior-population, condition, mutation, and response-sink locations.
 Treat same-function candidates as mandatory reading queues and trace whether the
 score-derived policy decision reaches the clearing branch; lexical nesting is
 not required for a causal score-driven suppression.
+Apply this whenever the dossier contains nonempty scorer-flow controls,
+populations, clears, or same-function candidates, regardless of L1's category.
+Before returning safe, inspect every changed function that contains those
+locations and close the pre-assignment case where a score-derived decision
+discards a genuine candidate before response construction.
 """
 
 _ORDINARY_OPTIONAL_FIELD_SAFETY_TASK = """\
@@ -1698,7 +1708,9 @@ class KimiSolSourceReviewAgent:
             )
             if static_hold is not None:
                 return static_hold
-            if _qualifies_for_direct_clear(l1_observation, analyst):
+            if _qualifies_for_direct_clear(
+                l1_observation, analyst
+            ) and not _dossier_has_scorer_attention(dossier):
                 return L2RunResult(
                     observation=analyst.observation,
                     analyzed_files=analyst.analyzed_files,
@@ -1891,6 +1903,7 @@ class KimiSolSourceReviewAgent:
             safety_reasoning_effort = (
                 "medium"
                 if "scorer_contract_manipulation" in set(l1_observation.categories)
+                or _dossier_has_scorer_attention(dossier)
                 else L2_SAFETY_ADJUDICATOR_REASONING_EFFORT
             )
             async with httpx.AsyncClient(
@@ -2961,6 +2974,26 @@ class LayeredSourceReviewAgent:
         if progress is not None:
             progress(2, 2)
         return l1 if self._mode == "shadow" else result.observation
+
+
+def _dossier_has_scorer_attention(dossier: Mapping[str, object]) -> bool:
+    deterministic = dossier.get("deterministic")
+    scorer_flow = (
+        deterministic.get("scorer_field_flow")
+        if isinstance(deterministic, Mapping)
+        else None
+    )
+    if not isinstance(scorer_flow, Mapping):
+        return False
+    return any(
+        isinstance(scorer_flow.get(key), list) and bool(scorer_flow[key])
+        for key in (
+            "score_controls",
+            "field_clears",
+            "field_populations",
+            "same_function_candidates",
+        )
+    )
 
 
 def _qualifies_for_direct_clear(
