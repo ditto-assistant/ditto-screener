@@ -64,10 +64,11 @@ when the provider omits cost. A stable instructions/tool/dossier prefix,
 `prompt_cache_key`, and artifact-scoped `session_id` maximize provider cache
 reuse without enabling response replay caching. The result-cache key includes
 all budgets, model/fallback/critic routing, reasoning settings, artifact/L1
-digests, prompt revisions `l2-kimi-source-review-v18`,
-`l3-sol-adversarial-critic-v12`, `l3-sol-violation-cause-v19`,
-`l3-sol-cause-disagreement-v2`, `l3-sol-safety-adjudicator-v14`, and
-`l2-served-generator-hold-v1`, harness revision
+digests, prompt revisions `l2-kimi-source-review-v19`,
+`l3-sol-adversarial-critic-v12`, `l3-sol-violation-cause-v20`,
+`l3-sol-cause-disagreement-v3`, `l3-sol-safety-adjudicator-v14`, and
+`l2-served-generator-hold-v2`, dossier revision
+`l1-compressed-dossier-v6`, harness revision
 `l2-isolated-coding-harness-v15`, and canonical starter revision.
 
 An earlier opt-in live acceptance on 2026-07-18 used the exact canonical starter
@@ -112,8 +113,8 @@ points the agent to locations it must read and causally trace. It then invokes
 only the targeted repository-owned, allowlisted analyzers it needs: workspace
 index/digests, bounded reads, literal search, Tree-sitter Rust AST structure,
 cross-file call graph, complete canonical-starter file and Rust-function AST/body
-diffs, and inert
-Cargo/Docker build metadata. A snippet-free Rust scorer-field-flow analyzer
+diffs, a snippet-free Rust scorer-field-flow map, and inert
+Cargo/Docker build metadata. The scorer-field-flow analyzer
 locates score/A-B-controlled clearing and the prior-population sites that must
 be causally checked; it is an attention map rather than policy evidence.
 Submission source is extracted without links or
@@ -130,8 +131,11 @@ analyzer calls, outputs, and file sizes are independently capped; any omitted
 oversized content or traversal truncation makes clearance inconclusive.
 
 Every file, output, AST, function, call, route, and graph bound carries an
-explicit truncation marker. Any required partial result makes the review
-inconclusive. Qualified calls are resolved only to one definition; ambiguous
+explicit truncation marker. A sampled deterministic attention map may still
+route the model to exact reads that prove a violation, but it marks the dossier
+incomplete and can never support a safe clearance. Partial model-requested
+evidence is withheld and cannot support a final claim. Qualified calls are
+resolved only to one definition; ambiguous
 short names and method calls are reported without manufacturing reachability.
 
 The container receives no environment credentials, cloud paths, host paths, or

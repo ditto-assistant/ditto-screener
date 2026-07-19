@@ -38,12 +38,13 @@ L2_MODEL = "moonshotai/kimi-k3"
 L2_FALLBACK_MODELS = ("z-ai/glm-5.2", "openai/gpt-5.6-sol")
 L3_MODEL = "openai/gpt-5.6-sol"
 L3_PROVIDER = "openrouter"
-L2_PROMPT_REVISION = "l2-kimi-source-review-v18"
+L2_PROMPT_REVISION = "l2-kimi-source-review-v19"
 L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v12"
-L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v19"
-L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v2"
+L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v20"
+L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v3"
 L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v14"
-L2_STATIC_HOLD_REVISION = "l2-served-generator-hold-v1"
+L2_STATIC_HOLD_REVISION = "l2-served-generator-hold-v2"
+L2_DOSSIER_REVISION = "l1-compressed-dossier-v6"
 L2_CAUSE_REASONING_EFFORT = "medium"
 L2_SAFETY_ADJUDICATOR_REASONING_EFFORT = "low"
 L2_CAUSE_MAX_STEPS = 8
@@ -62,6 +63,7 @@ L2_PROMPT_CACHE_KEY = (
             f"{L2_CAUSE_TIEBREAKER_PROMPT_REVISION}:"
             f"{L2_SAFETY_PROMPT_REVISION}:"
             f"{L2_STATIC_HOLD_REVISION}:"
+            f"{L2_DOSSIER_REVISION}:"
             f"{L2_HARNESS_REVISION}"
         ).encode()
     ).hexdigest()[:32]
@@ -73,12 +75,22 @@ _MAX_TOOL_BYTES = 256_000
 _MAX_AUDIT_TAIL_BYTES = 64 * 1024 * 1024
 _RETRY_DELAYS_SECONDS = (0.5, 1.0)
 _ROLES = frozenset({"trigger", "decision", "effect", "sink", "context"})
+_GENERATOR_COMPONENT_KINDS = frozenset(
+    {
+        "template_grammar",
+        "seeded_expansion",
+        "parameter_distribution",
+        "expected_output_derivation",
+        "definition_registry",
+    }
+)
 _DOSSIER_ANALYZERS = (
     "workspace_index",
     "starter_diff",
     "starter_function_diff",
     "build_structure",
     "integrity_surfaces",
+    "scorer_field_flow",
 )
 _RESOLUTION_BASES = frozenset(
     {
@@ -418,6 +430,13 @@ nonce patterns, or answer cases for one family is a finite family solver and
 therefore benchmark_answer_replacement, even when comments identify the public
 generator. A broad copied generator registry that joins multiple construction
 components in one directly served dispatch remains generator_mirroring.
+When and only when choosing generator_mirroring, populate generator_components
+with the two to four exact, digest-bound construction locations and their kinds.
+Two definition_registry entries are acceptable only for the broad copied
+registry exception above; otherwise cite at least two distinct component kinds.
+The host rejects a generator basis whose components are absent from both the
+causal path and violation evidence. Do not use output-only rules, recognizers,
+answers, expected tools, or already-formed request keys as components.
 
 Choose benchmark_answer_replacement when deterministic code supplies the scored
 answer text or abstention value without those copied input-construction
@@ -778,6 +797,24 @@ _TOOLS: list[dict[str, object]] = [
                         "additionalProperties": False,
                     },
                     "maxItems": 16,
+                },
+                "generator_components": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "line": {"type": "integer", "minimum": 1},
+                            "file_sha256": {"type": "string"},
+                            "kind": {
+                                "type": "string",
+                                "enum": sorted(_GENERATOR_COMPONENT_KINDS),
+                            },
+                        },
+                        "required": ["path", "line", "file_sha256", "kind"],
+                        "additionalProperties": False,
+                    },
+                    "maxItems": 4,
                 },
                 "summary": {"type": "string", "maxLength": 240},
             },
@@ -2091,10 +2128,24 @@ class KimiSolSourceReviewAgent:
     ) -> tuple[dict[str, object], tuple[str, ...], bool, bool]:
         deterministic: dict[str, object] = {}
         tools: list[str] = []
+        dossier_complete = True
         for command in _DOSSIER_ANALYZERS:
             output = await self._harness.run(workspace, command, {}, deadline=deadline)
-            _require_complete_analysis(output)
-            deterministic[command] = json.loads(output)
+            try:
+                analysis = json.loads(output)
+            except json.JSONDecodeError as error:
+                raise ValueError("L2 dossier analyzer returned invalid JSON") from error
+            if not isinstance(analysis, dict) or analysis.get("error"):
+                raise L2InconclusiveError(
+                    f"L2 dossier analyzer {command} was unavailable"
+                )
+            # A bounded attention map may be sampled and still help prove a
+            # violation through later exact reads. It can never support a safe
+            # clearance: carry incompleteness through every trajectory instead
+            # of abandoning a clearly reviewable hostile artifact up front.
+            if _contains_truncation(analysis):
+                dossier_complete = False
+            deterministic[command] = analysis
             tools.append(command)
         graph_output = await self._harness.run(
             workspace, "call_graph", {"entry": "main"}, deadline=deadline
@@ -2103,12 +2154,13 @@ class KimiSolSourceReviewAgent:
         if not isinstance(graph, dict) or graph.get("error"):
             raise L2InconclusiveError("main call graph was unavailable")
         graph_complete = not _contains_truncation(graph)
+        dossier_complete = dossier_complete and graph_complete
         deterministic["main_call_graph"] = _compress_call_graph(graph)
         tools.append("call_graph")
         inventory = json.loads(repository.inventory())
         return (
             {
-                "dossier_revision": "l1-compressed-dossier-v4",
+                "dossier_revision": L2_DOSSIER_REVISION,
                 "artifact_sha256": artifact_sha256,
                 "starter_revision": self._starter_revision,
                 "l1": {
@@ -2122,7 +2174,7 @@ class KimiSolSourceReviewAgent:
                 "bounded_source_inventory": inventory,
             },
             tuple(tools),
-            True,
+            dossier_complete,
             graph_complete,
         )
 
@@ -2600,6 +2652,7 @@ class KimiSolSourceReviewAgent:
             "critic_prompt_revision": L2_CRITIC_PROMPT_REVISION,
             "safety_prompt_revision": L2_SAFETY_PROMPT_REVISION,
             "static_hold_revision": L2_STATIC_HOLD_REVISION,
+            "dossier_revision": L2_DOSSIER_REVISION,
             "cause_tiebreaker_prompt_revision": (L2_CAUSE_TIEBREAKER_PROMPT_REVISION),
             "harness_revision": L2_HARNESS_REVISION,
             "pricing_revision": L2_PRICING_REVISION,
@@ -2754,6 +2807,7 @@ class KimiSolSourceReviewAgent:
                 ),
                 "safety_prompt_revision": L2_SAFETY_PROMPT_REVISION,
                 "static_hold_revision": L2_STATIC_HOLD_REVISION,
+                "dossier_revision": L2_DOSSIER_REVISION,
                 "harness_revision": L2_HARNESS_REVISION,
                 "pricing_revision": L2_PRICING_REVISION,
                 "starter_revision": self._starter_revision,
@@ -3006,7 +3060,12 @@ def _parse_l2_review(
         "causal_path",
         "summary",
     }
-    if not isinstance(value, dict) or set(value) != expected:
+    optional = {"generator_components"}
+    if (
+        not isinstance(value, dict)
+        or not expected <= set(value)
+        or not set(value) <= expected | optional
+    ):
         raise ValueError("L2 result has unexpected fields")
     disposition = value["disposition"]
     risk = value["risk_level"]
@@ -3016,6 +3075,7 @@ def _parse_l2_review(
     evidence = value["evidence"]
     analyzed = value["analyzed_files"]
     causal = value["causal_path"]
+    generator_components = value.get("generator_components", [])
     if disposition not in {"safe", "violation", "inconclusive"}:
         raise ValueError("L2 result disposition is invalid")
     if risk not in {"low", "medium", "high"}:
@@ -3040,6 +3100,8 @@ def _parse_l2_review(
         raise ValueError("L2 result evidence collection is invalid")
     if not isinstance(causal, list) or len(causal) > 16:
         raise ValueError("L2 result causal_path is invalid")
+    if not isinstance(generator_components, list) or len(generator_components) > 4:
+        raise ValueError("L2 result generator_components is invalid")
     normalized_analyzed = tuple(
         _validate_digest_item(item, repository=repository) for item in analyzed
     )
@@ -3091,6 +3153,33 @@ def _parse_l2_review(
         ):
             raise ValueError("L2 causal path is not artifact-bound")
         normalized_causal.append(dict(item))
+    normalized_generator_components: list[Mapping[str, object]] = []
+    for item in generator_components:
+        if not isinstance(item, dict) or set(item) != {
+            "path",
+            "line",
+            "file_sha256",
+            "kind",
+        }:
+            raise ValueError("L2 generator component is invalid")
+        path, line, digest, kind = (
+            item["path"],
+            item["line"],
+            item["file_sha256"],
+            item["kind"],
+        )
+        if (
+            not isinstance(path, str)
+            or not isinstance(line, int)
+            or isinstance(line, bool)
+            or line < 1
+            or not isinstance(digest, str)
+            or kind not in _GENERATOR_COMPONENT_KINDS
+            or analyzed_map.get(path) != digest
+            or not _valid_location(repository, path, line)
+        ):
+            raise ValueError("L2 generator component is not artifact-bound")
+        normalized_generator_components.append(dict(item))
     category_set = set(categories)
     if "none" in category_set and category_set != {"none"}:
         raise ValueError("L2 none category must be exclusive")
@@ -3126,6 +3215,36 @@ def _parse_l2_review(
         for category in category_set & _MULTI_LOCATION_CATEGORIES:
             if len(locations.get(category, set())) < 2:
                 raise ValueError("L2 violation lacks multi-location evidence")
+        if resolution_basis == "generator_mirroring":
+            component_locations = {
+                (str(item["path"]), _item_line(item))
+                for item in normalized_generator_components
+            }
+            component_kinds = {
+                str(item["kind"]) for item in normalized_generator_components
+            }
+            evidence_locations = {
+                (str(item["path"]), _item_line(item)) for item in normalized_evidence
+            }
+            causal_locations = {
+                (str(item["path"]), _item_line(item)) for item in normalized_causal
+            }
+            registry_exception = component_kinds == {"definition_registry"}
+            if (
+                len(normalized_generator_components) < 2
+                or len(component_locations) < 2
+                or (len(component_kinds) < 2 and not registry_exception)
+                or not component_locations <= evidence_locations
+                or not component_locations <= causal_locations
+            ):
+                raise ValueError(
+                    "generator_mirroring requires two causal input-construction "
+                    "components; output-only registries are benchmark replacement"
+                )
+        elif normalized_generator_components:
+            raise ValueError(
+                "generator_components are valid only for generator_mirroring"
+            )
     else:
         return (
             _failure("l2-model-inconclusive", "inconclusive"),
@@ -3475,6 +3594,28 @@ def _served_generator_hold(
         }
         for item in locations
     )
+    deterministic = dossier.get("deterministic")
+    scorer_flow = (
+        deterministic.get("scorer_field_flow")
+        if isinstance(deterministic, Mapping)
+        else None
+    )
+    l1_categories = set(l1_observation.categories)
+    positive_scorer_flow = isinstance(scorer_flow, Mapping) and all(
+        isinstance(scorer_flow.get(key), list) and bool(scorer_flow[key])
+        for key in (
+            "score_controls",
+            "field_clears",
+            "field_populations",
+            "same_function_candidates",
+        )
+    )
+    if l1_categories == {"scorer_contract_manipulation"} and positive_scorer_flow:
+        resolution_basis = "scorer_field_manipulation"
+    elif l1_categories == {"benchmark_emulation"}:
+        resolution_basis = "benchmark_answer_replacement"
+    else:
+        resolution_basis = "insufficient_static_evidence"
     return L2RunResult(
         observation=SourceReviewObservation(
             ok=True,
@@ -3492,7 +3633,10 @@ def _served_generator_hold(
         critic_disposition="not_required_static_hold",
         response_models=analyst.response_models,
         response_providers=analyst.response_providers,
-        resolution_basis="generator_mirroring",
+        # The served constellation is sufficient to prevent a model-only
+        # release. Preserve an exact L1 basis only when a separate structural
+        # flow check corroborates it; mixed/unsupported causes stay unresolved.
+        resolution_basis=resolution_basis,
         clearance_path="deterministic_served_generator_hold",
         dossier_complete=analyst.dossier_complete,
         direct_clear_graph_complete=analyst.direct_clear_graph_complete,

@@ -26,6 +26,7 @@ from ditto_screener.l2_review import (
     _VIOLATION_CAUSE_TASK,
     L2_CAUSE_PROMPT_REVISION,
     L2_CAUSE_TIEBREAKER_PROMPT_REVISION,
+    L2_DOSSIER_REVISION,
     L2_HARNESS_REVISION,
     L2_MODEL,
     L2_PROMPT_REVISION,
@@ -55,9 +56,9 @@ ATTEMPT = UUID("96af45fd-65da-4f59-87f8-8ddf5d57f88c")
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v18"
-    assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v19"
-    assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v2")
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v19"
+    assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v20"
+    assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v3")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
     assert "without those copied input-construction" in _VIOLATION_CAUSE_TASK
     assert "expected-tool registry" in _VIOLATION_CAUSE_TASK
@@ -87,6 +88,7 @@ def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() 
     assert "generator_construction attention map" in _VIOLATION_CAUSE_TASK
     assert "read at least one" in _VIOLATION_CAUSE_TASK
     assert "registry/definition anchor" in _VIOLATION_CAUSE_TASK
+    assert "generator_components" in _VIOLATION_CAUSE_TASK
     assert "unused local parser/debug candidate" in _VIOLATION_CAUSE_TASK
     assert "assigned into the served response contract" in _SYSTEM_PROMPT
     assert "reported prior-population" in _SAFETY_ADJUDICATOR_TASK
@@ -349,7 +351,7 @@ def test_served_generator_constellation_cannot_auto_clear(
     assert "benchmark_emulation" in held.observation.categories
     assert held.clearance_path == "deterministic_served_generator_hold"
     assert held.critic_disposition == "not_required_static_hold"
-    assert held.resolution_basis == "generator_mirroring"
+    assert held.resolution_basis == "benchmark_answer_replacement"
     assert {item["role"] for item in held.causal_path} == {
         "trigger",
         "decision",
@@ -366,6 +368,53 @@ def test_served_generator_constellation_cannot_auto_clear(
         analyst_cache_hit=False,
     )
     assert no_hold is None
+
+    scorer_l1 = SourceReviewObservation(
+        ok=True,
+        risk_level="medium",
+        finding_digest="f" * 64,
+        categories=("scorer_contract_manipulation",),
+        finding={
+            "risk_level": "medium",
+            "confidence": 0.9,
+            "categories": ["scorer_contract_manipulation"],
+            "evidence": [
+                {
+                    "path": "src/main.rs",
+                    "line": 1,
+                    "category": "scorer_contract_manipulation",
+                },
+                {
+                    "path": "src/main.rs",
+                    "line": 2,
+                    "category": "scorer_contract_manipulation",
+                },
+            ],
+        },
+    )
+    scorer_dossier = {
+        **dossier,
+        "deterministic": {
+            "scorer_field_flow": {
+                "score_controls": [{"path": "src/main.rs", "line": 1}],
+                "field_clears": [{"path": "src/main.rs", "line": 2}],
+                "field_populations": [{"path": "src/main.rs", "line": 1}],
+                "same_function_candidates": [{"path": "src/main.rs", "line": 1}],
+                "truncated": False,
+            }
+        },
+    }
+    scorer_hold = _served_generator_hold(
+        dossier=scorer_dossier,
+        repository=repository,
+        artifact_sha256=artifact_sha,
+        l1_observation=scorer_l1,
+        analyst=analyst,
+        dossier_tools=("scorer_field_flow",),
+        analyst_cache_hit=False,
+    )
+    assert scorer_hold is not None
+    assert scorer_hold.resolution_basis == "scorer_field_manipulation"
 
 
 @pytest.mark.parametrize(
@@ -563,6 +612,68 @@ def test_l2_violation_rejects_undeclared_evidence_category(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="category evidence"):
         _parse_l2_review(value, artifact_sha256=artifact_sha, repository=repository)
+
+
+def test_generator_basis_requires_two_digest_bound_construction_components(
+    tmp_path: Path,
+) -> None:
+    source = "fn template() {}\nfn seeded_expand() {}\nfn run() {}"
+    archive, artifact_sha = _tar(tmp_path, source)
+    repository = TarSourceRepository(str(archive))
+    digest = repository.member_sha256("src/main.rs")
+    value = {
+        "disposition": "violation",
+        "risk_level": "high",
+        "confidence": 0.99,
+        "resolution_basis": "generator_mirroring",
+        "categories": ["benchmark_emulation"],
+        "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+        "evidence": [
+            {
+                "path": "src/main.rs",
+                "line": line,
+                "file_sha256": digest,
+                "category": "benchmark_emulation",
+                "role": role,
+            }
+            for line, role in ((1, "trigger"), (2, "effect"))
+        ],
+        "causal_path": [
+            {"path": "src/main.rs", "line": 1, "role": "trigger"},
+            {"path": "src/main.rs", "line": 2, "role": "effect"},
+        ],
+        "summary": "sanitized",
+    }
+
+    with pytest.raises(ValueError, match="input-construction components"):
+        _parse_l2_review(
+            value,
+            artifact_sha256=artifact_sha,
+            repository=repository,
+        )
+
+    value["generator_components"] = [
+        {
+            "path": "src/main.rs",
+            "line": 1,
+            "file_sha256": digest,
+            "kind": "template_grammar",
+        },
+        {
+            "path": "src/main.rs",
+            "line": 2,
+            "file_sha256": digest,
+            "kind": "seeded_expansion",
+        },
+    ]
+    observation, _analyzed, _causal, basis = _parse_l2_review(
+        value,
+        artifact_sha256=artifact_sha,
+        repository=repository,
+    )
+
+    assert observation.risk_level == "high"
+    assert basis == "generator_mirroring"
 
 
 def test_extracted_source_is_owner_only_and_links_are_inconclusive(
@@ -864,6 +975,10 @@ class _PartialHarness(_FakeHarness):
     ) -> str:
         del deadline
         self.calls.append(command)
+        if command == "call_graph":
+            return json.dumps(
+                {"nodes": [], "ambiguous_calls": [], "unresolved_calls": []}
+            )
         return json.dumps({"files": [], "truncated": True})
 
 
@@ -972,36 +1087,44 @@ async def test_local_address_uses_a_fresh_owned_transport_per_client(
     await second.aclose()
 
 
-async def test_partial_required_analysis_returns_inconclusive(tmp_path: Path) -> None:
-    archive, artifact_sha = _tar(tmp_path, "fn main() {}")
-    key = tmp_path / "openrouter.key"
-    key.write_text("sk-test-" + "x" * 40)
-    key.chmod(0o600)
+async def test_partial_dossier_can_prove_violation_but_never_clear(
+    tmp_path: Path,
+) -> None:
+    source = "fn main() { read_secret(); }\nfn read_secret() { send_outbound(); }"
+    archive, artifact_sha = _tar(tmp_path, source)
+    digest = hashlib.sha256(source.encode()).hexdigest()
     requests = 0
+    violation = {
+        "disposition": "violation",
+        "risk_level": "high",
+        "confidence": 0.99,
+        "resolution_basis": "credential_exfiltration",
+        "categories": ["credential_access"],
+        "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+        "evidence": [
+            {
+                "path": "src/main.rs",
+                "line": line,
+                "file_sha256": digest,
+                "category": "credential_access",
+                "role": role,
+            }
+            for line, role in ((1, "trigger"), (2, "effect"))
+        ],
+        "causal_path": [
+            {"path": "src/main.rs", "line": 1, "role": "trigger"},
+            {"path": "src/main.rs", "line": 2, "role": "effect"},
+        ],
+        "summary": "sanitized",
+    }
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal requests
         requests += 1
-        return _response([_tool_call("1", "workspace_index", {})])
+        return _response([_tool_call("1", "submit_l2_review", violation)])
 
     harness = _PartialHarness()
-    agent = SolL2SourceReviewAgent(
-        api_key_file=str(key),
-        base_url="https://openrouter.test/api/v1",
-        harness=harness,  # type: ignore[arg-type]
-        cache_dir=str(tmp_path / "cache"),
-        audit_journal=L2AuditJournal(None, retention_days=30),
-        timeout_seconds=30,
-        max_steps=12,
-        max_input_tokens=80_000,
-        max_output_tokens=8_000,
-        max_completion_tokens=2_400,
-        max_cost_usd=1.5,
-        cache_ttl_seconds=86_400,
-        transport=httpx.MockTransport(handler),
-    )
-
-    result = await agent.review(
+    result = await _sol_agent(tmp_path, harness, handler).review(
         str(archive),
         artifact_sha256=artifact_sha,
         attempt_id=ATTEMPT,
@@ -1009,10 +1132,49 @@ async def test_partial_required_analysis_returns_inconclusive(tmp_path: Path) ->
         deadline=None,
     )
 
-    assert requests == 0
-    assert harness.calls == ["workspace_index"]
+    assert requests == 1
+    assert result.observation.ok
+    assert result.observation.risk_level == "high"
+    assert not result.dossier_complete
+    assert result.clearance_path == "l2_violation"
+
+
+async def test_partial_dossier_safe_consensus_cannot_clear(tmp_path: Path) -> None:
+    source = "fn main() { serve(); }\nfn serve() {}"
+    archive, artifact_sha = _tar(tmp_path, source)
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    safe = _clearance_certificate(
+        {
+            "disposition": "safe",
+            "risk_level": "low",
+            "confidence": 1.0,
+            "resolution_basis": "authoritative_model_tool_path",
+            "categories": ["none"],
+            "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+            "evidence": [],
+            "summary": "sanitized",
+        }
+    )
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return _response([_tool_call(str(requests), "submit_l2_review", safe)])
+
+    result = await _sol_agent(tmp_path, _PartialHarness(), handler).review(
+        str(archive),
+        artifact_sha256=artifact_sha,
+        attempt_id=ATTEMPT,
+        l1_observation=_l1(),
+        deadline=None,
+    )
+
+    assert requests == 3
     assert not result.observation.ok
-    assert result.observation.failure_disposition == "inconclusive"
+    assert result.observation.failure_disposition == "retryable_infra"
+    assert result.observation.error_code == "l3-adjudicator-incomplete"
+    assert not result.dossier_complete
 
 
 async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
@@ -1101,6 +1263,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
         "starter_function_diff",
         "build_structure",
         "integrity_surfaces",
+        "scorer_field_flow",
         "read_file",
     }
     assert requests[0]["model"] == L2_MODEL
@@ -1138,6 +1301,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     assert "starter_diff" in dossier_text
     assert "starter_function_diff" in dossier_text
     assert "integrity_surfaces" in dossier_text
+    assert "scorer_field_flow" in dossier_text
     assert first.critic_disposition == second.critic_disposition == "confirm_safe"
     assert (
         first.adjudicator_disposition
@@ -1183,6 +1347,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     assert all(
         record["static_hold_revision"] == L2_STATIC_HOLD_REVISION for record in records
     )
+    assert all(record["dossier_revision"] == L2_DOSSIER_REVISION for record in records)
     assert all(record["harness_revision"] == L2_HARNESS_REVISION for record in records)
     assert all(record["budgets"]["max_cost_usd"] == 1.5 for record in records)
     assert all(record["budgets"]["max_analyzer_calls"] == 24 for record in records)
@@ -1647,7 +1812,7 @@ async def test_violation_adjudicator_retry_reuses_kimi_stage(tmp_path: Path) -> 
     assert requests == 4, "the retry must rerun only the SOL cause adjudicator"
 
 
-async def test_incomplete_main_graph_requires_l3_certificate_before_clear(
+async def test_incomplete_main_graph_allows_violation_but_never_clear(
     tmp_path: Path,
 ) -> None:
     source = "fn main() { bypass(); }\nfn bypass() {}"
@@ -1689,7 +1854,7 @@ async def test_incomplete_main_graph_requires_l3_certificate_before_clear(
         deadline=None,
     )
     assert violation_result.observation.risk_level == "medium"
-    assert violation_result.dossier_complete
+    assert not violation_result.dossier_complete
 
     safe = {
         "disposition": "safe",
@@ -1736,9 +1901,10 @@ async def test_incomplete_main_graph_requires_l3_certificate_before_clear(
         l1_observation=_l1(),
         deadline=None,
     )
-    assert safe_result.observation.ok
-    assert safe_result.observation.risk_level == "low"
-    assert safe_result.clearance_path == "l3_adjudicated_safe"
+    assert not safe_result.observation.ok
+    assert safe_result.observation.failure_disposition == "retryable_infra"
+    assert safe_result.observation.error_code == "l3-adjudicator-incomplete"
+    assert safe_result.clearance_path == "l3_adjudicator_incomplete"
     assert safe_requests == 6
 
 
