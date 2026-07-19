@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.12.1 (2026-07-19)
+
+### Bug Fixes
+
+- Mirror validator runtime during screening
+  ([#36](https://github.com/ditto-assistant/ditto-screener/pull/36),
+  [`8a4050f`](https://github.com/ditto-assistant/ditto-screener/commit/8a4050fc21c8bbf803ff73f59cfb004c7fe8c19c))
+
+
 ## v0.12.0 (2026-07-18)
 
 ### Features
