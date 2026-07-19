@@ -255,15 +255,16 @@ one idle fleet worker to `shadow`; review false positives, inconclusive rate,
 p95 latency, tokens, and cost; then enable `enforce` on one worker before
 expanding. Do not mix enforcement manifests unintentionally across workers.
 The screened-image path and policy 9 are already deployed. DittoBench is in a
-hybrid active-v2/desired-v3 collection phase, so rollout must preserve both
+hybrid active-v2/desired-v4 collection phase, so rollout must preserve both
 versioned starter baselines and current per-agent benchmark authority. Existing
 submissions, scores, quarantine decisions, and attempts are not migrated or
 rewritten. This private rotation affects new or explicitly rescreened attempts
 only. Historical rescreening must use an explicit guarded operation, not an
-automatic policy-bump side effect; platform PR #222 must land or be reconciled
-before any automated rejection or rescreen. Durable signed miner-visible review
-packets and enforcement-manifest binding are tracked in platform issue #224 and
-are prerequisites for automatic rejection, not for a bounded shadow canary.
+automatic policy-bump side effect. Platform PR #222 is merged, so refused
+artifacts remain duplicate owners and terminal rejection reasons survive later
+policy-version changes. Durable signed miner-visible review packets and
+enforcement-manifest binding are tracked in platform issue #224 and remain
+prerequisites for automatic rejection, not for a bounded shadow canary.
 
 Rollback is configuration-only: return workers to `shadow` or `off`, run the
 exact-SHA updater, and verify the worker heartbeat/manifest. The updater rebuilds
