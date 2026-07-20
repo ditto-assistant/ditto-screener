@@ -74,9 +74,9 @@ when the provider omits cost. A stable instructions/tool/dossier prefix,
 `prompt_cache_key`, and artifact-scoped `session_id` maximize provider cache
 reuse without enabling response replay caching. The result-cache key includes
 all budgets, model/fallback/critic routing, reasoning settings, artifact/L1
-digests, prompt revisions `l2-kimi-source-review-v21`,
+digests, prompt revisions `l2-kimi-source-review-v22`,
 `l3-sol-adversarial-critic-v15`, `l3-sol-violation-cause-v22`,
-`l3-sol-cause-disagreement-v5`, `l3-sol-safety-adjudicator-v17`, and
+`l3-sol-cause-disagreement-v5`, `l3-sol-safety-adjudicator-v18`, and
 `l2-integrity-static-hold-v3`, dossier revision
 `l1-compressed-dossier-v8`, harness revision
 `l2-isolated-coding-harness-v17`, and the supported canonical-starter revision

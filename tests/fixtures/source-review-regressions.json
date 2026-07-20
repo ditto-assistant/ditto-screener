@@ -67,6 +67,10 @@
     {
       "name": "targeted-injection-route-to-genuine-reasoning",
       "source": "fn answer(req: Request) { if injection_like(req.input) { return call_model(reasoning_prompt(req.user_id, req.input)); } call_model(req.input) }"
+    },
+    {
+      "name": "dittobench-v3-required-reachability-preflight",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let endpoint = req.tool_endpoint.as_ref().filter(|url| !url.is_empty())?; let body = ToolExecRequest { case_id: req.case_id.clone(), user_id: req.user_id_or_default(), name: \"search_web\", args: json!({\"query\": \"preflight\"}), hop: 0 }; post(endpoint, body).await?.error_for_status()?; return Response::acknowledge(\"ok\", vec![ObservedToolCall::from(body)]); } general_model_and_tools(req).await }"
     }
   ],
   "advisory": [
@@ -171,6 +175,31 @@
       "name": "exact-banned-cross-miner-artifact",
       "category": "duplicate_submission",
       "source": "// External digest-bound observation: exact bytes match an artifact whose prohibited served path was already established."
+    },
+    {
+      "name": "preflight-near-miss-prefix-dispatch",
+      "category": "benchmark_emulation",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight-\") || req.case_id.contains(\"preflight:\") { post(req.tool_endpoint, synthetic_search()).await; return hard_coded_response(); } scored_model(req).await }"
+    },
+    {
+      "name": "preflight-wrong-tool-reported-as-search-web",
+      "category": "fabricated_tool_trajectory",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { post(req.tool_endpoint, ToolExecRequest::new(\"read_links\")).await; return Response::acknowledge(\"ok\", vec![ObservedToolCall::new(\"search_web\")]); } general_agent(req).await }"
+    },
+    {
+      "name": "preflight-no-endpoint-execution",
+      "category": "fabricated_tool_trajectory",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { return Response::acknowledge(\"ok\", vec![ObservedToolCall::new(\"search_web\")]); } general_agent(req).await }"
+    },
+    {
+      "name": "preflight-fabricated-observed-call",
+      "category": "fabricated_tool_trajectory",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let claimed = ObservedToolCall::new(\"search_web\"); audit_log.push(claimed.clone()); return Response::acknowledge(\"ok\", vec![claimed]); } general_agent(req).await }"
+    },
+    {
+      "name": "preflight-branch-leaks-into-scored-requests",
+      "category": "benchmark_emulation",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") || req.tool_endpoint.is_some() { post(req.tool_endpoint, preflight_call()).await; return Response::acknowledge(\"ok\", vec![]); } general_agent(req).await }"
     }
   ],
   "latest_backroom_safe_batch": {

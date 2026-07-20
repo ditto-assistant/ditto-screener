@@ -78,7 +78,7 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v21"
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v22"
     assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v22"
     assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v5")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
@@ -171,11 +171,34 @@ def test_l1_mechanism_narrowed_away_by_kimi_still_requires_sol() -> None:
 
 def test_request_local_identical_tool_memoization_is_not_fabrication() -> None:
     assert L2_CRITIC_PROMPT_REVISION == "l3-sol-adversarial-critic-v15"
-    assert L2_SAFETY_PROMPT_REVISION == "l3-sol-safety-adjudicator-v17"
+    assert L2_SAFETY_PROMPT_REVISION == "l3-sol-safety-adjudicator-v18"
     assert "Request-local memoization of an identical invocation" in _SYSTEM_PROMPT
     assert "deduplication is not fabricated telemetry" in _SYSTEM_PROMPT
     assert "distinguish execution from transport" in _SAFETY_ADJUDICATOR_TASK
     assert "the cache crosses requests" in _SAFETY_ADJUDICATOR_TASK
+
+
+def test_dittobench_preflight_clearance_is_exact_and_shared() -> None:
+    for prompt in (_SYSTEM_PROMPT, _SAFETY_ADJUDICATOR_TASK):
+        assert "preflight:" in prompt
+        assert "search_web" in prompt
+        assert "supplied" in prompt
+        assert "tool_endpoint" in prompt
+        assert "incoming" in prompt
+        assert "case" in prompt
+        assert "hop" in prompt
+        assert "0" in prompt
+        assert (
+            "reports it only after" in prompt
+            or "reports that call only after" in prompt
+        )
+        assert "ordinary scored" in prompt
+
+    assert "near-miss prefix" in _SYSTEM_PROMPT
+    assert "wrong tool" in _SYSTEM_PROMPT
+    assert "no real POST" in _SYSTEM_PROMPT
+    assert "fabricated" in _SYSTEM_PROMPT
+    assert "prematurely reported" in _SYSTEM_PROMPT
 
 
 def _tar(tmp_path: Path, source: str) -> tuple[Path, str]:
