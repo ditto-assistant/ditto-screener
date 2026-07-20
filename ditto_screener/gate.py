@@ -69,6 +69,12 @@ from ditto_screener.heartbeat import (
     ScreenerProgressStage,
     source_review_progress_stage,
 )
+from ditto_screener.l2_review import (
+    IsolatedCodingHarness,
+    KimiSolSourceReviewAgent,
+    L2AuditJournal,
+    LayeredSourceReviewAgent,
+)
 from ditto_screener.policy import (
     ChallengeObservation,
     PolicyContext,
@@ -412,12 +418,43 @@ class BuildGate:
         self._client = client
         self._policy = policy
         self._journal = journal
-        self._source_reviewer = OpenRouterSourceReviewAgent(
+        l1_reviewer = OpenRouterSourceReviewAgent(
             api_key_file=config.source_review_api_key_file,
             model=config.source_review_model,
             base_url=config.source_review_base_url,
             timeout_seconds=config.source_review_timeout_seconds,
             max_steps=config.source_review_max_steps,
+        )
+        l2_reviewer = KimiSolSourceReviewAgent(
+            api_key_file=config.source_review_api_key_file,
+            base_url=config.source_review_base_url,
+            harness=IsolatedCodingHarness(
+                docker_bin=config.docker_bin,
+                image=config.l2_analyzer_image,
+            ),
+            cache_dir=config.l2_cache_dir,
+            audit_journal=L2AuditJournal(
+                config.l2_audit_journal_file,
+                retention_days=config.l2_audit_retention_days,
+            ),
+            timeout_seconds=config.l2_timeout_seconds,
+            max_steps=config.l2_max_steps,
+            max_input_tokens=config.l2_max_input_tokens,
+            max_output_tokens=config.l2_max_output_tokens,
+            max_completion_tokens=config.l2_max_completion_tokens,
+            max_cost_usd=config.l2_max_cost_usd,
+            analyst_reasoning_effort=config.l2_analyst_reasoning_effort,
+            critic_reasoning_effort=config.l2_critic_reasoning_effort,
+            cache_ttl_seconds=config.l2_cache_ttl_seconds,
+            model=config.l2_review_model,
+            fallback_models=config.l2_fallback_models,
+            critic_model=config.l3_review_model,
+            critic_provider=config.l3_review_provider,
+        )
+        self._source_reviewer = LayeredSourceReviewAgent(
+            l1=l1_reviewer,
+            l2=l2_reviewer,
+            mode=config.l2_review_mode,
         )
 
     async def screen(
@@ -501,43 +538,64 @@ class BuildGate:
                 )
             source_digest, source_paths = self._source_metadata(tmp_path)
 
-            # Decisive static rules run before any submission-controlled
-            # Dockerfile or image. They use bounded, read-only archive access
-            # and emit only path/line/category evidence.
+            # Static rules run before any submission-controlled Dockerfile or
+            # image, but they are routing leads rather than proof. Resolve an
+            # elevated lead with the inert L2/L3 harness before deciding
+            # whether untrusted build execution may start.
             preflight = TarSourceRepository(tmp_path).malicious_preflight(
                 artifact_sha256=sha256.lower()
             )
+            preflight_clearance: SourceReviewObservation | None = None
             if preflight is not None:
-                logger.error(
-                    "malicious-source quarantine agent_id=%s attempt_id=%s "
+                logger.warning(
+                    "static-source review lead agent_id=%s attempt_id=%s "
                     "categories=%s execution_started=false",
                     agent_id,
                     attempt_id,
                     ",".join(preflight.categories),
                 )
-                decision = self._policy.malicious_preflight_decision(preflight)
-
-                async def unreachable_challenge(
-                    _challenge_id: str,
-                    _request: Mapping[str, object],
-                    _timeout: float,
-                ) -> ChallengeObservation:
-                    raise RuntimeError("static preflight never starts a challenge")
-
-                context = PolicyContext(
-                    agent_id=agent_id,
-                    attempt_id=attempt_id,
-                    miner_hotkey=miner_hotkey,
+                resolved_preflight = await self._source_reviewer.resolve_lead(
+                    tmp_path,
                     artifact_sha256=sha256.lower(),
-                    source_digest=source_digest,
-                    source_paths=source_paths,
-                    build_elapsed_ms=0,
-                    health_elapsed_ms=0,
-                    run_challenge=unreachable_challenge,
-                    review_source=None,
+                    attempt_id=attempt_id,
+                    l1_observation=preflight,
+                    progress=(
+                        lambda completed, total: report(
+                            source_review_progress_stage(completed, total)
+                        )
+                    ),
+                    deadline=deadline,
                 )
-                self._journal.record(context=context, decision=decision)
-                return decision
+                if resolved_preflight.ok and resolved_preflight.risk_level == "low":
+                    preflight_clearance = resolved_preflight
+                else:
+                    decision = self._policy.preexecution_source_decision(
+                        resolved_preflight
+                    )
+
+                    async def unreachable_challenge(
+                        _challenge_id: str,
+                        _request: Mapping[str, object],
+                        _timeout: float,
+                    ) -> ChallengeObservation:
+                        raise RuntimeError(
+                            "unresolved pre-execution review never starts a challenge"
+                        )
+
+                    context = PolicyContext(
+                        agent_id=agent_id,
+                        attempt_id=attempt_id,
+                        miner_hotkey=miner_hotkey,
+                        artifact_sha256=sha256.lower(),
+                        source_digest=source_digest,
+                        source_paths=source_paths,
+                        build_elapsed_ms=0,
+                        health_elapsed_ms=0,
+                        run_challenge=unreachable_challenge,
+                        review_source=None,
+                    )
+                    self._journal.record(context=context, decision=decision)
+                    return decision
 
             # The agentic source review reads only the validated tarball, so
             # it can run CONCURRENTLY with the docker build + serve + oracle
@@ -552,14 +610,23 @@ class BuildGate:
                 if in_policy_phase:
                     report(source_review_progress_stage(completed, total))
 
-            review_task = asyncio.create_task(
-                self._source_reviewer.review(
-                    tmp_path,
-                    artifact_sha256=sha256.lower(),
-                    progress=report_review_progress,
-                    deadline=deadline,
+            if preflight_clearance is None:
+                review_task = asyncio.create_task(
+                    self._source_reviewer.review(
+                        tmp_path,
+                        artifact_sha256=sha256.lower(),
+                        attempt_id=attempt_id,
+                        progress=report_review_progress,
+                        deadline=deadline,
+                    )
                 )
-            )
+            else:
+
+                async def cleared_preflight() -> SourceReviewObservation:
+                    assert preflight_clearance is not None
+                    return preflight_clearance
+
+                review_task = asyncio.create_task(cleared_preflight())
 
             report("building")
             if (exhausted := self._lease_exhausted(deadline, "build")) is not None:

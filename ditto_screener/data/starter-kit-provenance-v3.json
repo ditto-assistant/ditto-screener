@@ -4,12 +4,12 @@
     ".github/workflows/ci.yml": "9e0bc5dffacff0d1c6ce97280dc6db5a773f2ee6be5351269cb3e9c3962407d1",
     ".gitignore": "d3307967ce882d69a636e23783a398eb2800edb861ff363b6cb8259f04b7b8af",
     "BASELINES.md": "76e422500842593c2298bd0e9cf8ef3d7ff0ccc82a2d258f6d56822b98076418",
-    "Cargo.lock": "0531d97c6a4a64dc01db0b755c780050632b29e6e87984e27bc19bfd937b6fe0",
-    "Cargo.toml": "c3ce2b597eecec1a89cacc6023d4d10f989e21ced19209df3f811cbea8dff916",
+    "Cargo.lock": "0522bb2eb17dd4a9dbf86e6101be8a77cede8a71af03fdbff7d0133a7837a969",
+    "Cargo.toml": "39963a90422a834a976d240c33260bca5a04090d38f80d0d62e7902698d86dfa",
     "Dockerfile": "9445fd237f88b5456cc014a49fcad7637b75c29c7b74890cd18bf1a9fb7471be",
     "LICENSE": "31930afa24e664ca57a2fa3e6ab4cea9307c55a8f9e6c0c9818340ea3181eac1",
-    "PROTOCOL.md": "12f392dacaaf79de2e52af3b905654e5eb20d101398a6d74eb0c3f754e31c961",
-    "README.md": "67ea5e73ffc6082c238b0ac06fbd78c5dc214ab3aad02f5e0f7180b50212616a",
+    "PROTOCOL.md": "483ed5956ad9fad348e88578b9615284e0439d96019ff6c1a07aae8b05127862",
+    "README.md": "97d2b4bf5e4f7c0440fab122a733e06ef2ee28f2e1cb3dcd40bd3e285601e653",
     "SETUP.md": "1f8e1961ad1e48578101a3fad644facaa43cdc5c96a42f5337486c73b5a794f2",
     "fixtures/models/README.md": "193c8621bfe782733a4a4c0ff2ad37d98179c3ef5186348107cfa71dc3226a32",
     "fixtures/models/cross-encoder-vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
@@ -22,7 +22,7 @@
     "fixtures/seed-user/subject_links.json": "91b826124e7b93055afa3bc4f2317bcdc8326cdcaeb368267b76ca5b13befd22",
     "fixtures/seed-user/subjects.json": "12881b1f26c348d9b9ceaadbddf1c477309b8390dae62b51c1fe4fe5b4cb6f36",
     "scripts/build-seed-user.py": "8c6da852ecca97247beb73309713a5815a1cd835b6e0ae1cc011437e52eac303",
-    "src/baseline.rs": "5b74e6ef41d41363d306ebd4e823a18c20a6f83c02c8d2abf8df52034a37efb1",
+    "src/baseline.rs": "176fefd3d23a23137697d2a535c5f68ddde647b81568287e901fda6c5729dc0a",
     "src/bin/dittobench-miner.rs": "3200bbd0e3ca3ca59f8c2210ef601fbf9535cc200d0e855e7b046f6340337be6",
     "src/catalog.rs": "f0240da1795c4a67ba91c36758d90f0e2465db89cf4a2b8e7ba3670155b4de85",
     "src/datagen.rs": "7873a2a963db36023a3ee6c708b9862a42e4ccdd501443d964d3a96cdaa7bff7",
@@ -34,14 +34,20 @@
     "src/playground/prompt.rs": "131ae6368f30c1729528a48c1aa5447aa652303354c922e36d3786cf1eb30204",
     "src/playground/submit.rs": "4dce2e8ee99ef3215ddff05e3e6cb07e5af253dc3cdde237dfd3dcfa19fde0fc",
     "src/playground/tools.rs": "978fb2a12c68ca2eda85e72ff9cbf75034b56df8ef9bb400042c727b12820312",
-    "src/protocol.rs": "2a9b80fdf638e798c9891e5f1b00d2614133abe65b9484f70967522123013cc3",
+    "src/protocol.rs": "2c6e602c030b27d563215f59ebe898f7396c31d16df6df0f6ee7ae5d00ba2ed2",
     "src/reranker.rs": "b1986d5a03a00075a4f08d31b4fa10a752d57fc0c747858309285d957737403b",
     "src/scorer.rs": "6643d63c7f77583a6e69e4a40c2cd01a61762ed329444dfe30158a404c1a3199",
     "src/seed.rs": "a3e558fa29ef3d91ff5f33c3cf48947f2fa82e577b47aa6135e2cebf29567c12"
   },
   "origin": "ditto-assistant/dittobench-starter-kit",
-  "revision": "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
+  "revision": "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
   "rust_functions": [
+    {
+      "name": "answer_preflight",
+      "ordinal": 0,
+      "path": "src/baseline.rs",
+      "sha256": "d9069a57aded5e118ebc6d3da79a2426d51ab14e35d5dac08d1fdaf02f3f4086"
+    },
     {
       "name": "build_embedder",
       "ordinal": 0,
@@ -65,6 +71,12 @@
       "ordinal": 0,
       "path": "src/baseline.rs",
       "sha256": "a9fc0c68a3276157ae71c41c235e130359f52aae1e6a67832391164240c1209b"
+    },
+    {
+      "name": "capture_call",
+      "ordinal": 0,
+      "path": "src/baseline.rs",
+      "sha256": "1e41eb9ff1c1f86426ebb585f9aeac5771cd717ef551264d4a5269b4b7e236ab"
     },
     {
       "name": "definition",
@@ -121,6 +133,18 @@
       "sha256": "210a46be1f8908ac3588b6ce7159aa1432d9472e2496181614f55e4ab9973790"
     },
     {
+      "name": "preflight_does_not_claim_a_rejected_call",
+      "ordinal": 0,
+      "path": "src/baseline.rs",
+      "sha256": "bf2ce4cf9dad2e31286a77991df8588ecc9f5e7e57570ecec12448dd227628d2"
+    },
+    {
+      "name": "preflight_posts_the_required_observed_call",
+      "ordinal": 0,
+      "path": "src/baseline.rs",
+      "sha256": "5b6412bb27477fa8a7cd11c937bfc9f953c36e2b2f891ee8a178c746ec371416"
+    },
+    {
       "name": "retrieve",
       "ordinal": 0,
       "path": "src/baseline.rs",
@@ -136,13 +160,19 @@
       "name": "run",
       "ordinal": 0,
       "path": "src/baseline.rs",
-      "sha256": "945a8405c71e85ad2a1acc28d776e1c55005dacaade3e16cc7a80a2a214946da"
+      "sha256": "c2668d41f993a5ad70308c1f97f7f28432fe6a3e6dc6eaf9a8a88e60366a71e4"
     },
     {
       "name": "seed_memory",
       "ordinal": 0,
       "path": "src/baseline.rs",
       "sha256": "843b39555c1d4735f3a66983ee8e2df3e697d8de49267769d57578126bde486c"
+    },
+    {
+      "name": "serve",
+      "ordinal": 0,
+      "path": "src/baseline.rs",
+      "sha256": "3f71bc20a411d251e1a7946cdc6d76217afcff35b5e17f0842eb22714e9d640b"
     },
     {
       "name": "store",

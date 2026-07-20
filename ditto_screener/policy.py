@@ -189,6 +189,7 @@ class SourceReviewObservation:
     categories: tuple[str, ...]
     error_code: str | None = None
     finding: Mapping[str, object] | None = None
+    failure_disposition: str = "retryable_infra"
 
 
 ChallengeRunner = Callable[
@@ -269,6 +270,13 @@ DEFAULT_V8_MANIFEST = PolicyManifest(
     rotation_id="v8-luna-source-review-behavioral-oracle",
     module_specs=(
         {"kind": "agentic_source_review", "id": "luna-source-review"},
+        {"kind": "behavioral_oracle", "id": "v8-behavioral-oracle"},
+    ),
+)
+DEFAULT_L2_MANIFEST = PolicyManifest(
+    rotation_id="v8-luna-sol-l2-source-review-behavioral-oracle",
+    module_specs=(
+        {"kind": "agentic_source_review", "id": "luna-sol-source-review"},
         {"kind": "behavioral_oracle", "id": "v8-behavioral-oracle"},
     ),
 )
@@ -482,8 +490,13 @@ class AgenticSourceReviewModule(_BaseModule):
             )
         observation = await context.review_source()
         if not observation.ok:
+            disposition = (
+                ModuleDisposition.INCONCLUSIVE
+                if observation.failure_disposition == "inconclusive"
+                else ModuleDisposition.RETRYABLE_INFRA
+            )
             return ModuleResult(
-                ModuleDisposition.RETRYABLE_INFRA,
+                disposition,
                 (
                     PolicyEvidence(
                         self.module_id,
@@ -955,15 +968,44 @@ class PolicyEngine:
     def malicious_preflight_decision(
         self, observation: SourceReviewObservation
     ) -> ScreeningDecision:
-        """Quarantine a decisive static finding before build or runtime."""
+        """Compatibility entrypoint for a high-risk pre-execution lead."""
         if not observation.ok or observation.risk_level != "high":
             raise ValueError("malicious preflight requires a high-risk finding")
+        return self.preexecution_source_decision(observation)
+
+    def preexecution_source_decision(
+        self, observation: SourceReviewObservation
+    ) -> ScreeningDecision:
+        """Fail closed on an unresolved pre-execution lead without rejecting it."""
+        if not observation.ok:
+            retryable = observation.failure_disposition == "retryable_infra"
+            return self._decision(
+                (
+                    ScreeningOutcome.RETRYABLE_INFRA
+                    if retryable
+                    else ScreeningOutcome.INCONCLUSIVE
+                ),
+                (
+                    PolicyEvidence(
+                        "agentic-preexecution-review",
+                        observation.error_code or "source-review-inconclusive",
+                        (
+                            "private source review infrastructure was unavailable"
+                            if retryable
+                            else "private source review could not resolve the lead"
+                        ),
+                    ),
+                ),
+                observation.finding,
+            )
+        if observation.risk_level not in {"medium", "high"}:
+            raise ValueError("pre-execution source decision requires elevated risk")
         code, summary = _source_review_reason(observation.categories)
         return self._decision(
             ScreeningOutcome.QUARANTINE,
             (
                 PolicyEvidence(
-                    "static-malicious-preflight",
+                    "agentic-preexecution-review",
                     code,
                     summary,
                     observation.finding_digest,
@@ -973,13 +1015,22 @@ class PolicyEngine:
         )
 
 
-def load_policy_engine(manifest_path: str | None) -> PolicyEngine:
+def load_policy_engine(
+    manifest_path: str | None, *, l2_mode: str = "off"
+) -> PolicyEngine:
     """Load a strict private manifest, or production v8 Luna source review."""
     if manifest_path is None:
+        manifest = DEFAULT_L2_MANIFEST if l2_mode == "enforce" else DEFAULT_V8_MANIFEST
         return PolicyEngine(
-            DEFAULT_V8_MANIFEST,
+            manifest,
             (
-                AgenticSourceReviewModule(module_id="luna-source-review"),
+                AgenticSourceReviewModule(
+                    module_id=(
+                        "luna-sol-source-review"
+                        if l2_mode == "enforce"
+                        else "luna-source-review"
+                    )
+                ),
                 BehavioralOracleModule(module_id="v8-behavioral-oracle"),
             ),
         )
@@ -1004,6 +1055,9 @@ def load_policy_engine(manifest_path: str | None) -> PolicyEngine:
         normalized_spec = _normalize_spec(spec)
         normalized.append(normalized_spec)
         modules.append(_build_module(normalized_spec))
+    if l2_mode == "enforce":
+        suffix = "-sol-l2-v1"
+        rotation_id = f"{rotation_id[: _MAX_ID - len(suffix)]}{suffix}"
     manifest = PolicyManifest(rotation_id=rotation_id, module_specs=tuple(normalized))
     return PolicyEngine(manifest, modules)
 

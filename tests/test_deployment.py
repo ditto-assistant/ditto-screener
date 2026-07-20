@@ -28,6 +28,13 @@ def test_deploy_workflow_fans_out_over_the_fleet_in_parallel() -> None:
     assert "SCREENER_EXPECTED_SHA=${{ github.sha }}" in workflow
 
 
+def test_core_e2e_runs_the_l2_sandbox_integration() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+    assert "tests/test_gate_docker_integration.py" in workflow
+    assert "tests/test_l2_review.py" in workflow
+
+
 def test_release_commit_triggers_deploy_without_recursive_release() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text()
     deploy_workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
@@ -219,6 +226,23 @@ def test_updater_installs_and_rolls_back_the_repository_owned_unit() -> None:
     assert "SCREENER_SOURCE_REVIEW_API_KEY_FILE" in updater
     assert "required_policy_version" in updater
     assert "SCREENING_POLICY_VERSION" in updater
+
+
+def test_updater_builds_the_trusted_l2_analyzer_only_when_enabled() -> None:
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+    dockerfile = (ROOT / "deploy" / "l2-analyzer.Dockerfile").read_text()
+
+    assert "ensure_l2_analyzer" in updater
+    assert 'mode" == "shadow" || "$mode" == "enforce"' in updater
+    assert "ai.heyditto.screener.sha=$sha" in updater
+    assert 'ensure_l2_analyzer "$current_sha"' in updater
+    assert '"$l2_analyzer_image" build_structure' in updater
+    assert "--network none --read-only --cap-drop ALL" in updater
+    assert "deployed-l2-mode" in updater
+    assert 'deployed_l2_mode" == "$requested_l2_mode' in updater
+    assert 'record_l2_mode "$requested_l2_mode"' in updater
+    assert "USER 65532:65532" in dockerfile
+    assert "ENTRYPOINT" in dockerfile
 
 
 def test_updater_drops_the_stale_pre_extraction_namespace() -> None:

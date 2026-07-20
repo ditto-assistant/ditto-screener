@@ -18,6 +18,7 @@ import httpx
 from ditto_screener.config import parse_screener_config_from_env
 from ditto_screener.gate import BuildGate
 from ditto_screener.heartbeat import SystemMetricsCollector
+from ditto_screener.l2_review import L2_HARNESS_REVISION, L2_PROMPT_REVISION
 from ditto_screener.platform import PlatformClient
 from ditto_screener.policy import ReviewJournal, load_policy_engine
 from ditto_screener.readiness import ReadinessServer
@@ -68,13 +69,35 @@ async def _amain() -> int:
 
     async with httpx.AsyncClient(timeout=config.http_timeout_seconds) as http:
         platform = PlatformClient(config, http)
-        policy = load_policy_engine(config.policy_manifest_file)
+        policy = load_policy_engine(
+            config.policy_manifest_file, l2_mode=config.l2_review_mode
+        )
         journal = ReviewJournal(config.review_journal_file)
         logger.info(
             "screening policy loaded version=%d rotation=%s manifest_digest=%s",
             policy.manifest.policy_version,
             policy.manifest.rotation_id,
             policy.manifest.digest,
+        )
+        logger.info(
+            "source review L2 mode=%s model=%s fallbacks=%s L3_model=%s "
+            "L3_provider=%s prompt=%s harness=%s "
+            "steps=%d input_tokens=%d output_tokens=%d cost_usd=%.2f timeout_s=%.0f "
+            "analyst_reasoning=%s critic_reasoning=%s",
+            config.l2_review_mode,
+            config.l2_review_model,
+            ",".join(config.l2_fallback_models),
+            config.l3_review_model,
+            config.l3_review_provider,
+            L2_PROMPT_REVISION,
+            L2_HARNESS_REVISION,
+            config.l2_max_steps,
+            config.l2_max_input_tokens,
+            config.l2_max_output_tokens,
+            config.l2_max_cost_usd,
+            config.l2_timeout_seconds,
+            config.l2_analyst_reasoning_effort,
+            config.l2_critic_reasoning_effort,
         )
         gate = BuildGate(config, http, policy=policy, journal=journal)
         worker = ScreenerWorker(

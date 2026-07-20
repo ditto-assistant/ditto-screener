@@ -221,6 +221,22 @@ _GENERATOR_MIRRORING_SOURCE_SUFFIXES = frozenset(
 _GENERATOR_MIRRORING_EXCLUDED_PARTS = frozenset(
     {".github", "docs", "examples", "fixtures", "target", "test", "tests", "vendor"}
 )
+_REVIEW_ADAPTATION_REVIEW = re.compile(
+    r"\b(?:screener|quarantin(?:e|ed)|review(?:er)?|audit|canary|oracle|grader|scorer)\b",
+    re.IGNORECASE,
+)
+_REVIEW_ADAPTATION_PROBE = re.compile(
+    r"\b(?:nonce|second[-_ ]?(?:model[-_ ]?)?call|two[-_ ]?(?:model[-_ ]?)?calls|"
+    r"call[-_ ]?count|single[-_ ]?call|no[-_ ]?seed|without[-_ ]?(?:a[-_ ]?)?seed|"
+    r"empty[-_ ]?(?:memory|context|transcript))\b",
+    re.IGNORECASE,
+)
+_REVIEW_ADAPTATION_MODEL_EFFECT = re.compile(
+    r"(?:\bchat\s*\(|\b(?:call|invoke|run)[-_ ]?model\s*\(|"
+    r"\b(?:completion|responses?|inference)\s*\()",
+    re.IGNORECASE,
+)
+_REVIEW_ADAPTATION_WINDOW_LINES = 24
 
 
 def _is_generator_runtime_source(path: str) -> bool:
@@ -544,10 +560,85 @@ class TarSourceRepository:
         return {
             "items": find_source_review_leads(readable),
             "generator_mirroring": self._generator_mirroring_analysis(readable),
+            "review_adaptive_model_routing": (
+                self._review_adaptive_model_routing_analysis(readable)
+            ),
             "files_scanned": files_scanned,
             "members_considered": members_considered,
             "bytes_scanned": bytes_scanned,
             "truncated": truncated,
+        }
+
+    @staticmethod
+    def _review_adaptive_model_routing_analysis(
+        readable: list[tuple[str, str]],
+    ) -> dict[str, object]:
+        """Locate self-attested model routing built for a review probe.
+
+        A review term alone is ordinary documentation, and a retrying model loop
+        alone is ordinary reliability work. This lead requires a runtime-source
+        comment that jointly describes the review channel and a probe shape,
+        plus a nearby executable model call. It remains a quarantine lead, not a
+        terminal source verdict.
+        """
+        constellations: list[dict[str, object]] = []
+        for path, text in readable:
+            if not _is_generator_runtime_source(path):
+                continue
+            lines = text.splitlines()
+            review_lines: list[int] = []
+            probe_lines: list[int] = []
+            model_lines: list[int] = []
+            for line_number, line in enumerate(lines, 1):
+                stripped = line.lstrip()
+                is_comment = stripped.startswith(("#", "//", "/*", "*"))
+                if is_comment and _REVIEW_ADAPTATION_REVIEW.search(line):
+                    review_lines.append(line_number)
+                if is_comment and _REVIEW_ADAPTATION_PROBE.search(line):
+                    probe_lines.append(line_number)
+                if not is_comment and _REVIEW_ADAPTATION_MODEL_EFFECT.search(line):
+                    model_lines.append(line_number)
+            for review_line in review_lines:
+                probe_line = min(
+                    probe_lines,
+                    key=lambda value: (abs(value - review_line), value),
+                    default=None,
+                )
+                model_line = min(
+                    model_lines,
+                    key=lambda value: (abs(value - review_line), value),
+                    default=None,
+                )
+                if probe_line is None or model_line is None:
+                    continue
+                if max(abs(probe_line - review_line), abs(model_line - review_line)) > (
+                    _REVIEW_ADAPTATION_WINDOW_LINES
+                ):
+                    continue
+                constellations.append(
+                    {
+                        "locations": [
+                            {
+                                "path": path,
+                                "line": review_line,
+                                "role": "review_channel",
+                            },
+                            {"path": path, "line": probe_line, "role": "probe_shape"},
+                            {"path": path, "line": model_line, "role": "model_effect"},
+                        ]
+                    }
+                )
+                break
+            if len(constellations) >= 8:
+                break
+        return {
+            "candidate": bool(constellations),
+            "constellations": constellations,
+            "disposition": (
+                "requires-runtime-causal-review"
+                if constellations
+                else "no-review-adaptation-candidate"
+            ),
         }
 
     def malicious_preflight(
@@ -637,11 +728,31 @@ class TarSourceRepository:
         hits: dict[str, dict[str, tuple[str, int]]] = {
             dimension: {} for dimension in _GENERATOR_MIRRORING_PATTERNS
         }
+        path_hits: dict[str, dict[str, dict[str, int]]] = {}
+        service_paths: set[str] = set()
         scanned = 0
         for path, text in readable:
             if not _is_generator_runtime_source(path):
                 continue
             scanned += 1
+            folded_text = text.casefold()
+            if (
+                path.endswith(".rs")
+                and re.search(
+                    r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?"
+                    r"(?:async\s+)?fn\s+run\b",
+                    folded_text,
+                )
+                and re.search(
+                    r"(?:model|chat|completion|inference|harness\s*\.\s*run)",
+                    folded_text,
+                )
+                and re.search(
+                    r"(?:final_text|runresponse|\banswer\b|\babstain\b)",
+                    folded_text,
+                )
+            ):
+                service_paths.add(path)
             for line_number, line in enumerate(text.splitlines(), 1):
                 folded = line.casefold()
                 for dimension, (
@@ -650,8 +761,13 @@ class TarSourceRepository:
                 ) in _GENERATOR_MIRRORING_PATTERNS.items():
                     dimension_hits = hits[dimension]
                     for marker, pattern in patterns:
-                        if marker not in dimension_hits and pattern.search(folded):
+                        if not pattern.search(folded):
+                            continue
+                        if marker not in dimension_hits:
                             dimension_hits[marker] = (path, line_number)
+                        path_hits.setdefault(path, {}).setdefault(
+                            dimension, {}
+                        ).setdefault(marker, line_number)
 
         dimensions: dict[str, dict[str, object]] = {}
         matched: list[str] = []
@@ -685,8 +801,41 @@ class TarSourceRepository:
             }.issubset(matched_grammar)
             and "deterministic_answer_path" in matched
         )
+        served_locations: list[dict[str, object]] = []
+        for path in sorted(service_paths):
+            local = path_hits.get(path, {})
+            required = {
+                "question_templates",
+                "retrieval_vocabulary_bridge",
+                "deterministic_answer_path",
+            }
+            if not required <= set(local):
+                continue
+            local_minimums = {
+                "question_templates": 2,
+                "retrieval_vocabulary_bridge": 6,
+                "deterministic_answer_path": 4,
+            }
+            if any(
+                len(local[dimension]) < minimum
+                for dimension, minimum in local_minimums.items()
+            ):
+                continue
+            for dimension in sorted(required):
+                marker_lines = local[dimension]
+                if marker_lines:
+                    served_locations.append(
+                        {
+                            "path": path,
+                            "line": min(marker_lines.values()),
+                            "dimension": dimension,
+                        }
+                    )
+        served_candidate = len(served_locations) >= 3
         return {
             "aggregate_candidate": aggregate_candidate,
+            "served_runtime_candidate": served_candidate,
+            "served_runtime_locations": served_locations[:8],
             "matched_dimensions": matched,
             "dimensions": dimensions,
             "scanned_runtime_source_files": scanned,
@@ -858,6 +1007,12 @@ class TarSourceRepository:
             while chunk := extracted.read(1024 * 1024):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def member_sha256(self, path: str) -> str:
+        """Return the digest of one validated regular archive member."""
+        if path not in self._members:
+            raise ValueError("source reviewer cited an unknown archive member")
+        return self._member_sha256(path)
 
 
 class OpenRouterSourceReviewAgent:
@@ -1235,18 +1390,24 @@ def _load_provenance_manifest(path: Path) -> dict[str, object]:
     if len(raw) > 128_000:
         raise ValueError("provenance manifest is too large")
     value = json.loads(raw)
-    if not isinstance(value, dict) or set(value) != {
+    if not isinstance(value, dict):
+        raise ValueError("provenance manifest has unexpected fields")
+    version = value.get("version")
+    expected_keys = {
         "version",
         "origin",
         "revision",
         "files",
-    }:
+        *({"rust_functions"} if version == 2 else set()),
+    }
+    if set(value) != expected_keys:
         raise ValueError("provenance manifest has unexpected fields")
-    if value["version"] != 1:
+    if version not in {1, 2}:
         raise ValueError("provenance manifest version is unsupported")
     origin = value["origin"]
     revision = value["revision"]
     files = value["files"]
+    rust_functions = value.get("rust_functions", [])
     if (
         not isinstance(origin, str)
         or not origin
@@ -1254,6 +1415,8 @@ def _load_provenance_manifest(path: Path) -> dict[str, object]:
         or not revision
         or not isinstance(files, dict)
         or len(files) > _MAX_INVENTORY_FILES
+        or not isinstance(rust_functions, list)
+        or len(rust_functions) > 2_048
     ):
         raise ValueError("provenance manifest fields are invalid")
     for item_path, digest in files.items():
@@ -1267,6 +1430,20 @@ def _load_provenance_manifest(path: Path) -> dict[str, object]:
             or set(digest) - set("0123456789abcdef")
         ):
             raise ValueError("provenance manifest file entry is invalid")
+    for item in rust_functions:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"path", "name", "ordinal", "sha256"}
+            or not isinstance(item["path"], str)
+            or not isinstance(item["name"], str)
+            or not isinstance(item["ordinal"], int)
+            or isinstance(item["ordinal"], bool)
+            or item["ordinal"] < 0
+            or not isinstance(item["sha256"], str)
+            or len(item["sha256"]) != 64
+            or set(item["sha256"]) - set("0123456789abcdef")
+        ):
+            raise ValueError("provenance manifest Rust function entry is invalid")
     return value
 
 

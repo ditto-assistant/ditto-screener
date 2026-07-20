@@ -41,12 +41,39 @@ def _default_config(**overrides: Any) -> ScreenerConfig:
         "source_review_base_url": "https://openrouter.ai/api/v1",
         "source_review_timeout_seconds": 180.0,
         "source_review_max_steps": 10,
+        "l2_review_mode": "off",
+        "l2_review_model": "moonshotai/kimi-k3",
+        "l2_review_provider": "openrouter",
+        "l2_fallback_models": ("z-ai/glm-5.2", "openai/gpt-5.6-sol"),
+        "l3_review_model": "openai/gpt-5.6-sol",
+        "l3_review_provider": "openrouter",
+        "l2_analyzer_image": "ditto-screener-l2-analyzer:active",
+        "l2_cache_dir": "/tmp/ditto-screener-test/l2/cache",
+        "l2_audit_journal_file": "/tmp/ditto-screener-test/l2/audit.jsonl",
+        "l2_timeout_seconds": 900.0,
+        "l2_max_steps": 16,
+        "l2_max_input_tokens": 425_000,
+        "l2_max_output_tokens": 20_000,
+        "l2_max_completion_tokens": 2_400,
+        "l2_max_cost_usd": 2.0,
+        "l2_analyst_reasoning_effort": "model_default",
+        "l2_critic_reasoning_effort": "medium",
+        "l2_cache_ttl_seconds": 7 * 86_400.0,
+        "l2_audit_retention_days": 30,
     }
     base.update(overrides)
     return ScreenerConfig(**base)
 
 
 @pytest.fixture
-def make_config() -> Callable[..., ScreenerConfig]:
+def make_config(tmp_path: Any) -> Callable[..., ScreenerConfig]:
     """Factory: a valid :class:`ScreenerConfig` with per-test overrides."""
-    return _default_config
+
+    def factory(**overrides: Any) -> ScreenerConfig:
+        overrides.setdefault("l2_cache_dir", str(tmp_path / "l2" / "cache"))
+        overrides.setdefault(
+            "l2_audit_journal_file", str(tmp_path / "l2" / "audit.jsonl")
+        )
+        return _default_config(**overrides)
+
+    return factory

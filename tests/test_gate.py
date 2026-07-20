@@ -317,8 +317,59 @@ async def test_static_malicious_preflight_quarantines_before_docker(
     assert result.finding is not None
     assert result.finding["prompt_revision"] == "static-malicious-preflight-v1"
     assert "/var/run/docker.sock" not in str(result.finding)
-    assert "malicious-source quarantine" in caplog.text
+    assert "static-source review lead" in caplog.text
     assert "execution_started=false" in caplog.text
+
+
+class _SafeStaticLeadReviewer:
+    def __init__(self) -> None:
+        self.resolve_calls = 0
+        self.l1_calls = 0
+
+    async def resolve_lead(
+        self, *_args: Any, **_kwargs: Any
+    ) -> SourceReviewObservation:
+        self.resolve_calls += 1
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="low",
+            finding_digest="a" * 64,
+            categories=("none",),
+            finding={
+                "prompt_revision": "l3-sol-adversarial-critic-v3",
+                "risk_level": "low",
+                "confidence": 0.99,
+                "categories": ["none"],
+                "evidence": [],
+            },
+        )
+
+    async def review(self, *_args: Any, **_kwargs: Any) -> SourceReviewObservation:
+        self.l1_calls += 1
+        raise AssertionError("a cleared static lead must not rerun L1")
+
+
+async def test_l3_cleared_static_lead_can_continue_to_build(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar(
+        **{
+            "scripts/local-only.sh": (
+                b'path="/var/run/docker.sock"\nconnect_control_socket "$path"\n'
+            )
+        }
+    )
+    calls: list[list[str]] = []
+    reviewer = _SafeStaticLeadReviewer()
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+    gate._source_reviewer = reviewer  # type: ignore[assignment]
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+
+    assert result.outcome == ScreeningOutcome.PASS
+    assert reviewer.resolve_calls == 1
+    assert reviewer.l1_calls == 0
+    assert any(call[0] == "build" for call in calls)
 
 
 async def test_reports_only_coarse_pipeline_stages(

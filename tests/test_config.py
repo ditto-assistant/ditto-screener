@@ -45,6 +45,47 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     # serve smoke.
     assert cfg.smoke_env == (("OPENROUTER_API_KEY", "sk-screener-smoke"),)
     assert cfg.signing_source_present()
+    assert cfg.l2_review_mode == "off"
+    assert cfg.l2_review_model == "moonshotai/kimi-k3"
+    assert cfg.l2_review_provider == "openrouter"
+    assert cfg.l2_fallback_models == ("z-ai/glm-5.2", "openai/gpt-5.6-sol")
+    assert cfg.l3_review_model == "openai/gpt-5.6-sol"
+    assert cfg.l3_review_provider == "openrouter"
+    assert cfg.l2_max_steps == 18
+    assert cfg.l2_timeout_seconds == 900
+    assert cfg.l2_max_input_tokens == 425_000
+    assert cfg.l2_max_output_tokens == 20_000
+    assert cfg.l2_max_cost_usd == 2.0
+    assert cfg.l2_analyst_reasoning_effort == "model_default"
+    assert cfg.l2_critic_reasoning_effort == "medium"
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "match"),
+    [
+        ("SCREENER_L2_REVIEW_MODE", "always", "off, shadow, or enforce"),
+        ("SCREENER_L2_REVIEW_MODEL", "openai/other", "moonshotai/kimi-k3"),
+        ("SCREENER_L2_REVIEW_PROVIDER", "azure", "must be openrouter"),
+        (
+            "SCREENER_L2_FALLBACK_MODELS",
+            "openai/gpt-5.6-luna",
+            "z-ai/glm-5.2,openai/gpt-5.6-sol",
+        ),
+        ("SCREENER_L3_REVIEW_MODEL", "openai/gpt-5.6-terra", "gpt-5.6-sol"),
+        ("SCREENER_L3_REVIEW_PROVIDER", "azure", "must be openrouter"),
+        ("SCREENER_L2_MAX_INPUT_TOKENS", "1000001", "1000000"),
+        ("SCREENER_L2_MAX_COST_USD", "20", r"in \(0, 10\]"),
+        ("SCREENER_L2_ANALYST_REASONING_EFFORT", "high", "model_default"),
+        ("SCREENER_L2_CRITIC_REASONING_EFFORT", "none", "low or medium"),
+    ],
+)
+def test_l2_safety_configuration_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str, match: str
+) -> None:
+    _base_env(monkeypatch)
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ScreenerConfigError, match=match):
+        parse_screener_config_from_env()
 
 
 def test_smoke_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

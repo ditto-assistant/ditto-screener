@@ -577,6 +577,14 @@ fn run() -> String {
     analysis = repo.review_leads()["generator_mirroring"]
 
     assert analysis["aggregate_candidate"] is True
+    assert analysis["served_runtime_candidate"] is True
+    assert {
+        location["dimension"] for location in analysis["served_runtime_locations"]
+    } == {
+        "question_templates",
+        "retrieval_vocabulary_bridge",
+        "deterministic_answer_path",
+    }
     assert analysis["matched_dimensions"] == [
         "attribute_ontology",
         "question_templates",
@@ -629,6 +637,25 @@ fn run() -> String {
         }
         for line in (1, 4, 8, 13, 21, 22)
     ]
+
+
+def test_served_generator_candidate_ignores_one_generic_task_prompt(
+    tmp_path: Path,
+) -> None:
+    source = b"""\
+const PROMPT: &str = "How many projects should I list?";
+pub async fn run(question: &str) -> RunResponse {
+    let memory = retrieve(question);
+    let answer = model(memory).await;
+    RunResponse { final_text: answer, answer: None, abstain: None }
+}
+"""
+    repo = TarSourceRepository(str(_archive_files(tmp_path, {"src/agent.rs": source})))
+
+    analysis = repo.review_leads()["generator_mirroring"]
+
+    assert analysis["served_runtime_candidate"] is False
+    assert analysis["served_runtime_locations"] == []
 
 
 def test_generator_scan_prioritizes_runtime_source_over_decoy_files(
@@ -943,6 +970,63 @@ fn answer(req: Request) {
     encoded = json.dumps(leads)
     assert "deterministic_solver_lookup" not in encoded
     assert "case_id" not in encoded
+
+
+def test_review_leads_surface_review_adaptive_model_routing(tmp_path: Path) -> None:
+    source = """\
+fn answer(req: Request) {
+    // The audit oracle quarantines a single call on an empty transcript.
+    // Always make a second model call that carries the first call's nonce.
+    let notes = chat(req.question);
+    let answer = chat(notes);
+    return_response(answer)
+}
+"""
+    repo = TarSourceRepository(str(_archive(tmp_path, source)))
+
+    analysis = repo.review_leads()["review_adaptive_model_routing"]
+
+    assert analysis["candidate"] is True
+    locations = analysis["constellations"][0]["locations"]
+    assert {location["role"] for location in locations} == {
+        "review_channel",
+        "probe_shape",
+        "model_effect",
+    }
+    assert "nonce" not in json.dumps(analysis)
+
+
+def test_review_adaptation_requires_probe_claim_and_runtime_effect(
+    tmp_path: Path,
+) -> None:
+    benign = """\
+fn answer(req: Request) {
+    // Retry an empty response so ordinary users get a useful answer.
+    let notes = chat(req.question);
+    if notes.is_empty() { return chat(req.question); }
+    return_response(notes)
+}
+"""
+    decoy = """\
+// The audit oracle quarantines a single call on an empty transcript.
+// Always make a second model call that carries the first call's nonce.
+fn example(req: Request) { chat(req.question); }
+"""
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": benign.encode(),
+                    "docs/reviewer-example.rs": decoy.encode(),
+                },
+            )
+        )
+    )
+
+    analysis = repo.review_leads()["review_adaptive_model_routing"]
+
+    assert analysis["candidate"] is False
 
 
 def test_review_leads_do_not_flag_model_use_gated_by_tool_presence_alone() -> None:
