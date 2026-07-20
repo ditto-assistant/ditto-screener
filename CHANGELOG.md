@@ -2,6 +2,82 @@
 
 <!-- version list -->
 
+## v0.13.0 (2026-07-20)
+
+### Bug Fixes
+
+- Adjudicate mixed quarantine causes
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Allow request-local tool memoization
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Budget cached partial reviews ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Harden L2 causal evidence and partial dossiers
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Hold review-adaptive model routing
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Require cross-category scorer clearance
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Validate strict SOL tool contracts live
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+### Continuous Integration
+
+- Validate the shipped v3 starter revision
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+### Documentation
+
+- Explain review-adaptation holds ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Record activated v4 rollout ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Refresh v4 shadow rollout state ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+### Features
+
+- Add agentic Kimi and SOL source review
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Add agentic Kimi/GLM L2 and SOL clearance review
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Expose layered review progress safely
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Support versioned v2 and v3 starter baselines
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+### Testing
+
+- Align live reviewer output budget
+  ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+- Retry fail-safe live reviews ([#34](https://github.com/ditto-assistant/ditto-screener/pull/34),
+  [`5e1f260`](https://github.com/ditto-assistant/ditto-screener/commit/5e1f2604ebf1e3e0189995b7071720f34f8ed5ff))
+
+
 ## v0.12.1 (2026-07-19)
 
 ### Bug Fixes
