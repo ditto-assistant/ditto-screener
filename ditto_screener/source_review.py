@@ -26,7 +26,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v8"
+_PROMPT_REVISION = "source-review-v9"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -289,6 +289,28 @@ result. Strong examples are reachable code that:
   solver (the "model only when watched" bypass); or
 - fingerprints the screening environment to present different behavior during
   audit or evaluation.
+
+DittoBench v3 defines one narrow exception: the required, non-scored tool
+reachability preflight. Do not report case-ID dispatch or a mechanical
+acknowledgement as benchmark emulation only when the source proves every part of
+this exact contract:
+- the case-sensitive incoming case_id starts with the reserved `preflight:`
+  prefix, not a near miss, substring, broader probe predicate, or arbitrary
+  case-ID list;
+- that same request supplies a nonempty tool_endpoint, and the handler POSTs
+  exactly one ToolExecRequest to that exact supplied endpoint rather than a
+  fixed, substituted, local, or no-op destination;
+- the posted body preserves the incoming case_id and request user (or protocol
+  default), uses name `search_web`, JSON-object args, and hop 0;
+- the handler reports the search_web call as observed only after the real
+  endpoint request succeeds, then returns only the protocol acknowledgement
+  without model inference; and
+- the branch ends there and cannot activate for an ordinary scored request.
+This allowance proves transport reachability and cannot improve a score. It
+does not whitelist near-miss prefixes, wrong tools, skipped endpoint execution,
+fixed endpoints, fabricated or prematurely reported observed calls, scored-case
+answers, or preflight logic that leaks into ordinary request handling. Evaluate
+those paths under the ordinary benchmark-emulation and tool-fidelity rules.
 
 Distinguish generic mechanisms from benchmark fingerprints. Generic lexical
 retrieval of a user-owned value is allowed. Recognizing an override,

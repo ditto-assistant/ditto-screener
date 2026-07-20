@@ -81,6 +81,32 @@ abstain fields outside the genuine agent result.
 Public source code or documentation for a benchmark does not make these runtime
 shortcuts acceptable.
 
+### DittoBench v3 reachability preflight
+
+DittoBench v3 reserves one exact, non-scored transport handshake. A `/run`
+request whose case-sensitive `case_id` starts with `preflight:` asks the harness
+to prove that the validator-supplied `tool_endpoint` is reachable from the
+harness network namespace. The handler is required to bypass model inference,
+POST exactly one real `ToolExecRequest` to that request's endpoint, and then
+return the mechanical acknowledgement.
+
+That branch is protocol compliance, not benchmark emulation, only when the
+source proves the complete boundary:
+
+- the exact reserved `preflight:` prefix is checked;
+- the endpoint is the nonempty value supplied on the same request;
+- the posted body preserves the incoming case ID and request user (or protocol
+  default), names `search_web`, carries JSON-object arguments, and uses hop 0;
+- the call is reported as observed only after the endpoint request succeeds;
+- the response is only the required acknowledgement and cannot affect an
+  ordinary scored request.
+
+The exception does not cover near-miss prefixes, substring or general probe
+detection, other tools, fixed or substituted endpoints, a missing endpoint
+request, self-reported calls with no matching execution, scored answers, or a
+preflight branch that leaks into normal case handling. Those remain subject to
+the ordinary benchmark-emulation, scorer-contract, and tool-fidelity rules.
+
 Generator mirroring may be distributed rather than expressed as one obvious
 answer table. Source review therefore surfaces an aggregate routing signal for
 coordinated overlap across attribute ontologies, question templates, fact and
@@ -146,3 +172,17 @@ review, but are not terminal anti-cheat grounds by themselves.
 Every operator action must record a miner-visible reason describing the actual
 evidence. Avoid conclusions based only on labels such as "optimized" or
 "benchmark-aware."
+
+### Historical preflight-only holds
+
+Past quarantines can be selected as *rescreen candidates* without changing
+review state by filtering for source-review findings whose only cited causal
+path is the reserved preflight handler. Re-open the exact digest-bound artifact
+offline and verify every condition above, including the real endpoint POST and
+isolation from ordinary scored requests. Exclude any hold with another category,
+another causal path, ambiguous execution, or missing source evidence.
+
+Do not bulk-release candidates from metadata alone. After the new policy is
+deployed, use the normal guarded rescreen workflow with a fresh identity/status
+check so each artifact receives the current complete review. This PR performs
+no production query, rescreen, release, rejection, or verdict mutation.
