@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.13.1 (2026-07-20)
+
+### Bug Fixes
+
+- Allow required DittoBench preflight
+  ([#37](https://github.com/ditto-assistant/ditto-screener/pull/37),
+  [`7b787a7`](https://github.com/ditto-assistant/ditto-screener/commit/7b787a7bf881fd181c4c9f254e945081e947b05a))
+
+
 ## v0.13.0 (2026-07-20)
 
 ### Bug Fixes
