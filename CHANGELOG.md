@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.13.2 (2026-07-21)
+
+### Bug Fixes
+
+- Allow best-effort preflight posts
+  ([#38](https://github.com/ditto-assistant/ditto-screener/pull/38),
+  [`bdd51cf`](https://github.com/ditto-assistant/ditto-screener/commit/bdd51cfd44526fa69ab424291f3b01baeb40dff1))
+
+
 ## v0.13.1 (2026-07-20)
 
 ### Bug Fixes
