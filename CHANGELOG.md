@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.14.2 (2026-07-21)
+
+### Bug Fixes
+
+- Mask triple-quoted strings in static preflight
+  ([#42](https://github.com/ditto-assistant/ditto-screener/pull/42),
+  [`9795ce7`](https://github.com/ditto-assistant/ditto-screener/commit/9795ce7e3b0038622df2212941bcb41483cf9a5f))
+
+
 ## v0.14.1 (2026-07-21)
 
 ### Bug Fixes
