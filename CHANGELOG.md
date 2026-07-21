@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.14.0 (2026-07-21)
+
+### Bug Fixes
+
+- **gate**: Skip the image-binding advisory on a build-only screen
+  ([#40](https://github.com/ditto-assistant/ditto-screener/pull/40),
+  [`76c9a42`](https://github.com/ditto-assistant/ditto-screener/commit/76c9a42ad958fa6e074215ea833f1486347b44d0))
+
+### Features
+
+- Build-only screening pass for approved-but-unbuilt submissions
+  ([#40](https://github.com/ditto-assistant/ditto-screener/pull/40),
+  [`76c9a42`](https://github.com/ditto-assistant/ditto-screener/commit/76c9a42ad958fa6e074215ea833f1486347b44d0))
+
+
 ## v0.13.2 (2026-07-21)
 
 ### Bug Fixes
