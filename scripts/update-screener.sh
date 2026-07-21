@@ -12,7 +12,7 @@ SCREENER_REPOSITORY_URL="${SCREENER_REPOSITORY_URL:-git@github.com:ditto-assista
 SCREENER_CACHE_GC_INTERVAL_SECONDS="${SCREENER_CACHE_GC_INTERVAL_SECONDS:-3600}"
 SCREENER_CACHE_KEEP_STORAGE="${SCREENER_CACHE_KEEP_STORAGE:-40GB}"
 SCREENER_GCP_PROJECT="${SCREENER_GCP_PROJECT:-ditto-app-dev}"
-SCREENER_SOURCE_REVIEW_SECRET_ID="${SCREENER_SOURCE_REVIEW_SECRET_ID:-validator-openrouter-key}"
+SCREENER_SOURCE_REVIEW_SECRET_ID="${SCREENER_SOURCE_REVIEW_SECRET_ID:-screener-openrouter-key-prod}"
 SCREENER_DNS_PROBE_IMAGE="${SCREENER_DNS_PROBE_IMAGE:-python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df}"
 
 checkout="$SCREENER_ROOT/src"
@@ -224,9 +224,10 @@ l2_mode() {
 }
 
 ensure_l2_analyzer() {
-  local sha="$1" mode current_label
-  mode="$(l2_mode)"
-  [[ "$mode" == "shadow" || "$mode" == "enforce" ]] || return 0
+  local sha="$1" current_label
+  # Platform-managed settings can switch this worker from off to shadow/enforce
+  # between leases. Keep the trusted analyzer ready at the deployed SHA so that
+  # change never depends on a second host deployment or a static env toggle.
   current_label="$(docker image inspect --format \
     '{{index .Config.Labels "ai.heyditto.screener.sha"}}' \
     "$l2_analyzer_image" 2>/dev/null || true)"
