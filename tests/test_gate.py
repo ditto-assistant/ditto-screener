@@ -104,7 +104,7 @@ def _write_iidfile(args: list[str]) -> None:
 
 
 async def _screen(  # type: ignore[no-untyped-def]
-    gate: BuildGate, sha256: str, *, progress=None
+    gate: BuildGate, sha256: str, *, progress=None, build_only=False
 ):
     return await gate.screen(
         agent_id=_AGENT,
@@ -113,6 +113,7 @@ async def _screen(  # type: ignore[no-untyped-def]
         sha256=sha256,
         download_url=_URL,
         progress=progress,
+        build_only=build_only,
     )
 
 
@@ -651,6 +652,35 @@ async def test_prebuilt_binary_entrypoint_is_advisory_quarantine(
         item.code == "image-binding-heuristic" and item.module_id == "stable-core"
         for item in result.evidence
     )
+    assert any(call[0] == "build" for call in calls)
+
+
+async def test_build_only_skips_image_binding_advisory_and_passes(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    """The same prebuilt-entrypoint artifact that routes a FULL screen to an
+    advisory QUARANTINE must PASS on a build-only pass. The image-binding
+    advisory can only escalate to QUARANTINE, which the worker rejects for a
+    build_only item — keeping it would fail submission and loop with no verdict.
+    The submission's anti-cheat review is already adjudicated; build-only just
+    (re)builds the image.
+    """
+    tarball = _valid_tar(
+        Dockerfile=(
+            b"FROM debian:bookworm-slim\n"
+            b"COPY agent /usr/local/bin/agent\n"
+            b'ENTRYPOINT ["/usr/local/bin/agent"]\n'
+        )
+    )
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+    async with gate._client:
+        result = await _screen(
+            gate, hashlib.sha256(tarball).hexdigest(), build_only=True
+        )
+    assert result.outcome == ScreeningOutcome.PASS
+    assert result.submits_verdict
+    # It still builds the image (that is the whole point of a build-only pass).
     assert any(call[0] == "build" for call in calls)
 
 

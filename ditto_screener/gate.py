@@ -762,9 +762,16 @@ class BuildGate:
             if exhausted is not None:
                 return exhausted
             decision = await self._policy.evaluate(context, build_only=build_only)
-            decision = _with_image_binding_advisory(
-                decision, self._image_binding_advisory(tmp_path)
-            )
+            # The image-binding advisory can only escalate a PASS to an
+            # operator-reviewed QUARANTINE. A build-only screen must never
+            # quarantine — the worker rejects that outcome, so it would fail
+            # submission and loop with no verdict — and its anti-cheat review is
+            # already adjudicated. Keep the policy decision as-is; apply the
+            # advisory only on a full screen.
+            if not build_only:
+                decision = _with_image_binding_advisory(
+                    decision, self._image_binding_advisory(tmp_path)
+                )
             self._journal.record(context=context, decision=decision)
             if decision.outcome == ScreeningOutcome.PASS and publish_image is not None:
                 report("submitting")
