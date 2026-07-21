@@ -452,23 +452,39 @@ def _mask_string_literals(text: str) -> str:
     chars = list(text)
     index = 0
     quote: str | None = None
+    quote_width = 0
     escaped = False
     while index < len(chars):
         char = chars[index]
         if quote is None:
             if char in {'"', "'", "`"}:
                 quote = char
-                chars[index] = " "
+                quote_width = (
+                    3 if char != "`" and text[index : index + 3] == char * 3 else 1
+                )
+                for offset in range(quote_width):
+                    chars[index + offset] = " "
+                index += quote_width
+                escaped = False
+                continue
             index += 1
+            continue
+        if quote_width == 3 and text[index : index + 3] == quote * 3:
+            chars[index : index + 3] = [" ", " ", " "]
+            quote = None
+            quote_width = 0
+            escaped = False
+            index += 3
             continue
         if char not in {"\r", "\n"}:
             chars[index] = " "
         if escaped:
             escaped = False
-        elif char == "\\" and quote != "`":
+        elif char == "\\" and quote != "`" and quote_width == 1:
             escaped = True
-        elif char == quote:
+        elif quote_width == 1 and char == quote:
             quote = None
+            quote_width = 0
         index += 1
     return "".join(chars)
 
