@@ -73,6 +73,7 @@ from ditto_screener.l2_review import (
     IsolatedCodingHarness,
     KimiSolSourceReviewAgent,
     L2AuditJournal,
+    L2RunResult,
     LayeredSourceReviewAgent,
 )
 from ditto_screener.policy import (
@@ -485,6 +486,10 @@ class BuildGate:
             runtime.l2_review_model,
         )
         return True
+
+    def pop_shadow_review(self, attempt_id: UUID) -> L2RunResult | None:
+        """Return and remove one attempt's non-authoritative shadow result."""
+        return self._source_reviewer.pop_shadow_result(attempt_id)
 
     async def screen(
         self,

@@ -11,10 +11,13 @@ from uuid import UUID, uuid4
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.errors import PlatformError
 from ditto_screener.gate import BuiltImageArtifact
+from ditto_screener.heartbeat import ReviewSettingsStatus
+from ditto_screener.l2_review import L2RunResult, L2Usage
 from ditto_screener.policy import (
     PolicyEvidence,
     ScreeningDecision,
     ScreeningOutcome,
+    SourceReviewObservation,
     core_decision,
 )
 from ditto_screener.worker import ScreenerWorker
@@ -65,9 +68,14 @@ class _FakeGate:
         self.calls: list[UUID] = []
         self.deadlines: list[float | None] = []
         self.build_only_calls: list[bool] = []
+        self.shadow_result: Any = None
 
     def apply_review_settings(self, _settings: Any) -> bool:
         return False
+
+    def pop_shadow_review(self, _attempt_id: UUID) -> Any:
+        result, self.shadow_result = self.shadow_result, None
+        return result
 
     async def screen(
         self,
@@ -108,6 +116,7 @@ class _FakePlatform:
         self.image_uploads: list[dict[str, Any]] = []
         self.review_settings_source = "bootstrap"
         self.review_settings: Any = None
+        self.shadow_reviews: list[dict[str, Any]] = []
 
     async def upload_screened_image(self, agent_id: UUID, **metadata: Any) -> UUID:
         self.image_uploads.append({"agent_id": agent_id, **metadata})
@@ -117,6 +126,12 @@ class _FakePlatform:
         if self.heartbeat_error is not None:
             raise self.heartbeat_error
         self.heartbeats.append(request)
+        return object()
+
+    async def submit_shadow_review(self, agent_id: UUID, request: Any) -> Any:
+        self.shadow_reviews.append(
+            {"agent_id": agent_id, "request": request.model_dump(mode="json")}
+        )
         return object()
 
     async def get_required_policy_version(self) -> int:
@@ -214,6 +229,49 @@ async def test_screen_one_pass_posts_signed_pass_verdict(
     assert platform.heartbeats[0].progress.stage == "preparing"
     assert platform.heartbeats[-1].state == "polling"
     assert platform.heartbeats[-1].progress is None
+
+
+async def test_shadow_review_is_attempt_bound_and_does_not_change_verdict(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    item = _item(uuid4())
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    gate.shadow_result = L2RunResult(
+        observation=SourceReviewObservation(
+            ok=True,
+            risk_level="low",
+            finding_digest="ab" * 32,
+            categories=("none",),
+        ),
+        analyzed_files=(),
+        causal_path=(),
+        tools=(),
+        usage=L2Usage(input_tokens=100, output_tokens=10),
+        cache_hit=False,
+        response_models=("moonshotai/kimi-k3", "openai/gpt-5.6-sol"),
+        resolution_basis="authoritative_model_tool_path",
+        clearance_path="l3_adjudicated_safe",
+        critic_disposition="confirm_safe",
+    )
+    worker = _worker(make_config(l2_review_mode="shadow"), platform, gate)
+    worker._review_settings_status = ReviewSettingsStatus(
+        revision=4,
+        scope="ditto-screener-prod",
+        mode="shadow",
+        checksum="cd" * 32,
+        source="platform",
+    )
+
+    await worker._screen_one(item, policy_version=SCREENING_POLICY_VERSION)
+
+    assert len(platform.shadow_reviews) == 1
+    shadow = platform.shadow_reviews[0]["request"]
+    assert shadow["attempt_id"] == str(item.attempt_id)
+    assert shadow["artifact_sha256"] == item.sha256
+    assert shadow["settings_revision"] == 4
+    assert shadow["disposition"] == "safe"
+    assert len(platform.verdicts) == 1 and platform.verdicts[0]["passed"] is True
 
 
 async def test_build_only_item_passes_build_only_to_gate_and_verdict(

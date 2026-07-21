@@ -19,7 +19,7 @@ import re
 import socket
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ditto_screener import __version__
 from ditto_screener.errors import PlatformError
@@ -31,7 +31,11 @@ from ditto_screener.heartbeat import (
     ScreenerRuntimeState,
 )
 from ditto_screener.policy import ScreeningOutcome, core_decision
-from ditto_screener.review_settings import bootstrap_review_settings
+from ditto_screener.review_settings import (
+    ShadowReviewObservationRequest,
+    ShadowReviewUsage,
+    bootstrap_review_settings,
+)
 from ditto_screener.signing import sign_heartbeat, sign_verdict
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
@@ -47,6 +51,7 @@ if TYPE_CHECKING:
     from ditto_screener.config import ScreenerConfig
     from ditto_screener.gate import BuildGate, BuiltImageArtifact
     from ditto_screener.heartbeat import SystemMetricsCollector
+    from ditto_screener.l2_review import L2RunResult
     from ditto_screener.platform import PlatformClient
 
 logger = logging.getLogger(__name__)
@@ -348,6 +353,14 @@ class ScreenerWorker:
                         # runs the behavioral oracle, and can never quarantine.
                         build_only=item.build_only,
                     )
+            shadow_review = self._gate.pop_shadow_review(attempt_id)
+            if shadow_review is not None:
+                await self._submit_shadow_review(
+                    agent_id=agent_id,
+                    attempt_id=attempt_id,
+                    artifact_sha256=item.sha256.lower(),
+                    result=shadow_review,
+                )
             # INCONCLUSIVE is a NON-verdict by platform contract: the result
             # endpoint rejects a submitted inconclusive outcome and expects the
             # worker to post nothing and let the lease expire as the backoff
@@ -468,6 +481,9 @@ class ScreenerWorker:
             # A late/conflicting verdict (409) or transient error: log + move on.
             logger.warning("verdict for agent_id=%s not applied: %s", agent_id, e)
         finally:
+            # A review can finish before a later build/image step raises. Do not
+            # retain that attempt's private result in the long-lived worker.
+            self._gate.pop_shadow_review(attempt_id)
             heartbeat_stop.set()
             await heartbeat_task
             progress_tasks = tuple(self._progress_heartbeat_tasks)
@@ -479,6 +495,68 @@ class ScreenerWorker:
             self._active_progress_stage = None
             self._job_started_at = None
             await self._report_heartbeat("polling", force=True)
+
+    async def _submit_shadow_review(
+        self,
+        *,
+        agent_id: UUID,
+        attempt_id: UUID,
+        artifact_sha256: str,
+        result: L2RunResult,
+    ) -> None:
+        """Best-effort telemetry that can never change the signed verdict."""
+        settings = self._review_settings_status
+        if settings is None or settings.mode != "shadow" or settings.revision < 1:
+            logger.warning(
+                "discarding shadow result without an applied platform revision"
+            )
+            return
+        observation = result.observation
+        risk_level = cast(
+            Literal["low", "medium", "high"] | None, observation.risk_level
+        )
+        disposition: Literal["safe", "violation", "inconclusive", "retryable_infra"] = (
+            "safe"
+            if observation.ok and observation.risk_level == "low"
+            else "violation"
+            if observation.ok
+            else "inconclusive"
+            if observation.failure_disposition == "inconclusive"
+            else "retryable_infra"
+        )
+        request = ShadowReviewObservationRequest(
+            attempt_id=attempt_id,
+            artifact_sha256=artifact_sha256,
+            settings_revision=settings.revision,
+            settings_scope=settings.scope,
+            settings_checksum=settings.checksum,
+            disposition=disposition,
+            risk_level=risk_level,
+            categories=observation.categories,
+            finding_digest=observation.finding_digest,
+            resolution_basis=result.resolution_basis,
+            clearance_path=result.clearance_path,
+            critic_disposition=result.critic_disposition,
+            adjudicator_disposition=result.adjudicator_disposition,
+            response_models=result.response_models,
+            response_providers=result.response_providers,
+            usage=ShadowReviewUsage(
+                input_tokens=result.usage.input_tokens,
+                output_tokens=result.usage.output_tokens,
+                cached_input_tokens=result.usage.cached_input_tokens,
+                reasoning_tokens=result.usage.reasoning_tokens,
+                estimated_cost_usd=result.usage.estimated_cost_usd,
+                reported_cost_usd=result.usage.reported_cost_usd,
+            ),
+        )
+        try:
+            await self._platform.submit_shadow_review(agent_id, request)
+        except PlatformError as error:
+            logger.warning(
+                "shadow review telemetry was not persisted attempt_id=%s: %s",
+                attempt_id,
+                error,
+            )
 
     async def _sleep_or_stop(self, stop: asyncio.Event, seconds: float) -> None:
         """Sleep up to ``seconds``, waking early if ``stop`` is set."""

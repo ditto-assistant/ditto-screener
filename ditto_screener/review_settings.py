@@ -10,6 +10,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -20,6 +21,56 @@ ReviewModel = Literal[
     "z-ai/glm-5.2",
     "openai/gpt-5.6-sol",
 ]
+
+
+class ShadowReviewUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    input_tokens: Annotated[int, Field(ge=0)]
+    output_tokens: Annotated[int, Field(ge=0)]
+    cached_input_tokens: Annotated[int, Field(ge=0)]
+    reasoning_tokens: Annotated[int, Field(ge=0)]
+    estimated_cost_usd: Annotated[float, Field(ge=0, le=25)]
+    reported_cost_usd: Annotated[float, Field(ge=0, le=25)] | None = None
+
+
+class ShadowReviewObservationRequest(BaseModel):
+    """Bounded non-authoritative telemetry for one active shadow attempt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    attempt_id: UUID
+    artifact_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    settings_revision: Annotated[int, Field(ge=1)]
+    settings_scope: Annotated[str, Field(pattern=r"^(?:\*|[a-zA-Z0-9._-]{1,63})$")]
+    settings_checksum: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    disposition: Literal["safe", "violation", "inconclusive", "retryable_infra"]
+    risk_level: Literal["low", "medium", "high"] | None = None
+    categories: tuple[Annotated[str, Field(max_length=64)], ...] = ()
+    finding_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
+    resolution_basis: Annotated[str, Field(max_length=80)] | None = None
+    clearance_path: Annotated[str, Field(max_length=100)] | None = None
+    critic_disposition: Annotated[str, Field(max_length=80)] | None = None
+    adjudicator_disposition: Annotated[str, Field(max_length=80)] | None = None
+    response_models: tuple[Annotated[str, Field(max_length=100)], ...] = ()
+    response_providers: tuple[Annotated[str, Field(max_length=100)], ...] = ()
+    usage: ShadowReviewUsage
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> ShadowReviewObservationRequest:
+        if len(self.categories) > 8:
+            raise ValueError("shadow review has too many categories")
+        if len(self.response_models) > 8 or len(self.response_providers) > 8:
+            raise ValueError("shadow review has too many provider stages")
+        if self.disposition in {"safe", "violation"} and self.risk_level is None:
+            raise ValueError("decisive shadow review requires a risk level")
+        return self
+
+
+class ShadowReviewObservationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    accepted: bool
 
 
 class ReviewSettings(BaseModel):
@@ -128,20 +179,24 @@ class ReviewSettingsCache:
 
 
 def bootstrap_review_settings(config: ScreenerConfig) -> EffectiveReviewSettings:
-    settings = ReviewSettings(
-        mode=config.l2_review_mode,
-        l2_model=config.l2_review_model,
-        l2_fallback_models=config.l2_fallback_models,
-        l3_model=config.l3_review_model,
-        timeout_seconds=int(config.l2_timeout_seconds),
-        max_steps=config.l2_max_steps,
-        max_input_tokens=config.l2_max_input_tokens,
-        max_output_tokens=config.l2_max_output_tokens,
-        max_completion_tokens=config.l2_max_completion_tokens,
-        max_cost_usd=config.l2_max_cost_usd,
-        critic_reasoning_effort=config.l2_critic_reasoning_effort,
-        cache_ttl_seconds=int(config.l2_cache_ttl_seconds),
-        audit_retention_days=config.l2_audit_retention_days,
+    # Config is env-derived and typed broadly; strict Pydantic validation is the
+    # single boundary that narrows it to the platform settings contract.
+    settings = ReviewSettings.model_validate(
+        {
+            "mode": config.l2_review_mode,
+            "l2_model": config.l2_review_model,
+            "l2_fallback_models": config.l2_fallback_models,
+            "l3_model": config.l3_review_model,
+            "timeout_seconds": int(config.l2_timeout_seconds),
+            "max_steps": config.l2_max_steps,
+            "max_input_tokens": config.l2_max_input_tokens,
+            "max_output_tokens": config.l2_max_output_tokens,
+            "max_completion_tokens": config.l2_max_completion_tokens,
+            "max_cost_usd": config.l2_max_cost_usd,
+            "critic_reasoning_effort": config.l2_critic_reasoning_effort,
+            "cache_ttl_seconds": int(config.l2_cache_ttl_seconds),
+            "audit_retention_days": config.l2_audit_retention_days,
+        }
     )
     payload = json.dumps(
         settings.model_dump(mode="json"), sort_keys=True, separators=(",", ":")

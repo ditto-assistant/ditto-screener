@@ -13,7 +13,7 @@ import contextlib
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import httpx
@@ -26,6 +26,8 @@ from ditto_screener.heartbeat import (
 from ditto_screener.review_settings import (
     EffectiveReviewSettings,
     ReviewSettingsCache,
+    ShadowReviewObservationRequest,
+    ShadowReviewObservationResponse,
     bootstrap_review_settings,
 )
 from ditto_screening_protocol import (
@@ -73,10 +75,12 @@ class PlatformClient:
         )
         self._review_settings: EffectiveReviewSettings | None = None
         self._review_settings_fetched_at = float("-inf")
-        self._review_settings_source = "bootstrap"
+        self._review_settings_source: Literal["platform", "cache", "bootstrap"] = (
+            "bootstrap"
+        )
 
     @property
-    def review_settings_source(self) -> str:
+    def review_settings_source(self) -> Literal["platform", "cache", "bootstrap"]:
         return self._review_settings_source
 
     async def get_review_settings(self, instance_id: str) -> EffectiveReviewSettings:
@@ -150,6 +154,23 @@ class PlatformClient:
                 f"screener heartbeat rejected ({resp.status_code}): {resp.text[:200]}"
             )
         return ScreenerHeartbeatResponse.model_validate(resp.json())
+
+    async def submit_shadow_review(
+        self, agent_id: UUID, request: ShadowReviewObservationRequest
+    ) -> ShadowReviewObservationResponse:
+        """Persist bounded attempt-owned telemetry without changing outcome."""
+        url = f"{self._base}{_PREFIX}/agent/{agent_id}/shadow-review"
+        try:
+            resp = await self._client.post(
+                url, json=request.model_dump(mode="json"), headers=self._headers
+            )
+        except httpx.HTTPError as error:
+            raise PlatformError(f"shadow review submission failed: {error}") from error
+        if resp.status_code != 200:
+            raise PlatformError(
+                f"shadow review rejected ({resp.status_code}): {resp.text[:200]}"
+            )
+        return ShadowReviewObservationResponse.model_validate(resp.json())
 
     async def get_required_policy_version(self) -> int:
         """Read the platform policy without claiming or mutating queue state."""
