@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.14.1 (2026-07-21)
+
+### Bug Fixes
+
+- Ignore inert prompt text in malicious preflight
+  ([#39](https://github.com/ditto-assistant/ditto-screener/pull/39),
+  [`d14a57b`](https://github.com/ditto-assistant/ditto-screener/commit/d14a57bef239bbd185348ae387a86e472085d2d2))
+
+
 ## v0.14.0 (2026-07-21)
 
 ### Bug Fixes
