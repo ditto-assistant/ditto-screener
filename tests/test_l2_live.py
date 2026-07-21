@@ -26,6 +26,8 @@ from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFindi
 
 ROOT = Path(__file__).resolve().parents[1]
 ATTEMPT = UUID("d7a5d43b-0870-41e7-b4b8-e8d45293a337")
+V5_STARTER_SHA = "ae3dd10975cd7c6a7f64cbcb956db0c85a2b2797"
+V6_STARTER_SHA = "b11934ee7687e5dfc0569d9e75c619676b399058"
 
 
 def _tracked_starter_archive(starter: Path, output: Path) -> str:
@@ -68,11 +70,15 @@ async def test_live_l2_analyst_and_sol_critic_clear_canonical_starter(
     max_output_tokens = int(os.environ.get("DITTO_L2_LIVE_MAX_OUTPUT_TOKENS", "20000"))
     max_cost_usd = float(os.environ.get("DITTO_L2_LIVE_MAX_COST_USD", "2.00"))
     starter = Path(starter_raw).resolve()
+    expected_starter_sha = os.environ.get(
+        "DITTO_L2_LIVE_STARTER_SHA", V6_STARTER_SHA
+    )
+    assert expected_starter_sha in {V5_STARTER_SHA, V6_STARTER_SHA}
     assert (
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=starter)
         .decode()
         .strip()
-        == "b11934ee7687e5dfc0569d9e75c619676b399058"
+        == expected_starter_sha
     )
     image = "ditto-screener-l2-analyzer:live"
     build = await asyncio.create_subprocess_exec(
