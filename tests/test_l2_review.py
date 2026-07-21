@@ -79,7 +79,7 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v23"
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v24"
     assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v22"
     assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v5")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
@@ -171,7 +171,7 @@ def test_l1_mechanism_narrowed_away_by_kimi_still_requires_sol() -> None:
 
 
 def test_request_local_identical_tool_memoization_is_not_fabrication() -> None:
-    assert L2_CRITIC_PROMPT_REVISION == "l3-sol-adversarial-critic-v15"
+    assert L2_CRITIC_PROMPT_REVISION == "l3-sol-adversarial-critic-v16"
     assert L2_SAFETY_PROMPT_REVISION == "l3-sol-safety-adjudicator-v19"
     assert "Request-local memoization of an identical invocation" in _SYSTEM_PROMPT
     assert "deduplication is not fabricated telemetry" in _SYSTEM_PROMPT
