@@ -190,6 +190,7 @@ class SourceReviewObservation:
     error_code: str | None = None
     finding: Mapping[str, object] | None = None
     failure_disposition: str = "retryable_infra"
+    clearance_certified: bool = False
 
 
 ChallengeRunner = Callable[

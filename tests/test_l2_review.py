@@ -46,6 +46,7 @@ from ditto_screener.l2_review import (
     _cost,
     _dossier_has_scorer_attention,
     _extract_readonly_workspace,
+    _graph_covers_l1_slice,
     _has_mixed_causal_families,
     _make_writable,
     _needs_violation_adjudication,
@@ -217,7 +218,9 @@ def _tar(tmp_path: Path, source: str) -> tuple[Path, str]:
     return path, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _l1(risk: str = "medium") -> SourceReviewObservation:
+def _l1(
+    risk: str = "medium", *, clearance_certified: bool | None = None
+) -> SourceReviewObservation:
     categories = ("benchmark_emulation",) if risk != "low" else ("none",)
     return SourceReviewObservation(
         ok=True,
@@ -241,6 +244,9 @@ def _l1(risk: str = "medium") -> SourceReviewObservation:
             ),
             "summary": "bounded test routing lead",
         },
+        clearance_certified=(
+            risk == "low" if clearance_certified is None else clearance_certified
+        ),
     )
 
 
@@ -302,6 +308,44 @@ async def test_clean_l1_skips_sol() -> None:
     assert result is l1.result
     assert l1.calls == 1
     assert l2.calls == 0
+
+
+async def test_uncertified_l1_low_escalates_to_l2() -> None:
+    l1 = _FakeL1(_l1("low", clearance_certified=False))
+    l2 = _FakeL2(_model_result(_safe()))
+    layered = LayeredSourceReviewAgent(l1=l1, l2=l2, mode="enforce")  # type: ignore[arg-type]
+
+    result = await layered.review(
+        "unused", artifact_sha256="c" * 64, attempt_id=ATTEMPT
+    )
+
+    assert result.risk_level == "low"
+    assert l2.calls == 1
+
+
+def test_direct_clear_graph_requires_unique_resolved_l1_slice() -> None:
+    graph = {
+        "unresolved": False,
+        "entry_ambiguous": False,
+        "truncated": False,
+        "nodes": [
+            {
+                "id": "src/main.rs::main@1",
+                "path": "src/main.rs",
+                "line": 1,
+                "end_line": 4,
+            }
+        ],
+        "ambiguous_calls": [],
+        "unresolved_calls": [],
+    }
+
+    assert _graph_covers_l1_slice(graph, _l1())
+    graph["ambiguous_calls"] = [{"caller": "src/main.rs::main@1", "target": "dispatch"}]
+    assert not _graph_covers_l1_slice(graph, _l1())
+    graph["ambiguous_calls"] = []
+    graph["entry_ambiguous"] = True
+    assert not _graph_covers_l1_slice(graph, _l1())
 
 
 @pytest.mark.parametrize("risk", ["medium", "high"])
@@ -1649,7 +1693,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     assert journal_path.stat().st_mode & 0o777 == 0o600
 
 
-async def test_served_generator_hold_stops_before_sol_even_when_kimi_says_safe(
+async def test_served_generator_attention_requires_sol_and_can_clear(
     tmp_path: Path,
 ) -> None:
     source = """\
@@ -1687,9 +1731,18 @@ fn run() -> Answer {
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
+        if len(requests) == 3:
+            return _response(
+                [_tool_call("3", "read_file", {"path": "src/main.rs"})],
+                model="openai/gpt-5.6-sol-20260709",
+            )
         return _response(
             [_tool_call("1", "submit_l2_review", safe)],
-            model="moonshotai/kimi-k3-20260715",
+            model=(
+                "moonshotai/kimi-k3-20260715"
+                if len(requests) == 1
+                else "openai/gpt-5.6-sol-20260709"
+            ),
         )
 
     agent = _sol_agent(tmp_path, _FakeHarness(), handler)
@@ -1701,15 +1754,72 @@ fn run() -> Answer {
         deadline=None,
     )
 
-    assert len(requests) == 1
+    assert len(requests) == 4
     assert requests[0]["model"] == L2_MODEL
-    assert result.observation.risk_level == "medium"
-    assert result.clearance_path == "deterministic_served_generator_hold"
-    assert result.critic_disposition == "not_required_static_hold"
-    assert result.response_models == ("moonshotai/kimi-k3-20260715",)
+    assert requests[1]["model"] == "openai/gpt-5.6-sol"
+    assert result.observation.risk_level == "low"
+    assert result.clearance_path == "l3_adjudicated_safe"
+    assert result.critic_disposition == "confirm_safe"
 
 
-async def test_mixed_l1_static_hold_gets_sol_causal_enrichment(
+async def test_defensive_review_comment_is_attention_not_a_static_hold(
+    tmp_path: Path,
+) -> None:
+    source = """\
+fn main() {
+    // Never alter model routing for a screener audit or single-call nonce probe.
+    let answer = chat(request.question);
+    return_response(answer);
+}
+"""
+    archive, artifact_sha = _tar(tmp_path, source)
+    repository = TarSourceRepository(str(archive))
+    assert repository.review_leads()["review_adaptive_model_routing"]["candidate"]
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    safe = _clearance_certificate(
+        {
+            "disposition": "safe",
+            "risk_level": "low",
+            "confidence": 1.0,
+            "resolution_basis": "authoritative_model_tool_path",
+            "categories": ["none"],
+            "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+            "evidence": [],
+            "summary": "sanitized",
+        }
+    )
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 3:
+            return _response(
+                [_tool_call("3", "read_file", {"path": "src/main.rs"})],
+                model="openai/gpt-5.6-sol-20260709",
+            )
+        return _response(
+            [_tool_call(str(len(requests)), "submit_l2_review", safe)],
+            model=(
+                "moonshotai/kimi-k3-20260715"
+                if len(requests) == 1
+                else "openai/gpt-5.6-sol-20260709"
+            ),
+        )
+
+    result = await _sol_agent(tmp_path, _FakeHarness(), handler).review(
+        str(archive),
+        artifact_sha256=artifact_sha,
+        attempt_id=ATTEMPT,
+        l1_observation=_l1(),
+        deadline=None,
+    )
+
+    assert len(requests) == 4
+    assert result.observation.risk_level == "low"
+    assert result.clearance_path == "l3_adjudicated_safe"
+
+
+async def test_mixed_l1_integrity_attention_gets_sol_causal_review(
     tmp_path: Path,
 ) -> None:
     source = """\
@@ -1817,8 +1927,8 @@ fn run() -> Answer {
 
     assert len(requests) == 3
     assert result.resolution_basis == "scorer_field_manipulation"
-    assert result.clearance_path == "l3_adjudicated_violation_cause_tiebreak"
-    assert result.adjudicator_disposition == "resolve_violation_cause_disagreement"
+    assert result.clearance_path == "l3_adjudicated_violation"
+    assert result.adjudicator_disposition == "uphold_violation"
 
 
 async def test_reasoning_only_turn_gets_one_bounded_tool_retry(tmp_path: Path) -> None:

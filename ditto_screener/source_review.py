@@ -12,7 +12,7 @@ import re
 import tarfile
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 import httpx
@@ -31,7 +31,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v10"
+_PROMPT_REVISION = "source-review-v11"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -480,7 +480,10 @@ may use only none or the advisory categories above. Never return none alongside
 another category.
 
 Source-review findings are quarantine triage, never an automatic rejection.
-Before finishing, inspect enough primary files to support the result. Submit
+Before a low-risk result, perform at least two bounded inspection tool calls,
+including a read_file call against runtime source. Inventory or provenance
+metadata alone is not a safety certificate. Before finishing, inspect enough
+primary files to support the result. Submit
 exactly one structured result using submit_review. Keep the summary generic and
 do not reproduce source, prompts, fixtures, secrets, or benchmark cases.
 """
@@ -1514,11 +1517,17 @@ class OpenRouterSourceReviewAgent:
         try:
             api_key = self._read_api_key()
             repository = TarSourceRepository(archive_path)
-            result = await self._run(
+            result, clearance_certified = await self._run(
                 repository, api_key, progress=progress, deadline=deadline
             )
-            return _parse_review(
+            observation = _parse_review(
                 result, artifact_sha256=artifact_sha256, repository=repository
+            )
+            return replace(
+                observation,
+                clearance_certified=(
+                    observation.risk_level != "low" or clearance_certified
+                ),
             )
         except (OSError, ValueError, tarfile.TarError, httpx.HTTPError) as error:
             return SourceReviewObservation(
@@ -1547,7 +1556,7 @@ class OpenRouterSourceReviewAgent:
         *,
         progress: Callable[[int, int], None] | None = None,
         deadline: float | None = None,
-    ) -> object:
+    ) -> tuple[object, bool]:
         messages: list[dict[str, object]] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {
@@ -1561,6 +1570,8 @@ class OpenRouterSourceReviewAgent:
             },
         ]
         delivered = 0
+        inspection_calls = 0
+        runtime_source_read = False
         if progress is not None:
             progress(0, self._max_steps)
         async with httpx.AsyncClient(
@@ -1591,8 +1602,16 @@ class OpenRouterSourceReviewAgent:
                     if name == "submit_review":
                         if progress is not None:
                             progress(_step + 1, self._max_steps)
-                        return arguments
+                        return arguments, (
+                            inspection_calls >= 2 and runtime_source_read
+                        )
                     output = _execute_tool(repository, name, arguments)
+                    inspection_calls += 1
+                    if name == "read_file":
+                        path = arguments.get("path")
+                        runtime_source_read = runtime_source_read or (
+                            isinstance(path, str) and _is_generator_runtime_source(path)
+                        )
                     delivered += len(output)
                     if delivered > _MAX_TOTAL_TOOL_CHARS:
                         raise ValueError("source reviewer exceeded read budget")

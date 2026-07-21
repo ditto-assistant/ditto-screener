@@ -81,7 +81,8 @@ def _transport(final: dict[str, object], seen: list[dict[str, object]]):
                     "read-1",
                     "read_file",
                     {"path": "src/main.rs", "start_line": 1, "end_line": 400},
-                )
+                ),
+                _tool("search-1", "search", {"query": "call_model"}),
             ]
         else:
             tool_calls = [_tool("submit-1", "submit_review", final)]
@@ -628,7 +629,7 @@ fn run() -> String {
     assert observation.risk_level == "high"
     assert observation.categories == ("benchmark_emulation",)
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v10"
+    assert observation.finding["prompt_revision"] == "source-review-v11"
     assert observation.finding["evidence"] == [
         {
             "path": "src/memory_solver.rs",
@@ -1241,6 +1242,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     )
 
     assert observation.ok and observation.risk_level == "low"
+    assert observation.clearance_certified
     assert progress == [(0, 4), (1, 4), (2, 4)]
     assert all(
         tool["function"]["name"]
@@ -1270,7 +1272,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v10"
+    assert observation.finding["prompt_revision"] == "source-review-v11"
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
@@ -1278,6 +1280,45 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     )
     mirroring = initial_inventory["review_leads"]["generator_mirroring"]
     assert mirroring["aggregate_candidate"] is False
+
+
+async def test_first_turn_low_result_is_not_a_clearance_certificate(
+    tmp_path: Path,
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    final = {
+        "risk_level": "low",
+        "confidence": 0.99,
+        "categories": ["none"],
+        "evidence": [],
+        "summary": "Inventory-only result.",
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [_tool("submit-1", "submit_review", final)],
+                        }
+                    }
+                ]
+            },
+        )
+
+    observation = await _agent(key, httpx.MockTransport(handler)).review(
+        str(_archive(tmp_path, "fn main() { call_model(); }")),
+        artifact_sha256=_SHA,
+    )
+
+    assert observation.ok and observation.risk_level == "low"
+    assert not observation.clearance_certified
 
 
 def test_review_leads_surface_compound_behavior_without_source_text() -> None:

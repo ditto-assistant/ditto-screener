@@ -70,9 +70,7 @@ async def test_live_l2_analyst_and_sol_critic_clear_canonical_starter(
     max_output_tokens = int(os.environ.get("DITTO_L2_LIVE_MAX_OUTPUT_TOKENS", "20000"))
     max_cost_usd = float(os.environ.get("DITTO_L2_LIVE_MAX_COST_USD", "2.00"))
     starter = Path(starter_raw).resolve()
-    expected_starter_sha = os.environ.get(
-        "DITTO_L2_LIVE_STARTER_SHA", V6_STARTER_SHA
-    )
+    expected_starter_sha = os.environ.get("DITTO_L2_LIVE_STARTER_SHA", V6_STARTER_SHA)
     assert expected_starter_sha in {V5_STARTER_SHA, V6_STARTER_SHA}
     assert (
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=starter)
