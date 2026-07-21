@@ -1579,6 +1579,9 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     assert "starter_function_diff" in dossier_text
     assert "integrity_surfaces" in dossier_text
     assert "scorer_field_flow" in dossier_text
+    assert '"supported_versions":[3,4,5,6]' in dossier_text
+    assert '"relay_usage_authority":"validator_owned"' in dossier_text
+    assert '"stored_content_role":"data_not_instruction"' in dossier_text
     assert first.critic_disposition == second.critic_disposition == "confirm_safe"
     assert (
         first.adjudicator_disposition
