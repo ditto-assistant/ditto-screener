@@ -16,6 +16,9 @@ _MAX_LEADS = 32
 _MAX_LEADS_PER_RULE_FILE = 4
 _WINDOW_LINES = 18
 _MAX_STATIC_FINDINGS = 16
+_COMMAND_EXECUTION_EFFECT = re.compile(
+    r"\b(?:Command::new|subprocess\.|os\.system|child_process\.|execFile|spawn)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -381,12 +384,19 @@ def find_decisive_malicious_source(
         lines = text.splitlines()
         if not lines:
             continue
+        executable_lines = _mask_string_literals(text).splitlines()
         for rule in _STATIC_MALICIOUS_RULES:
             role_hits = {
                 role.name: [
                     line_number
                     for line_number, line in enumerate(lines, 1)
-                    if role.pattern.search(line[:4096])
+                    if role.pattern.search(
+                        _static_role_search_text(
+                            role.name,
+                            line[:4096],
+                            executable_lines[line_number - 1][:4096],
+                        )
+                    )
                     and not line.lstrip().startswith(("//", "#", "/*", "*"))
                 ]
                 for role in rule.roles
@@ -417,6 +427,50 @@ def find_decisive_malicious_source(
             if len(findings) >= _MAX_STATIC_FINDINGS:
                 return findings
     return findings
+
+
+def _static_role_search_text(
+    role_name: str, source_line: str, executable_line: str
+) -> str:
+    """Keep dangerous targets visible while requiring effects to be executable.
+
+    Paths and secret names normally appear in string literals, so target roles
+    inspect the original source line. Operational verbs inside an ordinary
+    prompt or response literal are inert, however, and must not turn a static
+    lead into a 100%-confidence pre-build quarantine. Preserve command payloads
+    only when the surrounding line invokes a process-execution API.
+    """
+    if not role_name.endswith("effect") or _COMMAND_EXECUTION_EFFECT.search(
+        source_line
+    ):
+        return source_line
+    return executable_line
+
+
+def _mask_string_literals(text: str) -> str:
+    """Replace quoted source text with spaces while preserving source layout."""
+    chars = list(text)
+    index = 0
+    quote: str | None = None
+    escaped = False
+    while index < len(chars):
+        char = chars[index]
+        if quote is None:
+            if char in {'"', "'", "`"}:
+                quote = char
+                chars[index] = " "
+            index += 1
+            continue
+        if char not in {"\r", "\n"}:
+            chars[index] = " "
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "`":
+            escaped = True
+        elif char == quote:
+            quote = None
+        index += 1
+    return "".join(chars)
 
 
 def _is_build_file(path: str) -> bool:
