@@ -66,6 +66,9 @@ class _FakeGate:
         self.deadlines: list[float | None] = []
         self.build_only_calls: list[bool] = []
 
+    def apply_review_settings(self, _settings: Any) -> bool:
+        return False
+
     async def screen(
         self,
         *,
@@ -116,6 +119,9 @@ class _FakePlatform:
 
     async def get_required_policy_version(self) -> int:
         return self.required_policy_version
+
+    async def get_review_settings(self, _instance_id: str):
+        return object()
 
     async def claim_next(self, *, policy_version: int) -> ScreenerQueueResponse:
         self.claim_calls += 1

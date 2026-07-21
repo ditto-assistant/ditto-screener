@@ -226,6 +226,8 @@ class ScreenerWorker:
 
     async def _sweep(self, stop: asyncio.Event) -> int:
         """Lease and screen the next eligible agent; return how many were done."""
+        review_settings = await self._platform.get_review_settings(self._instance_id)
+        self._gate.apply_review_settings(review_settings)
         required_policy = await self._platform.get_required_policy_version()
         if required_policy != SCREENING_POLICY_VERSION:
             raise PlatformError(

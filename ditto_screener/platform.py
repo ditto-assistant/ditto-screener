@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -21,6 +22,11 @@ from ditto_screener.errors import PlatformError
 from ditto_screener.heartbeat import (
     ScreenerHeartbeatRequest,
     ScreenerHeartbeatResponse,
+)
+from ditto_screener.review_settings import (
+    EffectiveReviewSettings,
+    ReviewSettingsCache,
+    bootstrap_review_settings,
 )
 from ditto_screening_protocol import (
     ArtifactResponse,
@@ -62,6 +68,63 @@ class PlatformClient:
             "Authorization": f"Bearer {config.api_token}",
             "X-Screener-Hotkey": config.screener_hotkey,
         }
+        self._review_settings_cache = ReviewSettingsCache(
+            config.review_settings_cache_file
+        )
+        self._review_settings: EffectiveReviewSettings | None = None
+        self._review_settings_fetched_at = float("-inf")
+
+    async def get_review_settings(self, instance_id: str) -> EffectiveReviewSettings:
+        """Fetch settings before a claim, falling back only to bounded valid state."""
+        now = time.monotonic()
+        if (
+            self._review_settings is not None
+            and now - self._review_settings_fetched_at
+            < self._review_settings.max_age_seconds
+        ):
+            return self._review_settings
+        url = f"{self._base}{_PREFIX}/review-settings"
+        try:
+            response = await self._client.get(
+                url, params={"instance_id": instance_id}, headers=self._headers
+            )
+            if response.status_code != 200:
+                raise PlatformError(
+                    "review settings rejected "
+                    f"({response.status_code}): {response.text[:200]}"
+                )
+            effective = EffectiveReviewSettings.model_validate_json(response.text)
+            self._review_settings_cache.store(effective)
+            self._review_settings = effective
+            self._review_settings_fetched_at = now
+            return effective
+        except (httpx.HTTPError, ValueError, OSError, PlatformError) as error:
+            cached = self._review_settings_cache.load()
+            if cached is not None:
+                age = max(0, int(time.time()) - cached.cached_at)
+                if age <= self._config.review_settings_max_stale_seconds:
+                    logger.warning(
+                        "using cached review settings revision=%d age_s=%d: %s",
+                        cached.effective.revision,
+                        age,
+                        error,
+                    )
+                    self._review_settings = cached.effective
+                    self._review_settings_fetched_at = now
+                    return cached.effective
+                if cached.effective.settings.mode == "enforce":
+                    raise PlatformError(
+                        "enforced review settings expired; refusing new claims"
+                    ) from error
+            bootstrap = bootstrap_review_settings(self._config)
+            if bootstrap.settings.mode == "enforce":
+                raise PlatformError(
+                    "platform review settings unavailable in enforce mode"
+                ) from error
+            logger.warning("review settings unavailable; using bootstrap %s", error)
+            self._review_settings = bootstrap
+            self._review_settings_fetched_at = now
+            return bootstrap
 
     async def submit_heartbeat(
         self, request: ScreenerHeartbeatRequest

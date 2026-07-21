@@ -84,6 +84,7 @@ from ditto_screener.policy import (
     ScreeningDecision,
     ScreeningOutcome,
     core_decision,
+    load_policy_engine,
 )
 from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
@@ -93,6 +94,7 @@ from ditto_screener.source_review import (
 
 if TYPE_CHECKING:
     from ditto_screener.config import ScreenerConfig
+    from ditto_screener.review_settings import EffectiveReviewSettings
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +423,10 @@ class BuildGate:
         self._client = client
         self._policy = policy
         self._journal = journal
+        self._review_settings_key: tuple[int, str] | None = None
+        self._configure_source_reviewer(config)
+
+    def _configure_source_reviewer(self, config: ScreenerConfig) -> None:
         l1_reviewer = OpenRouterSourceReviewAgent(
             api_key_file=config.source_review_api_key_file,
             model=config.source_review_model,
@@ -459,6 +465,26 @@ class BuildGate:
             l2=l2_reviewer,
             mode=config.l2_review_mode,
         )
+
+    def apply_review_settings(self, effective: EffectiveReviewSettings) -> bool:
+        """Apply one validated revision between leases; return whether it changed."""
+        key = (effective.revision, effective.checksum)
+        if key == self._review_settings_key:
+            return False
+        runtime = effective.apply_to(self._config)
+        self._policy = load_policy_engine(
+            runtime.policy_manifest_file, l2_mode=runtime.l2_review_mode
+        )
+        self._configure_source_reviewer(runtime)
+        self._review_settings_key = key
+        logger.info(
+            "applied review settings revision=%d scope=%s mode=%s model=%s",
+            effective.revision,
+            effective.scope,
+            runtime.l2_review_mode,
+            runtime.l2_review_model,
+        )
+        return True
 
     async def screen(
         self,

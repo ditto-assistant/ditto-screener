@@ -60,6 +60,8 @@ def _default_config(**overrides: Any) -> ScreenerConfig:
         "l2_critic_reasoning_effort": "medium",
         "l2_cache_ttl_seconds": 7 * 86_400.0,
         "l2_audit_retention_days": 30,
+        "review_settings_cache_file": "/tmp/ditto-screener-test/review-settings.json",
+        "review_settings_max_stale_seconds": 900,
     }
     base.update(overrides)
     return ScreenerConfig(**base)
