@@ -139,3 +139,27 @@ def test_heartbeat_rejects_arbitrary_private_host_fields() -> None:
                 "hostname": "must-not-leave-the-host",
             }
         )
+
+
+def test_v4_requires_bounded_review_settings_status() -> None:
+    payload = {
+        "screener_hotkey": _HOTKEY,
+        "software_version": "0.14.1",
+        "protocol_version": 4,
+        "policy_version": 9,
+        "state": "polling",
+        "instance_id": "ditto-screener-prod",
+        "timestamp": 120,
+        "signature": "ab" * 64,
+        "review_settings": {
+            "revision": 42,
+            "scope": "ditto-screener-prod",
+            "mode": "shadow",
+            "checksum": "cd" * 32,
+            "source": "platform",
+        },
+    }
+    assert ScreenerHeartbeatRequest.model_validate(payload).review_settings is not None
+    del payload["review_settings"]
+    with pytest.raises(ValidationError, match="requires review settings"):
+        ScreenerHeartbeatRequest.model_validate(payload)

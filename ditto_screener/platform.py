@@ -73,6 +73,11 @@ class PlatformClient:
         )
         self._review_settings: EffectiveReviewSettings | None = None
         self._review_settings_fetched_at = float("-inf")
+        self._review_settings_source = "bootstrap"
+
+    @property
+    def review_settings_source(self) -> str:
+        return self._review_settings_source
 
     async def get_review_settings(self, instance_id: str) -> EffectiveReviewSettings:
         """Fetch settings before a claim, falling back only to bounded valid state."""
@@ -96,6 +101,7 @@ class PlatformClient:
             effective = EffectiveReviewSettings.model_validate_json(response.text)
             self._review_settings_cache.store(effective)
             self._review_settings = effective
+            self._review_settings_source = "platform"
             self._review_settings_fetched_at = now
             return effective
         except (httpx.HTTPError, ValueError, OSError, PlatformError) as error:
@@ -110,6 +116,7 @@ class PlatformClient:
                         error,
                     )
                     self._review_settings = cached.effective
+                    self._review_settings_source = "cache"
                     self._review_settings_fetched_at = now
                     return cached.effective
                 if cached.effective.settings.mode == "enforce":
@@ -123,6 +130,7 @@ class PlatformClient:
                 ) from error
             logger.warning("review settings unavailable; using bootstrap %s", error)
             self._review_settings = bootstrap
+            self._review_settings_source = "bootstrap"
             self._review_settings_fetched_at = now
             return bootstrap
 

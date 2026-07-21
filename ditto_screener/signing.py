@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 from ditto_screener.errors import ScreenerConfigError
 from ditto_screener.heartbeat import (
+    ReviewSettingsStatus,
     ScreenerProgress,
     SystemMetrics,
+    review_settings_signing_token,
     screener_progress_signing_token,
     system_metrics_signing_token,
 )
@@ -106,6 +108,7 @@ def heartbeat_signing_message(
     instance_id: str | None = None,
     progress: ScreenerProgress | None = None,
     system_metrics: SystemMetrics | None,
+    review_settings: ReviewSettingsStatus | None = None,
     timestamp: int,
 ) -> bytes:
     """Build the versioned heartbeat payload mirrored by the platform."""
@@ -117,6 +120,19 @@ def heartbeat_signing_message(
             f"{screener_hotkey}:{software_version}:{protocol_version}:{policy_version}:"
             f"{state}:{active_agent_id or ''}:"
             f"{system_metrics_signing_token(system_metrics)}:{timestamp}"
+        ).encode()
+    if protocol_version >= 4:
+        if not instance_id or review_settings is None:
+            raise ValueError(
+                "heartbeat protocol v4 requires instance_id and review settings"
+            )
+        return (
+            "ditto-screener-heartbeat:v4:"
+            f"{screener_hotkey}:{software_version}:{protocol_version}:{policy_version}:"
+            f"{state}:{active_agent_id or ''}:{instance_id}:"
+            f"{screener_progress_signing_token(progress)}:"
+            f"{system_metrics_signing_token(system_metrics)}:"
+            f"{review_settings_signing_token(review_settings)}:{timestamp}"
         ).encode()
     if protocol_version >= 3:
         # v3 adds the per-instance identity so the fleet's shared hotkey no
@@ -153,6 +169,7 @@ def sign_heartbeat(
     instance_id: str | None = None,
     progress: ScreenerProgress | None = None,
     system_metrics: SystemMetrics | None,
+    review_settings: ReviewSettingsStatus | None = None,
     timestamp: int,
 ) -> str:
     message = heartbeat_signing_message(
@@ -165,6 +182,7 @@ def sign_heartbeat(
         instance_id=instance_id,
         progress=progress,
         system_metrics=system_metrics,
+        review_settings=review_settings,
         timestamp=timestamp,
     )
     signature: bytes = keypair.sign(message)

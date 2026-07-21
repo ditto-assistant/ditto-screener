@@ -106,6 +106,8 @@ class _FakePlatform:
         self.heartbeat_error: Exception | None = None
         self.artifact_calls: list[UUID] = []
         self.image_uploads: list[dict[str, Any]] = []
+        self.review_settings_source = "bootstrap"
+        self.review_settings: Any = None
 
     async def upload_screened_image(self, agent_id: UUID, **metadata: Any) -> UUID:
         self.image_uploads.append({"agent_id": agent_id, **metadata})
@@ -121,7 +123,7 @@ class _FakePlatform:
         return self.required_policy_version
 
     async def get_review_settings(self, _instance_id: str):
-        return object()
+        return self.review_settings
 
     async def claim_next(self, *, policy_version: int) -> ScreenerQueueResponse:
         self.claim_calls += 1
@@ -179,6 +181,10 @@ class _FakePlatform:
 
 
 def _worker(cfg: ScreenerConfig, platform, gate) -> ScreenerWorker:  # type: ignore[no-untyped-def]
+    if isinstance(platform, _FakePlatform):
+        from ditto_screener.review_settings import bootstrap_review_settings
+
+        platform.review_settings = bootstrap_review_settings(cfg)
     return ScreenerWorker(
         config=cfg, platform=platform, gate=gate, keypair=_FakeKeypair()
     )

@@ -24,12 +24,14 @@ from typing import TYPE_CHECKING, Any
 from ditto_screener import __version__
 from ditto_screener.errors import PlatformError
 from ditto_screener.heartbeat import (
+    ReviewSettingsStatus,
     ScreenerHeartbeatRequest,
     ScreenerProgress,
     ScreenerProgressStage,
     ScreenerRuntimeState,
 )
 from ditto_screener.policy import ScreeningOutcome, core_decision
+from ditto_screener.review_settings import bootstrap_review_settings
 from ditto_screener.signing import sign_heartbeat, sign_verdict
 from ditto_screening_protocol import (
     SCREENING_POLICY_VERSION,
@@ -51,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 EXACT_CROSS_MINER_DUPLICATE = "exact-cross-miner-duplicate"
 
-_HEARTBEAT_PROTOCOL_VERSION = 3
+_HEARTBEAT_PROTOCOL_VERSION = 4
 
 
 def _resolve_instance_id() -> str:
@@ -99,6 +101,14 @@ class ScreenerWorker:
         self._last_heartbeat_monotonic = float("-inf")
         self._last_heartbeat_state: ScreenerRuntimeState | None = None
         self._progress_heartbeat_tasks: set[asyncio.Task[None]] = set()
+        bootstrap = bootstrap_review_settings(config)
+        self._review_settings_status = ReviewSettingsStatus(
+            revision=bootstrap.revision,
+            scope=bootstrap.scope,
+            mode=bootstrap.settings.mode,
+            checksum=bootstrap.checksum,
+            source="bootstrap",
+        )
 
     def _set_progress(self, stage: ScreenerProgressStage) -> None:
         """Advance public-safe progress without waiting on telemetry I/O."""
@@ -193,6 +203,7 @@ class ScreenerWorker:
                 instance_id=self._instance_id,
                 progress=progress,
                 system_metrics=metrics,
+                review_settings=self._review_settings_status,
                 timestamp=timestamp,
             )
             request = ScreenerHeartbeatRequest(
@@ -205,6 +216,7 @@ class ScreenerWorker:
                 instance_id=self._instance_id,
                 progress=progress,
                 system_metrics=metrics,
+                review_settings=self._review_settings_status,
                 timestamp=timestamp,
                 signature=signature,
             )
@@ -228,6 +240,13 @@ class ScreenerWorker:
         """Lease and screen the next eligible agent; return how many were done."""
         review_settings = await self._platform.get_review_settings(self._instance_id)
         self._gate.apply_review_settings(review_settings)
+        self._review_settings_status = ReviewSettingsStatus(
+            revision=review_settings.revision,
+            scope=review_settings.scope,
+            mode=review_settings.settings.mode,
+            checksum=review_settings.checksum,
+            source=self._platform.review_settings_source,
+        )
         required_policy = await self._platform.get_required_policy_version()
         if required_policy != SCREENING_POLICY_VERSION:
             raise PlatformError(
