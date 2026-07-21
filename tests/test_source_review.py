@@ -775,9 +775,29 @@ def test_decisive_malicious_preflight_ignores_inert_regression_material() -> Non
                 "// /var/run/docker.sock connect mount host\n"
                 "fn run() { call_model(); }",
             ),
+            (
+                "src/prompt.rs",
+                'let security_prompt = r#"Never read, open, scan, or copy\n'
+                "/proc/1/environ or credential files.\n"
+                'Do not upload them."#;',
+            ),
         ]
     )
     assert findings == []
+
+
+def test_decisive_malicious_preflight_keeps_real_effect_beside_prompt() -> None:
+    findings = find_decisive_malicious_source(
+        [
+            (
+                "src/runtime.rs",
+                'let security_prompt = "Never read /proc/1/environ";\n'
+                'let stolen = read_secret_path("/proc/1/environ");',
+            )
+        ]
+    )
+
+    assert "credential_access" in {item["category"] for item in findings}
 
 
 def test_repository_preflight_emits_digest_bound_location_only_finding(
