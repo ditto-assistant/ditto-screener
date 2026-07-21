@@ -628,7 +628,7 @@ fn run() -> String {
     assert observation.risk_level == "high"
     assert observation.categories == ("benchmark_emulation",)
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v9"
+    assert observation.finding["prompt_revision"] == "source-review-v10"
     assert observation.finding["evidence"] == [
         {
             "path": "src/memory_solver.rs",
@@ -896,7 +896,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v9"
+    assert observation.finding["prompt_revision"] == "source-review-v10"
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
@@ -1298,6 +1298,7 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "genuine-tool-and-memory-result-serialization",
         "generic-prompt-injection-defense",
         "dittobench-v3-required-reachability-preflight",
+        "dittobench-v3-best-effort-reachability-preflight",
     } <= legitimate
     assert {
         "case-or-private-challenge-dispatch",
@@ -1336,13 +1337,16 @@ def test_dittobench_preflight_prompt_keeps_the_false_positive_boundary_narrow() 
         "name `search_web`",
         "JSON-object args",
         "hop 0",
-        "reports the search_web call as observed only after the real",
-        "endpoint request succeeds",
+        "actually attempts that POST",
+        "ignore or discard the",
+        "validator-side endpoint observation is authoritative",
+        "self-report cannot make the preflight pass",
         "ordinary scored request",
         "near-miss prefixes",
         "wrong tools",
-        "skipped endpoint execution",
-        "fabricated or prematurely reported observed calls",
+        "no actual POST attempt",
+        "self-reported preflight call with no matching POST",
+        "self-report paired with the required best-effort",
     }
 
     assert all(marker in _SYSTEM_PROMPT for marker in required)

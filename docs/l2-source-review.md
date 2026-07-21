@@ -74,9 +74,9 @@ when the provider omits cost. A stable instructions/tool/dossier prefix,
 `prompt_cache_key`, and artifact-scoped `session_id` maximize provider cache
 reuse without enabling response replay caching. The result-cache key includes
 all budgets, model/fallback/critic routing, reasoning settings, artifact/L1
-digests, prompt revisions `l2-kimi-source-review-v22`,
+digests, prompt revisions `l2-kimi-source-review-v23`,
 `l3-sol-adversarial-critic-v15`, `l3-sol-violation-cause-v22`,
-`l3-sol-cause-disagreement-v5`, `l3-sol-safety-adjudicator-v18`, and
+`l3-sol-cause-disagreement-v5`, `l3-sol-safety-adjudicator-v19`, and
 `l2-integrity-static-hold-v3`, dossier revision
 `l1-compressed-dossier-v8`, harness revision
 `l2-isolated-coding-harness-v17`, and the supported canonical-starter revision
@@ -91,6 +91,12 @@ endpoint execution for later identical model-selected calls while the model
 transcript faithfully records those invocations. Cross-request replay,
 argument/result mutation, skipping the first execution, or reporting calls the
 model never selected remains a violation.
+
+The non-scored DittoBench v3 reachability preflight has a narrower authority
+boundary: attempting the required POST to the request-supplied endpoint is the
+harness action, while validator-side observation decides success. A handler may
+discard the client response and return a matching self-reported call; that
+untrusted report cannot make an unobserved probe pass or affect a score.
 
 An earlier opt-in live acceptance on 2026-07-18 used the exact canonical starter
 revision. Kimi made 14 targeted analyzer calls and SOL made 14 independent

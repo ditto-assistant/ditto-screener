@@ -97,15 +97,20 @@ source proves the complete boundary:
 - the endpoint is the nonempty value supplied on the same request;
 - the posted body preserves the incoming case ID and request user (or protocol
   default), names `search_web`, carries JSON-object arguments, and uses hop 0;
-- the call is reported as observed only after the endpoint request succeeds;
+- an actual POST is attempted. The handler may ignore or discard the client-side
+  response and may return the matching self-reported `ObservedToolCall`, because
+  validator-side endpoint observation—not that untrusted report—decides whether
+  the probe passed or the run fails and retries;
 - the response is only the required acknowledgement and cannot affect an
   ordinary scored request.
 
 The exception does not cover near-miss prefixes, substring or general probe
-detection, other tools, fixed or substituted endpoints, a missing endpoint
-request, self-reported calls with no matching execution, scored answers, or a
-preflight branch that leaks into normal case handling. Those remain subject to
-the ordinary benchmark-emulation, scorer-contract, and tool-fidelity rules.
+detection, other tools, fixed or substituted endpoints, no actual POST attempt,
+scored answers, or a preflight branch that leaks into normal case handling. A
+self-reported call with no matching POST attempt remains suspicious. The same
+report paired with the required best-effort POST cannot fabricate authoritative
+success and is allowed. Other paths remain subject to the ordinary
+benchmark-emulation, scorer-contract, and tool-fidelity rules.
 
 Generator mirroring may be distributed rather than expressed as one obvious
 answer table. Source review therefore surfaces an aggregate routing signal for

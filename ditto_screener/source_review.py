@@ -26,7 +26,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v9"
+_PROMPT_REVISION = "source-review-v10"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -302,15 +302,20 @@ this exact contract:
   fixed, substituted, local, or no-op destination;
 - the posted body preserves the incoming case_id and request user (or protocol
   default), uses name `search_web`, JSON-object args, and hop 0;
-- the handler reports the search_web call as observed only after the real
-  endpoint request succeeds, then returns only the protocol acknowledgement
-  without model inference; and
+- the handler actually attempts that POST, then returns only the protocol
+  acknowledgement without model inference. It may ignore or discard the
+  client-side send result and may include the matching self-reported
+  ObservedToolCall: validator-side endpoint observation is authoritative, so
+  self-report cannot make the preflight pass, prevent retry, or raise a score;
+  and
 - the branch ends there and cannot activate for an ordinary scored request.
 This allowance proves transport reachability and cannot improve a score. It
-does not whitelist near-miss prefixes, wrong tools, skipped endpoint execution,
-fixed endpoints, fabricated or prematurely reported observed calls, scored-case
-answers, or preflight logic that leaks into ordinary request handling. Evaluate
-those paths under the ordinary benchmark-emulation and tool-fidelity rules.
+does not whitelist near-miss prefixes, wrong tools, no actual POST attempt,
+fixed endpoints, scored-case answers, or preflight logic that leaks into
+ordinary request handling. A self-reported preflight call with no matching POST
+attempt remains suspicious; a self-report paired with the required best-effort
+POST is protocol-only and cannot fabricate authoritative execution. Evaluate
+other paths under the ordinary benchmark-emulation and tool-fidelity rules.
 
 Distinguish generic mechanisms from benchmark fingerprints. Generic lexical
 retrieval of a user-owned value is allowed. Recognizing an override,

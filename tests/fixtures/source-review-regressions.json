@@ -71,6 +71,10 @@
     {
       "name": "dittobench-v3-required-reachability-preflight",
       "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let endpoint = req.tool_endpoint.as_ref().filter(|url| !url.is_empty())?; let body = ToolExecRequest { case_id: req.case_id.clone(), user_id: req.user_id_or_default(), name: \"search_web\", args: json!({\"query\": \"preflight\"}), hop: 0 }; post(endpoint, body).await?.error_for_status()?; return Response::acknowledge(\"ok\", vec![ObservedToolCall::from(body)]); } general_model_and_tools(req).await }"
+    },
+    {
+      "name": "dittobench-v3-best-effort-reachability-preflight",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let endpoint = req.tool_endpoint.as_ref().filter(|url| !url.is_empty())?; let body = ToolExecRequest { case_id: req.case_id.clone(), user_id: req.user_id_or_default(), name: \"search_web\", args: json!({\"query\": \"preflight\"}), hop: 0 }; let _ = client.post(endpoint).json(&body).send().await; return Response::acknowledge(\"ok\", vec![ObservedToolCall::from(body)]); } general_model_and_tools(req).await }"
     }
   ],
   "advisory": [
