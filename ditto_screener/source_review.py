@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import logging
+import posixpath
 import re
 import tarfile
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -23,6 +26,8 @@ from ditto_screener.policy import SourceReviewObservation
 from ditto_screener.source_signals import (
     find_decisive_malicious_source,
     find_source_review_leads,
+    is_executable_source_path,
+    source_path_priority,
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
@@ -35,8 +40,12 @@ _MAX_TOOL_OUTPUT_CHARS = 48_000
 _MAX_TOTAL_TOOL_CHARS = 320_000
 _MAX_READ_LINES = 400
 _MAX_SEARCH_HITS = 80
-_MAX_LEAD_SCAN_BYTES = 8 * 1024 * 1024
-_MAX_LEAD_SCAN_FILES = 2048
+# The validated archive contract bounds the whole expanded archive to 64 MiB
+# and 20,000 members. Match those limits so decisive preflight never samples a
+# strict subset of executable source before untrusted build execution.
+_MAX_LEAD_SCAN_BYTES = 64 * 1024 * 1024
+_MAX_LEAD_SCAN_FILES = 20_000
+_MAX_SOURCE_ARCHIVE_MEMBERS = 20_000
 _ALLOWED_CATEGORIES = frozenset(
     {
         "benchmark_emulation",
@@ -484,6 +493,211 @@ class _Member:
     size: int
 
 
+def _cargo_path_dependencies(value: object) -> set[str]:
+    paths: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key.endswith("dependencies") and isinstance(child, dict):
+                for specification in child.values():
+                    if isinstance(specification, dict):
+                        path = specification.get("path")
+                        if isinstance(path, str):
+                            paths.add(path)
+            paths.update(_cargo_path_dependencies(child))
+    elif isinstance(value, list):
+        for child in value:
+            paths.update(_cargo_path_dependencies(child))
+    return paths
+
+
+def _rust_tokens(source: str) -> list[tuple[str, str]]:
+    """Tokenize only the Rust forms needed to resolve source inclusions."""
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    length = len(source)
+    while index < length:
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", index):
+            index += 2
+            depth = 1
+            while index < length and depth:
+                if source.startswith("/*", index):
+                    depth += 1
+                    index += 2
+                elif source.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            continue
+        character = source[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character == "r":
+            cursor = index + 1
+            while cursor < length and source[cursor] == "#":
+                cursor += 1
+            if cursor < length and source[cursor] == '"':
+                hashes = source[index + 1 : cursor]
+                terminator = '"' + hashes
+                end = source.find(terminator, cursor + 1)
+                if end >= 0:
+                    tokens.append(("string", source[cursor + 1 : end]))
+                    index = end + len(terminator)
+                    continue
+        if character == '"':
+            cursor = index + 1
+            decoded: list[str] = []
+            valid = True
+            while cursor < length:
+                current = source[cursor]
+                if current == '"':
+                    cursor += 1
+                    break
+                if current == "\\" and cursor + 1 < length:
+                    escaped = source[cursor + 1]
+                    simple_escape = {
+                        "0": "\0",
+                        "n": "\n",
+                        "r": "\r",
+                        "t": "\t",
+                        "\\": "\\",
+                        '"': '"',
+                        "'": "'",
+                    }.get(escaped)
+                    if simple_escape is not None:
+                        decoded.append(simple_escape)
+                        cursor += 2
+                        continue
+                    if escaped == "x" and cursor + 3 < length:
+                        digits = source[cursor + 2 : cursor + 4]
+                        try:
+                            decoded.append(chr(int(digits, 16)))
+                        except ValueError:
+                            valid = False
+                        cursor += 4
+                        continue
+                    if escaped == "u" and source.startswith("{", cursor + 2):
+                        end = source.find("}", cursor + 3)
+                        if end >= 0:
+                            try:
+                                decoded.append(chr(int(source[cursor + 3 : end], 16)))
+                            except (ValueError, OverflowError):
+                                valid = False
+                            cursor = end + 1
+                            continue
+                    if escaped == "\n":
+                        cursor += 2
+                        while cursor < length and source[cursor].isspace():
+                            cursor += 1
+                        continue
+                    valid = False
+                    cursor += 2
+                    continue
+                decoded.append(current)
+                cursor += 1
+            tokens.append(("string" if valid else "invalid_string", "".join(decoded)))
+            index = cursor
+            continue
+        if character == "'":
+            # A Rust lifetime or label has no closing apostrophe. Keep it as
+            # punctuation so it cannot consume later executable tokens.
+            if (
+                index + 1 < length
+                and (source[index + 1].isalpha() or source[index + 1] == "_")
+                and (index + 2 >= length or source[index + 2] != "'")
+            ):
+                tokens.append(("punctuation", character))
+                index += 1
+                continue
+            cursor = index + 1
+            while cursor < length:
+                if source[cursor] == "\\":
+                    cursor += 2
+                elif source[cursor] == "'":
+                    cursor += 1
+                    break
+                else:
+                    cursor += 1
+            index = cursor
+            continue
+        if character.isalpha() or character == "_":
+            cursor = index + 1
+            while cursor < length and (
+                source[cursor].isalnum() or source[cursor] == "_"
+            ):
+                cursor += 1
+            tokens.append(("identifier", source[index:cursor]))
+            index = cursor
+            continue
+        tokens.append(("punctuation", character))
+        index += 1
+    return tokens
+
+
+def _rust_runtime_references(source: str) -> tuple[set[str], bool]:
+    tokens = _rust_tokens(source)
+    references: set[str] = set()
+    unresolved = False
+    index = 0
+    while index < len(tokens):
+        if tokens[index : index + 3] == [
+            ("identifier", "include"),
+            ("punctuation", "!"),
+            ("punctuation", "("),
+        ]:
+            argument = index + 3
+            if argument < len(tokens) and tokens[argument][0] == "string":
+                references.add(tokens[argument][1])
+            elif tokens[argument : argument + 3] == [
+                ("identifier", "concat"),
+                ("punctuation", "!"),
+                ("punctuation", "("),
+            ]:
+                cursor = argument + 3
+                parts: list[str] = []
+                generated = False
+                valid = True
+                while cursor < len(tokens) and tokens[cursor] != (
+                    "punctuation",
+                    ")",
+                ):
+                    token = tokens[cursor]
+                    if token[0] == "string":
+                        parts.append(token[1])
+                    elif token == ("punctuation", ","):
+                        pass
+                    elif token == ("identifier", "env"):
+                        generated = True
+                        valid = False
+                    else:
+                        valid = False
+                    cursor += 1
+                if valid and parts:
+                    references.add("".join(parts))
+                elif not generated:
+                    unresolved = True
+            else:
+                unresolved = True
+        if tokens[index : index + 4] == [
+            ("punctuation", "#"),
+            ("punctuation", "["),
+            ("identifier", "path"),
+            ("punctuation", "="),
+        ]:
+            argument = index + 4
+            if argument < len(tokens) and tokens[argument][0] == "string":
+                references.add(tokens[argument][1])
+            else:
+                unresolved = True
+        index += 1
+    return references, unresolved
+
+
 class TarSourceRepository:
     """A read-only, size-bounded view over regular files in a verified tarball."""
 
@@ -491,8 +705,11 @@ class TarSourceRepository:
         self._archive_path = archive_path
         self._binary_analysis_cache: dict[str, dict[str, object]] = {}
         members: list[_Member] = []
+        seen: set[str] = set()
         with tarfile.open(archive_path, mode="r:gz") as archive:
-            for member in archive.getmembers():
+            for member_count, member in enumerate(archive, start=1):
+                if member_count > _MAX_SOURCE_ARCHIVE_MEMBERS:
+                    raise ValueError("source archive contains too many members")
                 normalized = member.name.removeprefix("./")
                 path = PurePosixPath(normalized)
                 if (
@@ -503,8 +720,133 @@ class TarSourceRepository:
                     or not member.isfile()
                 ):
                     continue
+                if str(path) != normalized:
+                    raise ValueError("source archive contains a non-canonical path")
+                if normalized in seen:
+                    raise ValueError("source archive contains a duplicate path")
+                seen.add(normalized)
                 members.append(_Member(normalized, member.name, member.size))
         self._members = {member.name: member for member in members}
+
+    def _explicit_runtime_paths(self) -> frozenset[str]:
+        """Resolve Cargo-declared and Rust-included source outside normal roots.
+
+        Nested docs/tests from vendored dependencies stay out of the decisive
+        detector unless the submitted build manifest or reachable Rust source
+        explicitly makes them executable. This preserves the false-positive
+        boundary without letting a custom Cargo target, build script, or
+        ``include!``/``#[path]`` indirection hide pre-build source.
+        """
+        runtime = {name for name in self._members if is_executable_source_path(name)}
+        self._add_cargo_runtime_paths(runtime)
+
+        pending = list(runtime)
+        scanned: set[str] = set()
+        while pending:
+            source_path = pending.pop()
+            if source_path in scanned or not source_path.casefold().endswith(".rs"):
+                continue
+            scanned.add(source_path)
+            source = self._read_text(source_path)
+            if source is None:
+                continue
+            parent = posixpath.dirname(source_path)
+            references, unresolved = _rust_runtime_references(source)
+            for reference in references:
+                before = len(runtime)
+                self._add_runtime_path(runtime, parent, reference)
+                if len(runtime) > before:
+                    pending.extend(runtime - scanned - set(pending))
+            if unresolved:
+                # An executable source explicitly includes an archive path that
+                # cannot be statically resolved. Scan Rust members only in this
+                # exceptional case; ordinary unreferenced fixtures stay inert.
+                newly_reachable = {
+                    name
+                    for name in self._members
+                    if name.casefold().endswith(".rs") and name not in runtime
+                }
+                runtime.update(newly_reachable)
+                pending.extend(newly_reachable)
+        return frozenset(runtime)
+
+    def _add_cargo_runtime_paths(self, runtime: set[str]) -> None:
+        pending = ["Cargo.toml"] if "Cargo.toml" in self._members else []
+        visited: set[str] = set()
+        while pending:
+            manifest_path = pending.pop()
+            if manifest_path in visited:
+                continue
+            visited.add(manifest_path)
+            manifest_text = self._read_text(manifest_path)
+            if manifest_text is None:
+                continue
+            try:
+                manifest = tomllib.loads(manifest_text)
+            except tomllib.TOMLDecodeError:
+                continue
+            base = posixpath.dirname(manifest_path)
+            package = manifest.get("package")
+            if isinstance(package, dict):
+                build_path = package.get("build")
+                if isinstance(build_path, str):
+                    self._add_runtime_path(runtime, base, build_path)
+            for target_kind in ("lib", "bin", "example", "test", "bench"):
+                targets = manifest.get(target_kind)
+                if isinstance(targets, dict):
+                    targets = [targets]
+                if not isinstance(targets, list):
+                    continue
+                for target in targets:
+                    if not isinstance(target, dict):
+                        continue
+                    target_path = target.get("path")
+                    if isinstance(target_path, str):
+                        self._add_runtime_path(runtime, base, target_path)
+
+            for dependency_path in _cargo_path_dependencies(manifest):
+                candidate = posixpath.normpath(
+                    posixpath.join(base, dependency_path, "Cargo.toml")
+                )
+                if candidate in self._members and candidate not in visited:
+                    pending.append(candidate)
+
+            workspace = manifest.get("workspace")
+            if not isinstance(workspace, dict):
+                continue
+            members = workspace.get("members")
+            excludes = workspace.get("exclude")
+            member_patterns = (
+                [item for item in members if isinstance(item, str)]
+                if isinstance(members, list)
+                else []
+            )
+            exclude_patterns = (
+                [item for item in excludes if isinstance(item, str)]
+                if isinstance(excludes, list)
+                else []
+            )
+            for candidate in self._members:
+                if not candidate.endswith("/Cargo.toml"):
+                    continue
+                relative_dir = posixpath.relpath(
+                    posixpath.dirname(candidate), base or "."
+                )
+                if any(
+                    fnmatch.fnmatchcase(relative_dir, pattern)
+                    for pattern in member_patterns
+                ) and not any(
+                    fnmatch.fnmatchcase(relative_dir, pattern)
+                    for pattern in exclude_patterns
+                ):
+                    pending.append(candidate)
+
+    def _add_runtime_path(
+        self, runtime: set[str], parent: str, referenced_path: str
+    ) -> None:
+        candidate = posixpath.normpath(posixpath.join(parent, referenced_path))
+        if candidate in self._members:
+            runtime.add(candidate)
 
     def inventory(self) -> str:
         ordered = sorted(
@@ -669,34 +1011,63 @@ class TarSourceRepository:
         }
 
     def malicious_preflight(
-        self, *, artifact_sha256: str
+        self,
+        *,
+        artifact_sha256: str,
+        provenance_manifest_paths: tuple[str, ...] | None = None,
     ) -> SourceReviewObservation | None:
         """Produce a signed, location-only finding before untrusted execution."""
         readable: list[tuple[str, str]] = []
+        manifests = provenance_manifest_paths or tuple(
+            str(path)
+            for path in sorted(
+                (Path(__file__).parent / "data").glob("starter-kit-provenance-*.json")
+            )
+        )
+        trusted_digests: dict[str, set[str]] = {}
+        for manifest_path in manifests:
+            manifest = _load_provenance_manifest(Path(manifest_path))
+            files = manifest["files"]
+            assert isinstance(files, dict)
+            for path, digest in files.items():
+                assert isinstance(path, str) and isinstance(digest, str)
+                trusted_digests.setdefault(path, set()).add(digest)
         bytes_scanned = 0
         members_considered = 0
+        runtime_paths = self._explicit_runtime_paths()
         with tarfile.open(self._archive_path, mode="r:gz") as archive:
-            for name in sorted(self._members):
+            # Spend the decisive-preflight budget only on executable/build
+            # source. Full L1 review still sees the rest of the archive, but
+            # inert padding cannot hide the pre-build safety surface.
+            ordered_names = sorted(
+                runtime_paths,
+                key=source_path_priority,
+            )
+            for name in ordered_names:
                 if members_considered >= _MAX_LEAD_SCAN_FILES:
                     break
                 members_considered += 1
                 member_info = self._members[name]
-                if member_info.size > _OPAQUE_SIZE_LIMIT:
-                    continue
                 if bytes_scanned + member_info.size > _MAX_LEAD_SCAN_BYTES:
-                    break
+                    # One large member must not suppress smaller executable
+                    # sources that still fit the remaining byte budget.
+                    continue
                 extracted = archive.extractfile(
                     archive.getmember(member_info.archive_name)
                 )
                 if extracted is None:
                     continue
                 raw = extracted.read(member_info.size + 1)
+                if hashlib.sha256(raw).hexdigest() in trusted_digests.get(name, set()):
+                    continue
                 bytes_scanned += len(raw)
                 try:
                     readable.append((name, raw.decode("utf-8")))
                 except UnicodeDecodeError:
                     continue
-        matches = find_decisive_malicious_source(readable)
+        matches = find_decisive_malicious_source(
+            readable, explicitly_executable_paths=runtime_paths
+        )
         if not matches:
             return None
         categories = sorted({str(item["category"]) for item in matches})
@@ -873,6 +1244,10 @@ class TarSourceRepository:
 
     def trusted_provenance(self, manifest_path: str) -> str:
         """Compare only explicitly tracked official files by exact SHA-256."""
+        return _bounded_json(self._trusted_provenance_value(manifest_path))
+
+    def _trusted_provenance_value(self, manifest_path: str) -> dict[str, object]:
+        """Build one exact provenance result before bounded wire encoding."""
         manifest = _load_provenance_manifest(Path(manifest_path))
         files = manifest["files"]
         assert isinstance(files, dict)
@@ -884,13 +1259,66 @@ class TarSourceRepository:
                 continue
             actual = self._member_sha256(path)
             (matched if actual == expected else modified).append(path)
+        return {
+            "origin": manifest["origin"],
+            "revision": manifest["revision"],
+            "matched_exact_files": sorted(matched),
+            "tracked_but_modified_files": sorted(modified),
+            "scope": "exact-path-and-sha256-only",
+        }
+
+    def closest_trusted_provenance(self, manifest_paths: tuple[str, ...]) -> str:
+        """Return the closest exact supported starter revision, never fuzzy trust."""
+        if not manifest_paths:
+            raise ValueError("at least one provenance manifest is required")
+        comparisons = [self._trusted_provenance_value(path) for path in manifest_paths]
+        scored: list[tuple[tuple[int, int], str, dict[str, object]]] = []
+        for item in comparisons:
+            matched = item["matched_exact_files"]
+            modified = item["tracked_but_modified_files"]
+            revision = item["revision"]
+            assert isinstance(matched, list)
+            assert isinstance(modified, list)
+            assert isinstance(revision, str)
+            scored.append(((len(matched), -len(modified)), revision, item))
+        best_score = max(scored, key=lambda item: item[0])[0]
+        winners = [item for score, _revision, item in scored if score == best_score]
+        winner_revisions = sorted(
+            revision for score, revision, _item in scored if score == best_score
+        )
+        if len(winners) == 1:
+            selected = winners[0]
+            selection = "unique-closest-supported-revision"
+        else:
+            matched_sets: list[set[str]] = []
+            modified_sets: list[set[str]] = []
+            for item in winners:
+                matched = item["matched_exact_files"]
+                modified = item["tracked_but_modified_files"]
+                assert isinstance(matched, list) and all(
+                    isinstance(value, str) for value in matched
+                )
+                assert isinstance(modified, list) and all(
+                    isinstance(value, str) for value in modified
+                )
+                matched_sets.append(set(matched))
+                modified_sets.append(set(modified))
+            selected = {
+                "origin": winners[0]["origin"],
+                "revision": None,
+                "matched_exact_files": sorted(set.intersection(*matched_sets)),
+                "tracked_but_modified_files": sorted(set.union(*modified_sets)),
+                "scope": "exact-path-and-sha256-only",
+            }
+            selection = "ambiguous-closest-supported-revisions"
         return _bounded_json(
             {
-                "origin": manifest["origin"],
-                "revision": manifest["revision"],
-                "matched_exact_files": sorted(matched),
-                "tracked_but_modified_files": sorted(modified),
-                "scope": "exact-path-and-sha256-only",
+                **selected,
+                "selection": selection,
+                "candidate_revisions": winner_revisions,
+                "supported_revisions": sorted(
+                    revision for _score, revision, _ in scored
+                ),
             }
         )
 
@@ -1061,8 +1489,17 @@ class OpenRouterSourceReviewAgent:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._max_steps = max_steps
-        self._provenance_manifest_file = provenance_manifest_file or str(
-            Path(__file__).parent / "data" / "starter-kit-provenance-v1.json"
+        self._provenance_manifest_files = (
+            (provenance_manifest_file,)
+            if provenance_manifest_file is not None
+            else tuple(
+                str(path)
+                for path in sorted(
+                    (Path(__file__).parent / "data").glob(
+                        "starter-kit-provenance-*.json"
+                    )
+                )
+            )
         )
         self._transport = transport
 
@@ -1118,7 +1555,9 @@ class OpenRouterSourceReviewAgent:
                 "content": "Review this untrusted crate. Initial inventory:\n"
                 + repository.inventory()
                 + "\nExact-file trusted provenance:\n"
-                + repository.trusted_provenance(self._provenance_manifest_file),
+                + repository.closest_trusted_provenance(
+                    self._provenance_manifest_files
+                ),
             },
         ]
         delivered = 0

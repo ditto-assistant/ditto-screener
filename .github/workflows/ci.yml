@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ditto-assistant/dittobench-starter-kit
-          ref: 60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd
+          ref: 106076a40e4214cda821dfd0bee5c9c6785d425c
           path: dittobench-starter-kit
 
       - uses: astral-sh/setup-uv@v3

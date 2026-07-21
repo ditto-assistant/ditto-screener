@@ -72,7 +72,7 @@ async def test_live_l2_analyst_and_sol_critic_clear_canonical_starter(
         subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=starter)
         .decode()
         .strip()
-        == "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd"
+        == "106076a40e4214cda821dfd0bee5c9c6785d425c"
     )
     image = "ditto-screener-l2-analyzer:live"
     build = await asyncio.create_subprocess_exec(

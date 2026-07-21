@@ -143,6 +143,46 @@ async def test_embedding_request_does_not_count_as_model_call() -> None:
         assert gateway.model_calls == 0
 
 
+async def test_split_gateway_surfaces_do_not_cross_serve_routes() -> None:
+    async with (
+        FakeModelGateway(surface="model") as model_gateway,
+        FakeModelGateway(surface="embedding") as embedding_gateway,
+    ):
+        model_url = model_gateway.gateway_url.replace(
+            "host.docker.internal", "127.0.0.1"
+        )
+        embedding_url = embedding_gateway.gateway_url.replace(
+            "host.docker.internal", "127.0.0.1"
+        )
+        async with httpx.AsyncClient() as client:
+            model_chat = await client.post(
+                f"{model_url}/v1/chat/completions",
+                json={"model": "x", "messages": []},
+            )
+            model_embed = await client.post(
+                f"{model_url}/api/embed", json={"model": "x", "input": "hello"}
+            )
+            model_responses = await client.post(
+                f"{model_url}/v1/responses", json={"model": "x", "input": "hello"}
+            )
+            model_health = await client.get(f"{model_url}/health")
+            embedding = await client.post(
+                f"{embedding_url}/api/embed",
+                json={"model": "x", "input": "hello"},
+            )
+            embedding_chat = await client.post(
+                f"{embedding_url}/v1/chat/completions",
+                json={"model": "x", "messages": []},
+            )
+
+    assert model_chat.status_code == 200
+    assert model_health.status_code == 200
+    assert embedding.status_code == 200
+    assert model_embed.status_code == 404
+    assert model_responses.status_code == 404
+    assert embedding_chat.status_code == 404
+
+
 async def test_chunked_chat_completion_is_accepted() -> None:
     async with FakeModelGateway() as gateway:
         port = urlsplit(gateway.gateway_url).port

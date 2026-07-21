@@ -786,6 +786,55 @@ def test_decisive_malicious_preflight_ignores_inert_regression_material() -> Non
     assert findings == []
 
 
+def test_decisive_preflight_ignores_nested_inert_regression_material() -> None:
+    findings = find_decisive_malicious_source(
+        [
+            (
+                "vendor/dependency/tests/security_canary.rs",
+                'assert_blocked("/var/run/docker.sock"); read_fixture(".env");',
+            ),
+            (
+                "dependency/docs/security_example.py",
+                'connect_control_socket("/var/run/docker.sock")',
+            ),
+        ]
+    )
+
+    assert findings == []
+
+
+def test_decisive_preflight_keeps_runtime_beside_nested_inert_material() -> None:
+    findings = find_decisive_malicious_source(
+        [
+            (
+                "vendor/dependency/tests/security_canary.rs",
+                'assert_blocked("/var/run/docker.sock");',
+            ),
+            (
+                "vendor/dependency/src/runtime.rs",
+                'let endpoint = "/var/run/docker.sock";\n'
+                "connect_control_socket(endpoint);",
+            ),
+        ]
+    )
+
+    assert "malicious_build" in {item["category"] for item in findings}
+
+
+def test_decisive_preflight_keeps_runtime_under_src_named_tests() -> None:
+    findings = find_decisive_malicious_source(
+        [
+            (
+                "src/tests/runtime.rs",
+                'let endpoint = "/var/run/docker.sock";\n'
+                "connect_control_socket(endpoint);",
+            )
+        ]
+    )
+
+    assert "malicious_build" in {item["category"] for item in findings}
+
+
 def test_decisive_malicious_preflight_keeps_real_effect_beside_prompt() -> None:
     findings = find_decisive_malicious_source(
         [
@@ -858,6 +907,276 @@ def test_repository_preflight_emits_digest_bound_location_only_finding(
     serialized = json.dumps(observation.finding)
     assert "docker-control-plane" in serialized
     assert "/var/run/docker.sock" not in serialized
+
+
+def test_repository_preflight_prioritizes_runtime_over_archive_padding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(source_review_module, "_MAX_LEAD_SCAN_FILES", 2)
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "000-docs.md": b"ordinary documentation",
+                    "001-notes.md": b"ordinary notes",
+                    "src/runtime.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+def test_repository_preflight_scans_custom_cargo_build_path(tmp_path: Path) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Cargo.toml": (
+                        b'[package]\nname = "agent"\nversion = "0.1.0"\n'
+                        b'build = "vendor/dependency/tests/payload.rs"\n'
+                    ),
+                    "vendor/dependency/tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+def test_repository_preflight_follows_rust_include_into_nested_test_path(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": (
+                        b'include!("../vendor/dependency/tests/payload.rs");\n'
+                    ),
+                    "vendor/dependency/tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                    "vendor/dependency/tests/inert.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    runtime_paths = repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert "vendor/dependency/tests/payload.rs" in runtime_paths
+    assert "vendor/dependency/tests/inert.rs" not in runtime_paths
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+@pytest.mark.parametrize(
+    "root_manifest,dependency_manifest",
+    [
+        (
+            b'[workspace]\nmembers = ["vendor/dependency"]\n',
+            b'[package]\nname = "dependency"\nversion = "0.1.0"\n'
+            b'build = "tests/payload.rs"\n',
+        ),
+        (
+            b'[package]\nname = "agent"\nversion = "0.1.0"\n'
+            b'[dependencies]\ndependency = { path = "vendor/dependency" }\n',
+            b'[package]\nname = "dependency"\nversion = "0.1.0"\n'
+            b'build = "tests/payload.rs"\n',
+        ),
+    ],
+)
+def test_repository_preflight_scans_reachable_cargo_package_targets(
+    tmp_path: Path, root_manifest: bytes, dependency_manifest: bytes
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Cargo.toml": root_manifest,
+                    "vendor/dependency/Cargo.toml": dependency_manifest,
+                    "vendor/dependency/tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+@pytest.mark.parametrize(
+    "include_expression",
+    [
+        'include!(r#"../vendor/dependency/tests/payload.rs"#);',
+        'include!(concat!("../vendor/", "dependency/tests/payload.rs"));',
+        "fn borrow<'a>(value: &'a str) { let _ = value; }\n"
+        'include!("../vendor/dependency/tests/payload.rs");',
+        'include!("\\x2e\\x2e/vendor/dependency/tests/payload.rs");',
+    ],
+)
+def test_repository_preflight_resolves_rust_literal_include_forms(
+    tmp_path: Path, include_expression: str
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": include_expression.encode(),
+                    "vendor/dependency/tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+def test_repository_preflight_ignores_include_examples_in_comments_and_strings(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": (
+                        b'// include!("../vendor/dependency/tests/payload.rs");\n'
+                        b'let example = r#"include!("../vendor/dependency/tests/'
+                        b'payload.rs")"#;\n'
+                    ),
+                    "vendor/dependency/tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    assert repo.malicious_preflight(artifact_sha256="a" * 64) is None
+
+
+def test_repository_preflight_skips_oversized_member_without_stopping_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dangerous = (
+        b'let endpoint = "/var/run/docker.sock";\nconnect_control_socket(endpoint);\n'
+    )
+    monkeypatch.setattr(
+        source_review_module, "_MAX_LEAD_SCAN_BYTES", len(dangerous) + 8
+    )
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/a_large.rs": b"x" * (len(dangerous) + 16),
+                    "src/z_runtime.rs": dangerous,
+                },
+            )
+        )
+    )
+
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+def test_repository_preflight_trusts_only_exact_pinned_starter_file(
+    tmp_path: Path,
+) -> None:
+    official = (
+        b'let endpoint = "/var/run/docker.sock";\nconnect_control_socket(endpoint);\n'
+    )
+    manifest = tmp_path / "provenance.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "origin": "public/starter",
+                "revision": "reviewed",
+                "files": {"scripts/official.py": hashlib.sha256(official).hexdigest()},
+            }
+        )
+    )
+    exact = TarSourceRepository(
+        str(_archive_files(tmp_path, {"scripts/official.py": official}))
+    )
+
+    assert (
+        exact.malicious_preflight(
+            artifact_sha256="a" * 64,
+            provenance_manifest_paths=(str(manifest),),
+        )
+        is None
+    )
+
+    modified = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {"scripts/official.py": official + b"// miner change\n"},
+            )
+        )
+    )
+    observation = modified.malicious_preflight(
+        artifact_sha256="b" * 64,
+        provenance_manifest_paths=(str(manifest),),
+    )
+
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+def test_repository_rejects_noncanonical_source_alias(tmp_path: Path) -> None:
+    archive = _archive_files(
+        tmp_path,
+        {
+            "src/main.rs": b"fn original() {}",
+            "src/./main.rs": b"fn replacement() {}",
+        },
+    )
+
+    with pytest.raises(ValueError, match="non-canonical path"):
+        TarSourceRepository(str(archive))
 
 
 def test_all_generator_grammar_without_answer_path_is_not_candidate(
@@ -1467,6 +1786,76 @@ def test_exact_official_provenance_does_not_whitelist_derivatives(
         "fixtures/seed-user/official.json"
     ]
     assert "fixtures/models/derivative.bin" not in json.dumps(provenance)
+
+
+def test_closest_official_provenance_uses_exact_supported_revision(
+    tmp_path: Path,
+) -> None:
+    older = tmp_path / "older.json"
+    current = tmp_path / "current.json"
+    files = {"src/main.rs": b"current", "README.md": b"shared"}
+    for path, revision, main_digest in (
+        (older, "older", hashlib.sha256(b"older").hexdigest()),
+        (current, "current", hashlib.sha256(b"current").hexdigest()),
+    ):
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "origin": "public/starter",
+                    "revision": revision,
+                    "files": {
+                        "src/main.rs": main_digest,
+                        "README.md": hashlib.sha256(b"shared").hexdigest(),
+                    },
+                }
+            )
+        )
+    archive = _archive_files(tmp_path, files)
+
+    provenance = json.loads(
+        TarSourceRepository(str(archive)).closest_trusted_provenance(
+            (str(older), str(current))
+        )
+    )
+
+    assert provenance["revision"] == "current"
+    assert provenance["matched_exact_files"] == ["README.md", "src/main.rs"]
+    assert provenance["tracked_but_modified_files"] == []
+    assert provenance["supported_revisions"] == ["current", "older"]
+    assert provenance["candidate_revisions"] == ["current"]
+    assert provenance["selection"] == "unique-closest-supported-revision"
+    assert provenance["scope"] == "exact-path-and-sha256-only"
+
+
+def test_closest_official_provenance_reports_ambiguous_exact_tie(
+    tmp_path: Path,
+) -> None:
+    shared = b"shared"
+    manifests: list[str] = []
+    for revision in ("older", "newer"):
+        manifest = tmp_path / f"{revision}.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "origin": "public/starter",
+                    "revision": revision,
+                    "files": {"README.md": hashlib.sha256(shared).hexdigest()},
+                }
+            )
+        )
+        manifests.append(str(manifest))
+    archive = _archive_files(tmp_path, {"README.md": shared})
+
+    provenance = json.loads(
+        TarSourceRepository(str(archive)).closest_trusted_provenance(tuple(manifests))
+    )
+
+    assert provenance["revision"] is None
+    assert provenance["candidate_revisions"] == ["newer", "older"]
+    assert provenance["selection"] == "ambiguous-closest-supported-revisions"
+    assert provenance["matched_exact_files"] == ["README.md"]
 
 
 async def test_sanitized_shortcut_fixture_produces_bounded_risk_digest(

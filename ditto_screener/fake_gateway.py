@@ -52,6 +52,7 @@ class FakeModelGateway:
         port: int = 0,
         state_file: str | None = None,
         latency_range: tuple[float, float] = (0.0, 0.0),
+        surface: str = "all",
     ) -> None:
         self.response_text = response_text or secrets.token_hex(16)
         self._oracle_answer = oracle_answer
@@ -59,6 +60,9 @@ class FakeModelGateway:
         self._host = host
         self._port = port
         self._state_file = state_file
+        if surface not in {"all", "model", "embedding"}:
+            raise ValueError("surface must be all, model, or embedding")
+        self._surface = surface
         low, high = latency_range
         if low < 0 or high < low:
             raise ValueError("latency_range must be a non-negative (low, high) pair")
@@ -190,10 +194,15 @@ class FakeModelGateway:
                     flush=True,
                 )
 
-            if method == "POST" and path.rstrip("/") in {
-                "/v1/chat/completions",
-                "/chat/completions",
-            }:
+            if (
+                self._surface in {"all", "model"}
+                and method == "POST"
+                and path.rstrip("/")
+                in {
+                    "/v1/chat/completions",
+                    "/chat/completions",
+                }
+            ):
                 self._record_model_call()
                 await self._simulate_latency()
                 message = self._chat_message(body)
@@ -217,10 +226,15 @@ class FakeModelGateway:
                         "total_tokens": 2,
                     },
                 }
-            elif method == "POST" and path.rstrip("/") in {
-                "/v1/responses",
-                "/responses",
-            }:
+            elif (
+                self._surface == "all"
+                and method == "POST"
+                and path.rstrip("/")
+                in {
+                    "/v1/responses",
+                    "/responses",
+                }
+            ):
                 self._record_model_call()
                 await self._simulate_latency()
                 content = self._response_content(body)
@@ -240,7 +254,17 @@ class FakeModelGateway:
                     "output_text": content,
                     "usage": {"input_tokens": 1, "output_tokens": 1},
                 }
-            elif method == "POST" and path.rstrip("/") == "/tool":
+            elif (
+                self._surface in {"all", "model"}
+                and method == "GET"
+                and path.rstrip("/") == "/health"
+            ):
+                payload = {"status": "ok"}
+            elif (
+                self._surface in {"all", "model"}
+                and method == "POST"
+                and path.rstrip("/") == "/tool"
+            ):
                 # Mock tool-execution sink for the behavioral oracle's
                 # tool-shaped RunRequest. It lets the harness's agent loop
                 # EXECUTE the tool call the model returned (nonce in its args)
@@ -251,11 +275,16 @@ class FakeModelGateway:
                 # nonce rides the assistant tool_calls message in the
                 # transcript), so a benign acknowledgement suffices.
                 payload = {"result": "ok", "error": ""}
-            elif method == "POST" and path.rstrip("/") in {
-                "/api/embed",
-                "/api/embeddings",
-                "/v1/embeddings",
-            }:
+            elif (
+                self._surface in {"all", "embedding"}
+                and method == "POST"
+                and path.rstrip("/")
+                in {
+                    "/api/embed",
+                    "/api/embeddings",
+                    "/v1/embeddings",
+                }
+            ):
                 vector = [0.0] * _EMBED_DIMENSIONS
                 vector[0] = 1.0
                 payload = {
@@ -370,18 +399,29 @@ def _sidecar_latency_range() -> tuple[float, float]:
 
 
 async def _serve_sidecar() -> None:
-    """Run the fixed-port server used by the isolated Docker sidecar."""
+    """Run production-shaped chat and embedding ports in the isolated sidecar."""
     response_text = os.environ["DITTO_FAKE_GATEWAY_RESPONSE"]
     oracle_answer = os.environ.get("DITTO_FAKE_GATEWAY_ORACLE_ANSWER") or None
     state_file = os.environ.get("DITTO_FAKE_GATEWAY_STATE_FILE")
-    async with FakeModelGateway(
+    chat_gateway = FakeModelGateway(
         response_text=response_text,
         oracle_answer=oracle_answer,
         host="0.0.0.0",
-        port=8080,
+        port=11435,
         state_file=state_file,
         latency_range=_sidecar_latency_range(),
-    ):
+        surface="model",
+    )
+    embed_gateway = FakeModelGateway(
+        response_text=response_text,
+        oracle_answer=oracle_answer,
+        host="0.0.0.0",
+        port=11434,
+        state_file=state_file,
+        latency_range=_sidecar_latency_range(),
+        surface="embedding",
+    )
+    async with chat_gateway, embed_gateway:
         await asyncio.Event().wait()
 
 

@@ -375,11 +375,15 @@ def find_source_review_leads(
 
 def find_decisive_malicious_source(
     files: Iterable[tuple[str, str]],
+    *,
+    explicitly_executable_paths: frozenset[str] = frozenset(),
 ) -> list[dict[str, object]]:
     """Return high-confidence, location-only findings for pre-build quarantine."""
     findings: list[dict[str, object]] = []
     for path, text in sorted(files, key=lambda item: _path_priority(item[0])):
-        if not _is_executable_source_path(path):
+        if path.removeprefix(
+            "./"
+        ) not in explicitly_executable_paths and not _is_executable_source_path(path):
             continue
         lines = text.splitlines()
         if not lines:
@@ -501,8 +505,15 @@ def _is_build_file(path: str) -> bool:
 
 def _is_non_runtime_path(path: str) -> bool:
     normalized = path.casefold().removeprefix("./")
-    return normalized.startswith(
-        ("tests/", "test/", "docs/", "examples/", "benches/", ".github/")
+    # ``src/**`` is production/build-capable even when a directory happens to
+    # be named tests/docs: Rust can include those modules explicitly.
+    if normalized.startswith("src/") or "/src/" in normalized:
+        return False
+    parts = tuple(part for part in normalized.split("/") if part)
+    return bool(
+        {"tests", "test", "docs", "examples", "benches", ".github"}.intersection(
+            parts[:-1]
+        )
     ) or normalized.rsplit("/", 1)[-1] in {
         "readme",
         "readme.md",
@@ -535,4 +546,19 @@ def _path_priority(path: str) -> tuple[int, str]:
     return (2, normalized)
 
 
-__all__ = ["find_decisive_malicious_source", "find_source_review_leads"]
+def is_executable_source_path(path: str) -> bool:
+    """Return whether a member belongs to the pre-build executable surface."""
+    return _is_executable_source_path(path)
+
+
+def source_path_priority(path: str) -> tuple[int, str]:
+    """Order runtime entrypoints before other executable/build surfaces."""
+    return _path_priority(path)
+
+
+__all__ = [
+    "find_decisive_malicious_source",
+    "find_source_review_leads",
+    "is_executable_source_path",
+    "source_path_priority",
+]

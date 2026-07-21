@@ -108,6 +108,7 @@ _PROBE_INTERVAL_SECONDS = 1.0
 # the whole lease on work whose verdict would arrive after expiry.
 _LEASE_MIN_STAGE_SECONDS = 5.0
 _MAX_UNPACKED_BYTES = 64 * 1024 * 1024
+_MAX_ARCHIVE_MEMBERS = 20_000
 _MAX_SCREENED_IMAGE_BYTES = 8 * 1024**3
 _IMAGE_EXPORT_DISK_RESERVE_BYTES = 256 * 1024**2
 _IMAGE_HASH_CHUNK_BYTES = 8 * 1024**2
@@ -116,7 +117,9 @@ _CANARY_IMAGE = (
     "python:3.12-alpine@sha256:"
     "6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df"
 )
-_GATEWAY_ALIAS = "fake-gateway"
+_GATEWAY_ALIAS = "host.docker.internal"
+_CHAT_GATEWAY_PORT = 11435
+_EMBED_GATEWAY_PORT = 11434
 _HARNESS_ALIAS = "harness"
 _VALIDATOR_SANDBOX_USER = "65532:65532"
 _VALIDATOR_SANDBOX_TMPFS = "/tmp:rw,noexec,nosuid,nodev,size=512m"
@@ -210,7 +213,7 @@ class _AuditRuntime:
 # the harness already uses for the model, so a tool-shaped challenge's
 # `tool_endpoint` is reachable from inside the harness network and carries no
 # screener-specific tell (it is the same host:port the model calls go to).
-_TOOL_ENDPOINT = f"http://{_GATEWAY_ALIAS}:8080/tool"
+_TOOL_ENDPOINT = f"http://{_GATEWAY_ALIAS}:{_CHAT_GATEWAY_PORT}/tool"
 
 
 def _with_tool_endpoint(request: Mapping[str, object]) -> dict[str, object]:
@@ -1066,7 +1069,13 @@ class BuildGate:
             with tarfile.open(tar_path, mode="r:gz") as tar:
                 members: dict[str, tarfile.TarInfo] = {}
                 unpacked = 0
-                for member in tar.getmembers():
+                for member_count, member in enumerate(tar, start=1):
+                    if member_count > _MAX_ARCHIVE_MEMBERS:
+                        return _rust_diagnostic(
+                            "SCR-RUST-013",
+                            "archive contains too many members",
+                            "remove generated directories and package only the crate",
+                        )
                     name = member.name.removeprefix("./")
                     if not name and member.isdir():
                         continue
@@ -1083,6 +1092,12 @@ class BuildGate:
                             "archive contains an unsafe path",
                             "remove absolute paths, parent traversals, backslashes, "
                             "and drive-prefixed entries",
+                        )
+                    if str(path) != name:
+                        return _rust_diagnostic(
+                            "SCR-RUST-001",
+                            "archive contains a non-canonical path",
+                            "remove redundant path separators and dot components",
                         )
                     if name in members:
                         return _rust_diagnostic(
@@ -1284,7 +1299,8 @@ class BuildGate:
         if not started:
             return _StageResult(False, detail, retryable=True), None
 
-        gateway = f"http://{_GATEWAY_ALIAS}:8080"
+        chat_gateway = f"http://{_GATEWAY_ALIAS}:{_CHAT_GATEWAY_PORT}"
+        embed_gateway = f"http://{_GATEWAY_ALIAS}:{_EMBED_GATEWAY_PORT}"
         run_args = [
             "run",
             "-d",
@@ -1324,11 +1340,11 @@ class BuildGate:
         gateway_env = {
             "DITTOBENCH_PROVIDER": "chutes",
             "DITTOBENCH_MODEL": LOCKED_HARNESS_MODEL,
-            "CHUTES_BASE_URL": f"{gateway}/v1",
+            "CHUTES_BASE_URL": f"{chat_gateway}/v1",
             "CHUTES_API_KEY": "relay",
-            "OPENAI_BASE_URL": f"{gateway}/v1",
+            "OPENAI_BASE_URL": f"{chat_gateway}/v1",
             "OPENAI_API_KEY": "relay",
-            "OLLAMA_BASE_URL": gateway,
+            "OLLAMA_BASE_URL": embed_gateway,
             # The validator root filesystem is read-only. Its bounded /tmp
             # tmpfs is the canonical writable location for the harness DB.
             "DITTOBENCH_DB": _VALIDATOR_SANDBOX_DB,
@@ -1435,9 +1451,11 @@ class BuildGate:
         if code != 0:
             return False, f"fake gateway did not start: {_log_tail(out)}"
 
-        probe = (
-            "import socket; socket.create_connection(('127.0.0.1', 8080), 2).close()"
-        )
+        probe = """\
+import socket
+for port in (11434, 11435):
+    socket.create_connection(('127.0.0.1', port), 2).close()
+"""
         for _ in range(20):
             code, _ = await self._run(
                 ["exec", gateway_container, "python", "-c", probe], timeout=5.0
