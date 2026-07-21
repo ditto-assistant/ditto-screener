@@ -64,6 +64,7 @@ class _FakeGate:
         self.result = result
         self.calls: list[UUID] = []
         self.deadlines: list[float | None] = []
+        self.build_only_calls: list[bool] = []
 
     async def screen(
         self,
@@ -71,10 +72,12 @@ class _FakeGate:
         agent_id: UUID,
         deadline: float | None = None,
         publish_image: Any = None,
+        build_only: bool = False,
         **_: Any,
     ) -> ScreeningDecision:
         self.calls.append(agent_id)
         self.deadlines.append(deadline)
+        self.build_only_calls.append(build_only)
         if self.result.outcome == ScreeningOutcome.PASS and publish_image is not None:
             await publish_image(
                 BuiltImageArtifact(
@@ -199,6 +202,50 @@ async def test_screen_one_pass_posts_signed_pass_verdict(
     assert platform.heartbeats[0].progress.stage == "preparing"
     assert platform.heartbeats[-1].state == "polling"
     assert platform.heartbeats[-1].progress is None
+
+
+async def test_build_only_item_passes_build_only_to_gate_and_verdict(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    agent = uuid4()
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+    await worker._screen_one(
+        _item(agent, build_only=True), policy_version=SCREENING_POLICY_VERSION
+    )
+    assert gate.build_only_calls == [True]
+    v = platform.verdicts[0]
+    assert v["passed"] is True
+    assert v["outcome"] == ScreenResultOutcome.PASS
+    assert v["build_only"] is True
+
+
+async def test_default_item_screens_full_pipeline(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    # An item without build_only (legacy / normal) gets the full pipeline.
+    agent = uuid4()
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.PASS))
+    worker = _worker(make_config(), platform, gate)
+    await worker._screen_one(_item(agent), policy_version=SCREENING_POLICY_VERSION)
+    assert gate.build_only_calls == [False]
+    assert platform.verdicts[0]["build_only"] is False
+
+
+async def test_build_only_quarantine_is_rejected_and_posts_no_verdict(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    # Defense in depth: a build-only run must never quarantine. If the gate
+    # regressed and returned one, the worker refuses to submit it.
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.QUARANTINE))
+    worker = _worker(make_config(), platform, gate)
+    await worker._screen_one(
+        _item(uuid4(), build_only=True), policy_version=SCREENING_POLICY_VERSION
+    )
+    assert platform.verdicts == []
 
 
 async def test_passing_gate_without_verified_image_posts_no_verdict(

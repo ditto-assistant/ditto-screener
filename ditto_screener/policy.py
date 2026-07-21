@@ -895,22 +895,34 @@ class PolicyEngine:
         if len(self.modules) > _MAX_MODULES:
             raise ValueError("too many modules")
 
-    async def evaluate(self, context: PolicyContext) -> ScreeningDecision:
+    async def evaluate(
+        self, context: PolicyContext, *, build_only: bool = False
+    ) -> ScreeningDecision:
         evidence: list[PolicyEvidence] = []
         finding: Mapping[str, object] | None = None
         selected = False
-        for module in (m for m in self.modules if m.phase == "selector"):
-            result = await module.evaluate(context)
-            evidence.extend(result.evidence)
-            finding = result.finding or finding
-            terminal = _module_terminal(result.disposition)
-            if terminal is not None:
-                return self._decision(terminal, evidence, finding)
-            selected = selected or result.disposition == ModuleDisposition.TRIPWIRE
+        # A build-only submission has ALREADY cleared anti-cheat review under
+        # the current policy; it is here only to have its screened image built.
+        # The selector phase IS the source / anti-cheat review (source-review,
+        # fingerprint, and timing-relay tripwires), so it is skipped entirely
+        # and can never select a quarantine for a build-only run.
+        if not build_only:
+            for module in (m for m in self.modules if m.phase == "selector"):
+                result = await module.evaluate(context)
+                evidence.extend(result.evidence)
+                finding = result.finding or finding
+                terminal = _module_terminal(result.disposition)
+                if terminal is not None:
+                    return self._decision(terminal, evidence, finding)
+                selected = selected or result.disposition == ModuleDisposition.TRIPWIRE
 
         # Challenge-phase modules run on EVERY submission, decoupled from the
         # selector tripwire. The always-on behavioral oracle lives here so a
-        # harness cannot behave only during a ~5% audit.
+        # harness cannot behave only during a ~5% audit. It still runs for a
+        # build-only pass (it exercises the freshly built image), but because
+        # the submission already cleared review, its verdict can never
+        # quarantine: only a genuine retryable-infra failure still bubbles up,
+        # and every other terminal disposition is downgraded to a pass.
         challenges = tuple(m for m in self.modules if m.phase == "challenge")
         cleared = False
         for module in challenges:
@@ -919,6 +931,11 @@ class PolicyEngine:
             finding = result.finding or finding
             terminal = _module_terminal(result.disposition)
             if terminal is not None:
+                if build_only:
+                    if terminal == ScreeningOutcome.RETRYABLE_INFRA:
+                        return self._decision(terminal, evidence, finding)
+                    # QUARANTINE / INCONCLUSIVE cannot fail a build-only pass.
+                    continue
                 return self._decision(terminal, evidence, finding)
             cleared = cleared or (
                 module.clears_selection
@@ -929,6 +946,8 @@ class PolicyEngine:
         # released only by a dedicated selected-audit pack CLEAR. Passing the
         # generic always-on oracle proves one compliant exchange, not that the
         # flagged behavior is absent, so it must not self-clear the audit.
+        # (``selected`` is always false for a build-only run since the selector
+        # phase is skipped, so this can never quarantine a build-only pass.)
         if selected and not cleared:
             if not evidence:
                 evidence.append(

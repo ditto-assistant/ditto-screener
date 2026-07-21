@@ -143,6 +143,7 @@ class PlatformClient:
         image_id: str | None = None,
         image_ref: str | None = None,
         image_upload_id: UUID | None = None,
+        build_only: bool = False,
     ) -> ScreenResultResponse:
         """Report a signed pass/fail verdict for ``agent_id``."""
         url = f"{self._base}{_PREFIX}/agent/{agent_id}/result"
@@ -164,6 +165,7 @@ class PlatformClient:
             image_id=image_id,
             image_ref=image_ref,
             image_upload_id=image_upload_id,
+            build_only=build_only,
         )
         try:
             resp = await self._client.post(

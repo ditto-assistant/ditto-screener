@@ -207,6 +207,22 @@ class ScreenerQueueItem(BaseModel):
         UUID | None,
         Field(description="Earlier usable cross-miner submission for an exact copy."),
     ] = None
+    build_only: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, the submission has ALREADY cleared anti-cheat review "
+                "under the current policy and is merely missing its built "
+                "prerequisites (screened image and/or versioned benchmark "
+                "dataset). The screener must SKIP the source / pre-execution "
+                "anti-cheat review entirely and only do the mechanical build "
+                "work: build, upload and verify the screened image, run the "
+                "behavioral oracle, and report a pass/build result. A build-only "
+                "run must never quarantine. Defaults to false; an un-migrated "
+                "platform omits it and gets the full pipeline as before."
+            ),
+        ),
+    ] = False
 
     @model_validator(mode="after")
     def validate_precheck(self) -> ScreenerQueueItem:
@@ -424,6 +440,19 @@ class ScreenResultRequest(BaseModel):
             ),
         ),
     ]
+    build_only: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Echoes the claimed item's build-only mode: this verdict came "
+                "from a mechanical build-only pass that skipped anti-cheat "
+                "review. A build-only verdict can never carry a quarantine "
+                "outcome. Unsigned display/context only; the platform must not "
+                "treat it as proof."
+            ),
+        ),
+    ]
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -495,6 +524,16 @@ class ScreenResultRequest(BaseModel):
                 raise ValueError("finding requires finding_digest")
             if self.finding.canonical_digest() != self.finding_digest:
                 raise ValueError("finding does not match finding_digest")
+        return self
+
+    @model_validator(mode="after")
+    def validate_build_only(self) -> ScreenResultRequest:
+        # A build-only pass skips the anti-cheat review, so there is no review
+        # to fail: a build-only verdict can never quarantine. This is a
+        # defence-in-depth invariant on top of the worker never constructing a
+        # quarantine for a build-only item.
+        if self.build_only and self.outcome == ScreenResultOutcome.QUARANTINE:
+            raise ValueError("build-only result cannot carry a quarantine outcome")
         return self
 
 

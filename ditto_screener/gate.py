@@ -468,6 +468,7 @@ class BuildGate:
         progress: Callable[[ScreenerProgressStage], None] | None = None,
         deadline: float | None = None,
         publish_image: Callable[[BuiltImageArtifact], Awaitable[None]] | None = None,
+        build_only: bool = False,
     ) -> ScreeningDecision:
         """Screen one agent end-to-end; never raises.
 
@@ -476,6 +477,14 @@ class BuildGate:
         set, each heavy stage is clamped to the remaining budget and refuses to
         start once the budget is spent, so a slow build or source review can no
         longer run past the lease and have its verdict rejected as expired.
+
+        ``build_only`` marks a submission that has already cleared anti-cheat
+        review under the current policy and is missing only its built
+        prerequisites. It skips the entire source / pre-execution anti-cheat
+        review and runs only the mechanical build, serve, behavioral-oracle,
+        and image-export work. A build-only screen can only pass, report a
+        genuine build/serve/infra failure, or run out of lease budget; it can
+        never quarantine.
         """
 
         loop = asyncio.get_running_loop()
@@ -538,65 +547,6 @@ class BuildGate:
                 )
             source_digest, source_paths = self._source_metadata(tmp_path)
 
-            # Static rules run before any submission-controlled Dockerfile or
-            # image, but they are routing leads rather than proof. Resolve an
-            # elevated lead with the inert L2/L3 harness before deciding
-            # whether untrusted build execution may start.
-            preflight = TarSourceRepository(tmp_path).malicious_preflight(
-                artifact_sha256=sha256.lower()
-            )
-            preflight_clearance: SourceReviewObservation | None = None
-            if preflight is not None:
-                logger.warning(
-                    "static-source review lead agent_id=%s attempt_id=%s "
-                    "categories=%s execution_started=false",
-                    agent_id,
-                    attempt_id,
-                    ",".join(preflight.categories),
-                )
-                resolved_preflight = await self._source_reviewer.resolve_lead(
-                    tmp_path,
-                    artifact_sha256=sha256.lower(),
-                    attempt_id=attempt_id,
-                    l1_observation=preflight,
-                    progress=(
-                        lambda completed, total: report(
-                            source_review_progress_stage(completed, total)
-                        )
-                    ),
-                    deadline=deadline,
-                )
-                if resolved_preflight.ok and resolved_preflight.risk_level == "low":
-                    preflight_clearance = resolved_preflight
-                else:
-                    decision = self._policy.preexecution_source_decision(
-                        resolved_preflight
-                    )
-
-                    async def unreachable_challenge(
-                        _challenge_id: str,
-                        _request: Mapping[str, object],
-                        _timeout: float,
-                    ) -> ChallengeObservation:
-                        raise RuntimeError(
-                            "unresolved pre-execution review never starts a challenge"
-                        )
-
-                    context = PolicyContext(
-                        agent_id=agent_id,
-                        attempt_id=attempt_id,
-                        miner_hotkey=miner_hotkey,
-                        artifact_sha256=sha256.lower(),
-                        source_digest=source_digest,
-                        source_paths=source_paths,
-                        build_elapsed_ms=0,
-                        health_elapsed_ms=0,
-                        run_challenge=unreachable_challenge,
-                        review_source=None,
-                    )
-                    self._journal.record(context=context, decision=decision)
-                    return decision
-
             # The agentic source review reads only the validated tarball, so
             # it can run CONCURRENTLY with the docker build + serve + oracle
             # stages instead of serially after them (prod baseline: ~430s
@@ -610,23 +560,92 @@ class BuildGate:
                 if in_policy_phase:
                     report(source_review_progress_stage(completed, total))
 
-            if preflight_clearance is None:
-                review_task = asyncio.create_task(
-                    self._source_reviewer.review(
+            # A build-only submission has ALREADY cleared anti-cheat review
+            # under the current policy and is here only to have its screened
+            # image built. Skip the entire source / pre-execution anti-cheat
+            # review (the static malicious-preflight lead AND the agentic
+            # reviewer): no lead is resolved, no reviewer is launched, and the
+            # policy is given no source-review source below, so only the
+            # mechanical build + serve + behavioral-oracle stages run and the
+            # run can never quarantine on review.
+            if not build_only:
+                # Static rules run before any submission-controlled Dockerfile or
+                # image, but they are routing leads rather than proof. Resolve an
+                # elevated lead with the inert L2/L3 harness before deciding
+                # whether untrusted build execution may start.
+                preflight = TarSourceRepository(tmp_path).malicious_preflight(
+                    artifact_sha256=sha256.lower()
+                )
+                preflight_clearance: SourceReviewObservation | None = None
+                if preflight is not None:
+                    logger.warning(
+                        "static-source review lead agent_id=%s attempt_id=%s "
+                        "categories=%s execution_started=false",
+                        agent_id,
+                        attempt_id,
+                        ",".join(preflight.categories),
+                    )
+                    resolved_preflight = await self._source_reviewer.resolve_lead(
                         tmp_path,
                         artifact_sha256=sha256.lower(),
                         attempt_id=attempt_id,
-                        progress=report_review_progress,
+                        l1_observation=preflight,
+                        progress=(
+                            lambda completed, total: report(
+                                source_review_progress_stage(completed, total)
+                            )
+                        ),
                         deadline=deadline,
                     )
-                )
-            else:
+                    if resolved_preflight.ok and resolved_preflight.risk_level == "low":
+                        preflight_clearance = resolved_preflight
+                    else:
+                        decision = self._policy.preexecution_source_decision(
+                            resolved_preflight
+                        )
 
-                async def cleared_preflight() -> SourceReviewObservation:
-                    assert preflight_clearance is not None
-                    return preflight_clearance
+                        async def unreachable_challenge(
+                            _challenge_id: str,
+                            _request: Mapping[str, object],
+                            _timeout: float,
+                        ) -> ChallengeObservation:
+                            raise RuntimeError(
+                                "unresolved pre-execution review never starts a "
+                                "challenge"
+                            )
 
-                review_task = asyncio.create_task(cleared_preflight())
+                        context = PolicyContext(
+                            agent_id=agent_id,
+                            attempt_id=attempt_id,
+                            miner_hotkey=miner_hotkey,
+                            artifact_sha256=sha256.lower(),
+                            source_digest=source_digest,
+                            source_paths=source_paths,
+                            build_elapsed_ms=0,
+                            health_elapsed_ms=0,
+                            run_challenge=unreachable_challenge,
+                            review_source=None,
+                        )
+                        self._journal.record(context=context, decision=decision)
+                        return decision
+
+                if preflight_clearance is None:
+                    review_task = asyncio.create_task(
+                        self._source_reviewer.review(
+                            tmp_path,
+                            artifact_sha256=sha256.lower(),
+                            attempt_id=attempt_id,
+                            progress=report_review_progress,
+                            deadline=deadline,
+                        )
+                    )
+                else:
+
+                    async def cleared_preflight() -> SourceReviewObservation:
+                        assert preflight_clearance is not None
+                        return preflight_clearance
+
+                    review_task = asyncio.create_task(cleared_preflight())
 
             report("building")
             if (exhausted := self._lease_exhausted(deadline, "build")) is not None:
@@ -720,6 +739,7 @@ class BuildGate:
             async def review_source():  # type: ignore[no-untyped-def]
                 nonlocal in_policy_phase
                 in_policy_phase = True
+                assert review_task is not None
                 return await review_task
 
             context = PolicyContext(
@@ -732,16 +752,26 @@ class BuildGate:
                 build_elapsed_ms=build_elapsed_ms,
                 health_elapsed_ms=health_elapsed_ms,
                 run_challenge=run_challenge,
-                review_source=review_source,
+                # A build-only pass skipped source review, so the policy is
+                # given no source-review source and never runs the selector
+                # (anti-cheat) phase.
+                review_source=None if build_only else review_source,
             )
             report("validating")
             exhausted = self._lease_exhausted(deadline, "policy review")
             if exhausted is not None:
                 return exhausted
-            decision = await self._policy.evaluate(context)
-            decision = _with_image_binding_advisory(
-                decision, self._image_binding_advisory(tmp_path)
-            )
+            decision = await self._policy.evaluate(context, build_only=build_only)
+            # The image-binding advisory can only escalate a PASS to an
+            # operator-reviewed QUARANTINE. A build-only screen must never
+            # quarantine — the worker rejects that outcome, so it would fail
+            # submission and loop with no verdict — and its anti-cheat review is
+            # already adjudicated. Keep the policy decision as-is; apply the
+            # advisory only on a full screen.
+            if not build_only:
+                decision = _with_image_binding_advisory(
+                    decision, self._image_binding_advisory(tmp_path)
+                )
             self._journal.record(context=context, decision=decision)
             if decision.outcome == ScreeningOutcome.PASS and publish_image is not None:
                 report("submitting")

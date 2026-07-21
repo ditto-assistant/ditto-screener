@@ -582,6 +582,83 @@ async def test_behavioral_oracle_runs_without_any_tripwire() -> None:
     assert decision.submits_verdict and decision.passed
 
 
+async def test_build_only_skips_source_review_selector_and_passes() -> None:
+    """A build-only pass never runs the anti-cheat selector (source review)."""
+    reviewed = False
+
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("build-only pass runs no behavioral pack")
+
+    async def review() -> SourceReviewObservation:
+        nonlocal reviewed
+        reviewed = True
+        return SourceReviewObservation(
+            ok=True,
+            risk_level="high",
+            finding_digest="ab" * 32,
+            categories=("provider_bypass",),
+        )
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="source-review",
+            module_specs=({"kind": "agentic_source_review"},),
+        ),
+        (AgenticSourceReviewModule(module_id="private-source-review"),),
+    )
+    # The same context QUARANTINES in the full pipeline
+    # (test_agentic_source_review_can_only_select_quarantine); build-only skips
+    # the selector entirely, never consults review, and passes.
+    decision = await engine.evaluate(_context(challenge, review), build_only=True)
+    assert decision.outcome == ScreeningOutcome.PASS
+    assert decision.submits_verdict and decision.passed
+    assert reviewed is False
+
+
+async def test_build_only_runs_oracle_but_never_quarantines() -> None:
+    """The oracle still runs on a build-only pass, but cannot quarantine it."""
+    seen: list[str] = []
+
+    async def observe(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        seen.append(challenge_id)
+        # Missing gateway token => wrong-answer QUARANTINE in the full pipeline
+        # (test_wrong_nonce_table_harness_fails_the_oracle).
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ef" * 32,
+            elapsed_ms=900,
+            gateway_calls=2,
+            oracle_answer_correct=False,
+        )
+
+    decision = await _oracle_engine().evaluate(_context(observe), build_only=True)
+    assert seen == ["v8-behavioral-oracle"]  # the oracle DID run
+    assert decision.outcome == ScreeningOutcome.PASS
+    assert decision.submits_verdict and decision.passed
+
+
+async def test_build_only_still_reports_genuine_infra_failure() -> None:
+    """Build-only downgrades review verdicts but not real infra failures."""
+
+    async def challenge(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("unavailable pack never reaches the runner")
+
+    engine = PolicyEngine(
+        PolicyManifest(
+            rotation_id="pack",
+            module_specs=({"kind": "behavioral_challenge_pack"},),
+        ),
+        (
+            BehavioralChallengePackModule(
+                module_id="pack", pack_path=Path("/nonexistent")
+            ),
+        ),
+    )
+    decision = await engine.evaluate(_context(challenge), build_only=True)
+    assert decision.outcome == ScreeningOutcome.RETRYABLE_INFRA
+
+
 async def test_reasoning_harness_passes_the_oracle() -> None:
     async def observe(*_):  # type: ignore[no-untyped-def]
         return ChallengeObservation(

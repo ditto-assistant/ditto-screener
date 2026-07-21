@@ -141,3 +141,42 @@ def test_evidence_list_is_bounded() -> None:
     )
     with pytest.raises(ValidationError):
         _request(evidence=[item] * 17)
+
+
+def _pass_request(**overrides: object) -> ScreenResultRequest:
+    base: dict[str, object] = {
+        "screener_hotkey": _HOTKEY,
+        "attempt_id": uuid4(),
+        "signature": "ab" * 64,
+        "passed": True,
+        "outcome": ScreenResultOutcome.PASS,
+        "policy_version": SCREENING_POLICY_VERSION,
+        "image_sha256": "12" * 32,
+        "image_size_bytes": 123,
+        "image_id": "sha256:" + "34" * 32,
+        "image_ref": "ditto-screen/550e8400-e29b-41d4-a716-446655440000:latest",
+        "image_upload_id": uuid4(),
+    }
+    base.update(overrides)
+    return ScreenResultRequest.model_validate(base)
+
+
+def test_build_only_defaults_false_and_is_omitted_by_legacy_platform() -> None:
+    # An un-migrated platform never sends build_only; the model tolerates its
+    # absence and defaults to the full-pipeline behavior.
+    request = _pass_request()
+    assert request.build_only is False
+
+
+def test_build_only_pass_is_accepted() -> None:
+    request = _pass_request(build_only=True)
+    assert request.build_only is True
+    assert request.outcome == ScreenResultOutcome.PASS
+
+
+def test_build_only_result_cannot_quarantine() -> None:
+    # A build-only pass skips review, so it can never carry a quarantine.
+    with pytest.raises(
+        ValidationError, match="build-only result cannot carry a quarantine"
+    ):
+        _request(build_only=True)

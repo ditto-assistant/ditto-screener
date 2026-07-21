@@ -322,6 +322,10 @@ class ScreenerWorker:
                         progress=self._set_progress,
                         deadline=screen_deadline,
                         publish_image=publish_image,
+                        # A build-only item already cleared anti-cheat review;
+                        # the gate skips source review and only builds + serves +
+                        # runs the behavioral oracle, and can never quarantine.
+                        build_only=item.build_only,
                     )
             # INCONCLUSIVE is a NON-verdict by platform contract: the result
             # endpoint rejects a submitted inconclusive outcome and expects the
@@ -349,6 +353,15 @@ class ScreenerWorker:
             if passed and (screened_image is None or screened_image_upload_id is None):
                 raise PlatformError("passing screen did not publish a prebuilt image")
             is_quarantine = typed_outcome == ScreenResultOutcome.QUARANTINE
+            # There is no review to fail on a build-only pass, so it must never
+            # quarantine. The gate already guarantees this; guard here too so a
+            # regression fails loud instead of silently quarantining an
+            # already-approved agent.
+            if item.build_only and is_quarantine:
+                raise PlatformError(
+                    "build-only screen produced a quarantine outcome for "
+                    f"agent_id={agent_id}"
+                )
             reason_code = result.evidence[-1].code if result.evidence else None
             # The bounded review payloads ride along on quarantine so the
             # operator sees WHY, not just a digest. When a source-review
@@ -417,6 +430,7 @@ class ScreenerWorker:
                 image_id=screened_image.image_id if screened_image else None,
                 image_ref=screened_image.image_ref if screened_image else None,
                 image_upload_id=screened_image_upload_id,
+                build_only=item.build_only,
             )
             logger.info(
                 "screened agent_id=%s miner=%s outcome=%s passed=%s "
