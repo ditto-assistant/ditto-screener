@@ -228,12 +228,16 @@ def test_updater_installs_and_rolls_back_the_repository_owned_unit() -> None:
     assert "SCREENING_POLICY_VERSION" in updater
 
 
-def test_updater_builds_the_trusted_l2_analyzer_only_when_enabled() -> None:
+def test_updater_keeps_the_trusted_l2_analyzer_ready_for_dynamic_settings() -> None:
     updater = (ROOT / "scripts" / "update-screener.sh").read_text()
     dockerfile = (ROOT / "deploy" / "l2-analyzer.Dockerfile").read_text()
 
     assert "ensure_l2_analyzer" in updater
-    assert 'mode" == "shadow" || "$mode" == "enforce"' in updater
+    function = updater.split("ensure_l2_analyzer() {", 1)[1].split(
+        "\n}\n\nwait_for_health", 1
+    )[0]
+    assert 'mode="$(l2_mode)"' not in function
+    assert '[[ "$mode"' not in function
     assert "ai.heyditto.screener.sha=$sha" in updater
     assert 'ensure_l2_analyzer "$current_sha"' in updater
     assert '"$l2_analyzer_image" build_structure' in updater

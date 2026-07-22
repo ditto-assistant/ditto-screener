@@ -3117,6 +3117,11 @@ class LayeredSourceReviewAgent:
         self._l1 = l1
         self._l2 = l2
         self._mode = mode
+        self._shadow_results: dict[UUID, L2RunResult] = {}
+
+    def pop_shadow_result(self, attempt_id: UUID) -> L2RunResult | None:
+        """Consume non-authoritative shadow telemetry for one attempt."""
+        return self._shadow_results.pop(attempt_id, None)
 
     async def review(
         self,
@@ -3176,7 +3181,10 @@ class LayeredSourceReviewAgent:
         )
         if progress is not None:
             progress(2, 2)
-        return l1 if self._mode == "shadow" else result.observation
+        if self._mode == "shadow":
+            self._shadow_results[attempt_id] = result
+            return l1
+        return result.observation
 
 
 def _dossier_has_scorer_attention(dossier: Mapping[str, object]) -> bool:

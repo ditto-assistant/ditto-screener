@@ -137,6 +137,8 @@ class ScreenerConfig:
     l2_critic_reasoning_effort: str
     l2_cache_ttl_seconds: float
     l2_audit_retention_days: int
+    review_settings_cache_file: str
+    review_settings_max_stale_seconds: int
 
     def signing_source_present(self) -> bool:
         """Whether a usable signing key source is configured."""
@@ -290,6 +292,13 @@ def parse_screener_config_from_env() -> ScreenerConfig:
             "SCREENER_L2_CACHE_TTL_SECONDS", str(7 * 86_400)
         ),
         l2_audit_retention_days=_parse_int("SCREENER_L2_AUDIT_RETENTION_DAYS", "30"),
+        review_settings_cache_file=os.environ.get(
+            "SCREENER_REVIEW_SETTINGS_CACHE_FILE",
+            "/opt/ditto/screener/state/review-settings.json",
+        ),
+        review_settings_max_stale_seconds=_parse_int(
+            "SCREENER_REVIEW_SETTINGS_MAX_STALE_SECONDS", "900"
+        ),
     )
     if not config.signing_source_present():
         raise ScreenerConfigError(
@@ -361,5 +370,9 @@ def parse_screener_config_from_env() -> ScreenerConfig:
     if not 1 <= config.l2_audit_retention_days <= 365:
         raise ScreenerConfigError(
             "SCREENER_L2_AUDIT_RETENTION_DAYS must be between 1 and 365"
+        )
+    if not 60 <= config.review_settings_max_stale_seconds <= 86_400:
+        raise ScreenerConfigError(
+            "SCREENER_REVIEW_SETTINGS_MAX_STALE_SECONDS must be between 60 and 86400"
         )
     return config

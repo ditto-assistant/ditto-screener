@@ -224,9 +224,10 @@ l2_mode() {
 }
 
 ensure_l2_analyzer() {
-  local sha="$1" mode current_label
-  mode="$(l2_mode)"
-  [[ "$mode" == "shadow" || "$mode" == "enforce" ]] || return 0
+  local sha="$1" current_label
+  # Platform-managed settings can switch this worker from off to shadow/enforce
+  # between leases. Keep the trusted analyzer ready at the deployed SHA so that
+  # change never depends on a second host deployment or a static env toggle.
   current_label="$(docker image inspect --format \
     '{{index .Config.Labels "ai.heyditto.screener.sha"}}' \
     "$l2_analyzer_image" 2>/dev/null || true)"
