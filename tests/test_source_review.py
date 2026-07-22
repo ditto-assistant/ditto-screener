@@ -994,6 +994,131 @@ def test_repository_preflight_follows_rust_include_into_nested_test_path(
     assert observation.categories == ("malicious_build",)
 
 
+@pytest.mark.parametrize("target_kind", ["example", "test", "bench"])
+def test_repository_preflight_ignores_inert_cargo_targets(
+    tmp_path: Path, target_kind: str
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Cargo.toml": (
+                        b'[package]\nname = "agent"\nversion = "0.1.0"\n'
+                        + f'[[{target_kind}]]\nname = "fixture"\n'.encode()
+                        + b'path = "tests/payload.rs"\n'
+                    ),
+                    "src/main.rs": b"fn main() {}\n",
+                    "tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    runtime_paths = repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert "tests/payload.rs" not in runtime_paths
+    assert observation is None
+
+
+def test_repository_preflight_ignores_dev_dependency_build_script(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Cargo.toml": (
+                        b'[package]\nname = "agent"\nversion = "0.1.0"\n'
+                        b"[dev-dependencies]\n"
+                        b'fixture = { path = "tests/fixture" }\n'
+                    ),
+                    "src/main.rs": b"fn main() {}\n",
+                    "tests/fixture/Cargo.toml": (
+                        b'[package]\nname = "fixture"\nversion = "0.1.0"\n'
+                        b'build = "payload.rs"\n'
+                    ),
+                    "tests/fixture/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    runtime_paths = repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert "tests/fixture/payload.rs" not in runtime_paths
+    assert observation is None
+
+
+@pytest.mark.parametrize(
+    "runtime_source",
+    [
+        ('#[cfg(test)]\n#[path = "../tests/payload.rs"]\nmod policy_fixture;\n'),
+        '#[cfg(test)]\ninclude!("../tests/payload.rs");\n',
+    ],
+)
+def test_repository_preflight_ignores_test_only_rust_indirections(
+    tmp_path: Path, runtime_source: str
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": runtime_source.encode(),
+                    "tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    runtime_paths = repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert "tests/payload.rs" not in runtime_paths
+    assert observation is None
+
+
+def test_repository_preflight_follows_unguarded_rust_path_attribute(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": (
+                        b'#[path = "../tests/payload.rs"]\nmod production_module;\n'
+                    ),
+                    "tests/payload.rs": (
+                        b'let endpoint = "/var/run/docker.sock";\n'
+                        b"connect_control_socket(endpoint);\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    runtime_paths = repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert "tests/payload.rs" in runtime_paths
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
 @pytest.mark.parametrize(
     "root_manifest,dependency_manifest",
     [

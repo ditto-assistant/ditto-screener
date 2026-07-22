@@ -500,7 +500,9 @@ def _cargo_path_dependencies(value: object) -> set[str]:
     paths: set[str] = set()
     if isinstance(value, dict):
         for key, child in value.items():
-            if key.endswith("dependencies") and isinstance(child, dict):
+            if key in {"dependencies", "build-dependencies"} and isinstance(
+                child, dict
+            ):
                 for specification in child.values():
                     if isinstance(specification, dict):
                         path = specification.get("path")
@@ -652,7 +654,7 @@ def _rust_runtime_references(source: str) -> tuple[set[str], bool]:
             ("identifier", "include"),
             ("punctuation", "!"),
             ("punctuation", "("),
-        ]:
+        ] and not _rust_reference_is_test_only(tokens, index):
             argument = index + 3
             if argument < len(tokens) and tokens[argument][0] == "string":
                 references.add(tokens[argument][1])
@@ -691,7 +693,7 @@ def _rust_runtime_references(source: str) -> tuple[set[str], bool]:
             ("punctuation", "["),
             ("identifier", "path"),
             ("punctuation", "="),
-        ]:
+        ] and not _rust_reference_is_test_only(tokens, index):
             argument = index + 4
             if argument < len(tokens) and tokens[argument][0] == "string":
                 references.add(tokens[argument][1])
@@ -699,6 +701,34 @@ def _rust_runtime_references(source: str) -> tuple[set[str], bool]:
                 unresolved = True
         index += 1
     return references, unresolved
+
+
+def _rust_reference_is_test_only(
+    tokens: list[tuple[str, str]], reference_index: int
+) -> bool:
+    """Return whether a Rust source indirection is guarded only for tests."""
+    start = reference_index - 1
+    while start >= 0 and tokens[start] not in {
+        ("punctuation", ";"),
+        ("punctuation", "{"),
+        ("punctuation", "}"),
+    }:
+        start -= 1
+    start += 1
+
+    cfg_test = [
+        ("punctuation", "#"),
+        ("punctuation", "["),
+        ("identifier", "cfg"),
+        ("punctuation", "("),
+        ("identifier", "test"),
+        ("punctuation", ")"),
+        ("punctuation", "]"),
+    ]
+    return any(
+        tokens[cursor : cursor + len(cfg_test)] == cfg_test
+        for cursor in range(start, reference_index)
+    )
 
 
 class TarSourceRepository:
@@ -794,7 +824,11 @@ class TarSourceRepository:
                 build_path = package.get("build")
                 if isinstance(build_path, str):
                     self._add_runtime_path(runtime, base, build_path)
-            for target_kind in ("lib", "bin", "example", "test", "bench"):
+            # Cargo does not build examples, integration tests, or benches for
+            # an ordinary release build. They remain visible to broad L1 review
+            # but cannot create a decisive pre-build finding solely because the
+            # manifest declares an inert local target.
+            for target_kind in ("lib", "bin"):
                 targets = manifest.get(target_kind)
                 if isinstance(targets, dict):
                     targets = [targets]
