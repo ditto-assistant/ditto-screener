@@ -46,6 +46,7 @@ from ditto_screener.l2_review import (
     _cost,
     _dossier_has_scorer_attention,
     _extract_readonly_workspace,
+    _graph_covers_l1_slice,
     _has_mixed_causal_families,
     _make_writable,
     _needs_violation_adjudication,
@@ -68,17 +69,18 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
     assert [manifest["revision"] for manifest in manifests] == [
         "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
         "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
+        "106076a40e4214cda821dfd0bee5c9c6785d425c",
     ]
     assert all(
         manifest["origin"] == "ditto-assistant/dittobench-starter-kit"
         for manifest in manifests
     )
-    assert all(len(manifest["files"]) == 38 for manifest in manifests)
-    assert [len(manifest["rust_functions"]) for manifest in manifests] == [98, 103]
+    assert [len(manifest["files"]) for manifest in manifests] == [38, 38, 42]
+    assert [len(manifest["rust_functions"]) for manifest in manifests] == [98, 103, 103]
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v23"
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v24"
     assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v22"
     assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v5")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
@@ -170,7 +172,7 @@ def test_l1_mechanism_narrowed_away_by_kimi_still_requires_sol() -> None:
 
 
 def test_request_local_identical_tool_memoization_is_not_fabrication() -> None:
-    assert L2_CRITIC_PROMPT_REVISION == "l3-sol-adversarial-critic-v15"
+    assert L2_CRITIC_PROMPT_REVISION == "l3-sol-adversarial-critic-v16"
     assert L2_SAFETY_PROMPT_REVISION == "l3-sol-safety-adjudicator-v19"
     assert "Request-local memoization of an identical invocation" in _SYSTEM_PROMPT
     assert "deduplication is not fabricated telemetry" in _SYSTEM_PROMPT
@@ -216,7 +218,9 @@ def _tar(tmp_path: Path, source: str) -> tuple[Path, str]:
     return path, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _l1(risk: str = "medium") -> SourceReviewObservation:
+def _l1(
+    risk: str = "medium", *, clearance_certified: bool | None = None
+) -> SourceReviewObservation:
     categories = ("benchmark_emulation",) if risk != "low" else ("none",)
     return SourceReviewObservation(
         ok=True,
@@ -240,6 +244,9 @@ def _l1(risk: str = "medium") -> SourceReviewObservation:
             ),
             "summary": "bounded test routing lead",
         },
+        clearance_certified=(
+            risk == "low" if clearance_certified is None else clearance_certified
+        ),
     )
 
 
@@ -301,6 +308,44 @@ async def test_clean_l1_skips_sol() -> None:
     assert result is l1.result
     assert l1.calls == 1
     assert l2.calls == 0
+
+
+async def test_uncertified_l1_low_escalates_to_l2() -> None:
+    l1 = _FakeL1(_l1("low", clearance_certified=False))
+    l2 = _FakeL2(_model_result(_safe()))
+    layered = LayeredSourceReviewAgent(l1=l1, l2=l2, mode="enforce")  # type: ignore[arg-type]
+
+    result = await layered.review(
+        "unused", artifact_sha256="c" * 64, attempt_id=ATTEMPT
+    )
+
+    assert result.risk_level == "low"
+    assert l2.calls == 1
+
+
+def test_direct_clear_graph_requires_unique_resolved_l1_slice() -> None:
+    graph = {
+        "unresolved": False,
+        "entry_ambiguous": False,
+        "truncated": False,
+        "nodes": [
+            {
+                "id": "src/main.rs::main@1",
+                "path": "src/main.rs",
+                "line": 1,
+                "end_line": 4,
+            }
+        ],
+        "ambiguous_calls": [],
+        "unresolved_calls": [],
+    }
+
+    assert _graph_covers_l1_slice(graph, _l1())
+    graph["ambiguous_calls"] = [{"caller": "src/main.rs::main@1", "target": "dispatch"}]
+    assert not _graph_covers_l1_slice(graph, _l1())
+    graph["ambiguous_calls"] = []
+    graph["entry_ambiguous"] = True
+    assert not _graph_covers_l1_slice(graph, _l1())
 
 
 @pytest.mark.parametrize("risk", ["medium", "high"])
@@ -1578,6 +1623,9 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     assert "starter_function_diff" in dossier_text
     assert "integrity_surfaces" in dossier_text
     assert "scorer_field_flow" in dossier_text
+    assert '"supported_versions":[3,4,5,6]' in dossier_text
+    assert '"relay_usage_authority":"validator_owned"' in dossier_text
+    assert '"stored_content_role":"data_not_instruction"' in dossier_text
     assert first.critic_disposition == second.critic_disposition == "confirm_safe"
     assert (
         first.adjudicator_disposition
@@ -1625,7 +1673,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     )
     assert all(record["dossier_revision"] == L2_DOSSIER_REVISION for record in records)
     assert all(record["harness_revision"] == L2_HARNESS_REVISION for record in records)
-    assert all(len(record["starter_revisions"]) == 2 for record in records)
+    assert all(len(record["starter_revisions"]) == 3 for record in records)
     assert all(record["budgets"]["max_cost_usd"] == 1.5 for record in records)
     assert all(record["budgets"]["max_analyzer_calls"] == 24 for record in records)
     assert all(
@@ -1645,7 +1693,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     assert journal_path.stat().st_mode & 0o777 == 0o600
 
 
-async def test_served_generator_hold_stops_before_sol_even_when_kimi_says_safe(
+async def test_served_generator_attention_requires_sol_and_can_clear(
     tmp_path: Path,
 ) -> None:
     source = """\
@@ -1683,9 +1731,18 @@ fn run() -> Answer {
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
+        if len(requests) == 3:
+            return _response(
+                [_tool_call("3", "read_file", {"path": "src/main.rs"})],
+                model="openai/gpt-5.6-sol-20260709",
+            )
         return _response(
             [_tool_call("1", "submit_l2_review", safe)],
-            model="moonshotai/kimi-k3-20260715",
+            model=(
+                "moonshotai/kimi-k3-20260715"
+                if len(requests) == 1
+                else "openai/gpt-5.6-sol-20260709"
+            ),
         )
 
     agent = _sol_agent(tmp_path, _FakeHarness(), handler)
@@ -1697,15 +1754,72 @@ fn run() -> Answer {
         deadline=None,
     )
 
-    assert len(requests) == 1
+    assert len(requests) == 4
     assert requests[0]["model"] == L2_MODEL
-    assert result.observation.risk_level == "medium"
-    assert result.clearance_path == "deterministic_served_generator_hold"
-    assert result.critic_disposition == "not_required_static_hold"
-    assert result.response_models == ("moonshotai/kimi-k3-20260715",)
+    assert requests[1]["model"] == "openai/gpt-5.6-sol"
+    assert result.observation.risk_level == "low"
+    assert result.clearance_path == "l3_adjudicated_safe"
+    assert result.critic_disposition == "confirm_safe"
 
 
-async def test_mixed_l1_static_hold_gets_sol_causal_enrichment(
+async def test_defensive_review_comment_is_attention_not_a_static_hold(
+    tmp_path: Path,
+) -> None:
+    source = """\
+fn main() {
+    // Never alter model routing for a screener audit or single-call nonce probe.
+    let answer = chat(request.question);
+    return_response(answer);
+}
+"""
+    archive, artifact_sha = _tar(tmp_path, source)
+    repository = TarSourceRepository(str(archive))
+    assert repository.review_leads()["review_adaptive_model_routing"]["candidate"]
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    safe = _clearance_certificate(
+        {
+            "disposition": "safe",
+            "risk_level": "low",
+            "confidence": 1.0,
+            "resolution_basis": "authoritative_model_tool_path",
+            "categories": ["none"],
+            "analyzed_files": [{"path": "src/main.rs", "sha256": digest}],
+            "evidence": [],
+            "summary": "sanitized",
+        }
+    )
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 3:
+            return _response(
+                [_tool_call("3", "read_file", {"path": "src/main.rs"})],
+                model="openai/gpt-5.6-sol-20260709",
+            )
+        return _response(
+            [_tool_call(str(len(requests)), "submit_l2_review", safe)],
+            model=(
+                "moonshotai/kimi-k3-20260715"
+                if len(requests) == 1
+                else "openai/gpt-5.6-sol-20260709"
+            ),
+        )
+
+    result = await _sol_agent(tmp_path, _FakeHarness(), handler).review(
+        str(archive),
+        artifact_sha256=artifact_sha,
+        attempt_id=ATTEMPT,
+        l1_observation=_l1(),
+        deadline=None,
+    )
+
+    assert len(requests) == 4
+    assert result.observation.risk_level == "low"
+    assert result.clearance_path == "l3_adjudicated_safe"
+
+
+async def test_mixed_l1_integrity_attention_gets_sol_causal_review(
     tmp_path: Path,
 ) -> None:
     source = """\
@@ -1813,8 +1927,8 @@ fn run() -> Answer {
 
     assert len(requests) == 3
     assert result.resolution_basis == "scorer_field_manipulation"
-    assert result.clearance_path == "l3_adjudicated_violation_cause_tiebreak"
-    assert result.adjudicator_disposition == "resolve_violation_cause_disagreement"
+    assert result.clearance_path == "l3_adjudicated_violation"
+    assert result.adjudicator_disposition == "uphold_violation"
 
 
 async def test_reasoning_only_turn_gets_one_bounded_tool_retry(tmp_path: Path) -> None:
@@ -3101,13 +3215,13 @@ async def test_real_analyzer_container_isolated_and_canonical_starter_clean(
     assert build.returncode == 0, output.decode(errors="replace")[-4_000:]
     harness = IsolatedCodingHarness(docker_bin="docker", image=image)
     diff = json.loads(await harness.run(starter, "starter_diff", {}))
-    assert diff["revision"] == "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd"
+    assert diff["revision"] == "106076a40e4214cda821dfd0bee5c9c6785d425c"
     assert not diff["modified"]
     assert not diff["added"]
     assert not diff["removed"]
-    assert len(diff["unchanged"]) == 38
+    assert len(diff["unchanged"]) == 42
     function_diff = json.loads(await harness.run(starter, "starter_function_diff", {}))
-    assert function_diff["revision"] == "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd"
+    assert function_diff["revision"] == "106076a40e4214cda821dfd0bee5c9c6785d425c"
     assert function_diff["unchanged_count"] == 103
     assert not function_diff["modified"]
     assert not function_diff["added"]

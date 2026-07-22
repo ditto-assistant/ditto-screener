@@ -19,6 +19,7 @@ import pytest
 
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.gate import (
+    _MAX_ARCHIVE_MEMBERS,
     _MAX_SCREENED_IMAGE_BYTES,
     BuildGate,
     _detail_tail,
@@ -576,7 +577,10 @@ async def test_fake_gateway_is_internal_and_resource_capped(
     harness = next(
         call for call in calls if call[0] == "run" and call[-1] == "sha256:" + "34" * 32
     )
-    assert "CHUTES_BASE_URL=http://fake-gateway:8080/v1" in harness
+    assert "CHUTES_BASE_URL=http://host.docker.internal:11435/v1" in harness
+    assert "OPENAI_BASE_URL=http://host.docker.internal:11435/v1" in harness
+    assert "OLLAMA_BASE_URL=http://host.docker.internal:11434" in harness
+    assert "fake-gateway" not in " ".join(harness)
     assert {"--memory", "3g", "--pids-limit", "512"} <= set(harness)
     assert {"--init", "--user", "65532:65532", "--read-only"} <= set(harness)
     assert {"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=512m"} <= set(harness)
@@ -622,6 +626,44 @@ async def test_rust_contract_failure_is_terminal_reject(
         "error[SCR-RUST-006]: Cargo.toml is missing from the archive root"
     )
     assert "help:" in result.detail
+    assert not any(call[0] == "build" for call in calls)
+
+
+@pytest.mark.parametrize("alias", ["src/./main.rs", "src//main.rs"])
+async def test_rust_contract_rejects_noncanonical_member_alias(
+    make_config: Callable[..., ScreenerConfig], alias: str
+) -> None:
+    tarball = _valid_tar(**{alias: b"fn replacement() {}\n"})
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+
+    assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
+    assert "non-canonical path" in result.detail
+    assert not any(call[0] == "build" for call in calls)
+
+
+async def test_rust_contract_rejects_member_flood_before_build(
+    make_config: Callable[..., ScreenerConfig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("ditto_screener.gate._MAX_ARCHIVE_MEMBERS", 3)
+    monkeypatch.setattr(
+        tarfile.TarFile,
+        "getmembers",
+        lambda _self: pytest.fail("member cap must stream archive headers"),
+    )
+    tarball = _valid_tar(**{"empty-directory": b""})
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+
+    assert _MAX_ARCHIVE_MEMBERS == 20_000
+    assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
+    assert "too many members" in result.detail
     assert not any(call[0] == "build" for call in calls)
 
 
