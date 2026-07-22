@@ -2,6 +2,59 @@
 
 <!-- version list -->
 
+## v0.15.0 (2026-07-22)
+
+### Bug Fixes
+
+- Align agentic review with benchmark v5 and v6
+  ([#41](https://github.com/ditto-assistant/ditto-screener/pull/41),
+  [`42ad63f`](https://github.com/ditto-assistant/ditto-screener/commit/42ad63fb129baa45a3a57cf83c646b7855223664))
+
+- Balance anti-copy escalation boundaries
+  ([#41](https://github.com/ditto-assistant/ditto-screener/pull/41),
+  [`42ad63f`](https://github.com/ditto-assistant/ditto-screener/commit/42ad63fb129baa45a3a57cf83c646b7855223664))
+
+- Harden screener anti-copy boundaries
+  ([#41](https://github.com/ditto-assistant/ditto-screener/pull/41),
+  [`42ad63f`](https://github.com/ditto-assistant/ditto-screener/commit/42ad63fb129baa45a3a57cf83c646b7855223664))
+
+- Keep dynamic review workers analyzer-ready
+  ([#43](https://github.com/ditto-assistant/ditto-screener/pull/43),
+  [`d75c6e3`](https://github.com/ditto-assistant/ditto-screener/commit/d75c6e3c3898f625932912a1837f02ef405029e3))
+
+### Features
+
+- Apply platform-managed review settings
+  ([#43](https://github.com/ditto-assistant/ditto-screener/pull/43),
+  [`d75c6e3`](https://github.com/ditto-assistant/ditto-screener/commit/d75c6e3c3898f625932912a1837f02ef405029e3))
+
+- Manage agentic reviewer settings from platform
+  ([#43](https://github.com/ditto-assistant/ditto-screener/pull/43),
+  [`d75c6e3`](https://github.com/ditto-assistant/ditto-screener/commit/d75c6e3c3898f625932912a1837f02ef405029e3))
+
+- Persist attempt-bound shadow reviewer telemetry
+  ([#43](https://github.com/ditto-assistant/ditto-screener/pull/43),
+  [`d75c6e3`](https://github.com/ditto-assistant/ditto-screener/commit/d75c6e3c3898f625932912a1837f02ef405029e3))
+
+- Report applied reviewer revision
+  ([#43](https://github.com/ditto-assistant/ditto-screener/pull/43),
+  [`d75c6e3`](https://github.com/ditto-assistant/ditto-screener/commit/d75c6e3c3898f625932912a1837f02ef405029e3))
+
+### Testing
+
+- Bind v5 v6 calibration to reviewer revisions
+  ([#41](https://github.com/ditto-assistant/ditto-screener/pull/41),
+  [`42ad63f`](https://github.com/ditto-assistant/ditto-screener/commit/42ad63fb129baa45a3a57cf83c646b7855223664))
+
+- Cover shipped v5 and v6 starter controls
+  ([#41](https://github.com/ditto-assistant/ditto-screener/pull/41),
+  [`42ad63f`](https://github.com/ditto-assistant/ditto-screener/commit/42ad63fb129baa45a3a57cf83c646b7855223664))
+
+- Pin live reviewer control to benchmark v6 starter
+  ([#41](https://github.com/ditto-assistant/ditto-screener/pull/41),
+  [`42ad63f`](https://github.com/ditto-assistant/ditto-screener/commit/42ad63fb129baa45a3a57cf83c646b7855223664))
+
+
 ## v0.14.2 (2026-07-21)
 
 ### Bug Fixes
