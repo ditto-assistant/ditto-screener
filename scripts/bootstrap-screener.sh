@@ -222,7 +222,11 @@ fi
 # --- Bake: warm the venv, then stop (no secrets, no worker) -------------------
 if [[ "$SCREENER_BAKE_ONLY" == "1" ]]; then
   runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$checkout/.venv" \
-    /usr/local/bin/uv sync --frozen --project "$checkout"
+    /usr/local/bin/uv sync --frozen \
+      --reinstall-package ditto-screening-protocol --project "$checkout"
+  runuser -u "$SCREENER_USER" -- \
+    "$checkout/.venv/bin/python" \
+    "$checkout/scripts/verify-installed-signing-contract.py"
   baked_sha="$(runuser -u "$SCREENER_USER" -- git -C "$checkout" rev-parse HEAD)"
   echo "bake complete: base + docker + uv + warm venv at $baked_sha"
   exit 0
