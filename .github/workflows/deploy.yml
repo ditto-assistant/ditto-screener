@@ -95,10 +95,7 @@ jobs:
           name='${{ matrix.name }}'
           zone='${{ matrix.zone }}'
           echo "::group::${name} (${zone})"
-          gcloud compute scp scripts/update-screener.sh "${name}:/tmp/update-screener.sh" \
-            --project "$GCP_PROJECT" --zone "$zone" --tunnel-through-iap --quiet
-          gcloud compute ssh "$name" \
-            --project "$GCP_PROJECT" --zone "$zone" --tunnel-through-iap --quiet \
-            --command "sudo chmod 700 /tmp/update-screener.sh; sudo SCREENER_EXPECTED_SHA=${{ github.sha }} /tmp/update-screener.sh; rc=\$?; sudo rm -f /tmp/update-screener.sh; exit \$rc"
+          scripts/deploy-screener-via-ssh.sh \
+            "$name" "$zone" '${{ github.sha }}'
           echo "::endgroup::"
           echo "deployed ${{ github.sha }} to ${name}"

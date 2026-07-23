@@ -63,8 +63,66 @@ def test_deploy_workflow_fans_out_over_the_fleet_in_parallel() -> None:
     assert "matrix: ${{ fromJson(needs.discover.outputs.matrix) }}" in workflow
     assert "fail-fast: false" in workflow
     assert "max-parallel:" in workflow
-    # Each host still runs the same exact-commit updater.
-    assert "SCREENER_EXPECTED_SHA=${{ github.sha }}" in workflow
+    # Each host still receives the exact workflow commit.
+    assert '"$name" "$zone" \'${{ github.sha }}\'' in workflow
+
+
+def test_deploy_streams_updater_over_one_ssh_session() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    transport = (ROOT / "scripts" / "deploy-screener-via-ssh.sh").read_text()
+
+    assert "gcloud compute scp" not in workflow
+    assert "deploy-screener-via-ssh.sh" in workflow
+    assert transport.count("gcloud compute ssh") == 1
+    assert '<"$updater"' in transport
+    assert "/tmp/update-screener.sh" not in transport
+    assert "SCREENER_EXPECTED_SHA=$expected_sha /bin/bash -s" in transport
+    assert "exec gcloud" in transport
+    assert "retry" not in transport.split("exec gcloud", 1)[1]
+
+
+def test_single_ssh_transport_preserves_bytes_and_exit_status(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gcloud = fake_bin / "gcloud"
+    captured_stdin = tmp_path / "stdin"
+    captured_args = tmp_path / "args"
+    fake_gcloud.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$@" >"$CAPTURED_ARGS"\n'
+        'cat >"$CAPTURED_STDIN"\n'
+        "exit 23\n"
+    )
+    fake_gcloud.chmod(0o755)
+
+    env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "GCP_PROJECT": "test-project",
+        "CAPTURED_STDIN": str(captured_stdin),
+        "CAPTURED_ARGS": str(captured_args),
+    }
+    result = subprocess.run(
+        [
+            str(ROOT / "scripts" / "deploy-screener-via-ssh.sh"),
+            "screener-1",
+            "us-central1-a",
+            "a" * 40,
+        ],
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 23
+    assert (
+        captured_stdin.read_bytes()
+        == (ROOT / "scripts" / "update-screener.sh").read_bytes()
+    )
+    args = captured_args.read_text().splitlines()
+    assert args[:3] == ["compute", "ssh", "screener-1"]
+    assert args.count("ssh") == 1
+    assert "--tunnel-through-iap" in args
+    remote_command = "sudo -n env SCREENER_EXPECTED_SHA=" + "a" * 40 + " /bin/bash -s"
+    assert remote_command in args
 
 
 def test_core_e2e_runs_the_l2_sandbox_integration() -> None:
