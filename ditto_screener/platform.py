@@ -202,11 +202,18 @@ class PlatformClient:
             )
         return ScreenerQueueResponse.model_validate(resp.json())
 
-    async def get_artifact(self, agent_id: UUID) -> ArtifactResponse:
-        """Get a presigned tarball download URL for ``agent_id``."""
+    async def get_artifact(
+        self, agent_id: UUID, *, attempt_id: UUID | None = None
+    ) -> ArtifactResponse:
+        """Get a presigned tarball download URL for ``agent_id``.
+
+        Pass the claim ``attempt_id`` so the platform can bind the download to
+        the active screening lease.
+        """
         url = f"{self._base}{_PREFIX}/agent/{agent_id}/artifact"
+        params = {"attempt_id": str(attempt_id)} if attempt_id is not None else None
         try:
-            resp = await self._client.get(url, headers=self._headers)
+            resp = await self._client.get(url, headers=self._headers, params=params)
         except httpx.HTTPError as e:
             raise PlatformError(f"artifact fetch failed: {e}") from e
         if resp.status_code != 200:

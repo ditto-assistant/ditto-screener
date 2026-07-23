@@ -338,7 +338,9 @@ class ScreenerWorker:
                         detail="screener error: insufficient lease budget at claim",
                     )
                 else:
-                    artifact = await self._platform.get_artifact(agent_id)
+                    artifact = await self._platform.get_artifact(
+                        agent_id, attempt_id=attempt_id
+                    )
                     result = await self._gate.screen(
                         agent_id=agent_id,
                         attempt_id=attempt_id,
