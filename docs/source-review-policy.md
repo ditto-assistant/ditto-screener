@@ -101,6 +101,9 @@ source proves the complete boundary:
   response and may return the matching self-reported `ObservedToolCall`, because
   validator-side endpoint observation—not that untrusted report—decides whether
   the probe passed or the run fails and retries;
+- acknowledgement or error prose is not an observed call. A handler may append
+  the reported call only after a successful POST and otherwise return prose
+  with an empty call list;
 - the response is only the required acknowledgement and cannot affect an
   ordinary scored request.
 
@@ -139,6 +142,9 @@ insufficient on their own:
 - benchmark words in prose, comments, tests, or filenames;
 - unchanged official fixtures recognized by exact provenance;
 - local evaluation helpers that are unreachable from the submitted service.
+- local Docker launchers are not part of the screened image merely because they
+  are present in the archive. Require a Dockerfile build/runtime instruction to
+  invoke the script; `COPY` or permission changes alone are not execution.
 - opacity or divergence from a starter model blob without content or behavioral
   evidence of prohibited logic;
 - pinned dependency, lockfile, CI, or optional-secret syntax without evidence

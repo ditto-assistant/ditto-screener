@@ -31,7 +31,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v11"
+_PROMPT_REVISION = "source-review-v12"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -316,7 +316,9 @@ this exact contract:
   client-side send result and may include the matching self-reported
   ObservedToolCall: validator-side endpoint observation is authoritative, so
   self-report cannot make the preflight pass, prevent retry, or raise a score;
-  and
+  acknowledgement or error text is not an observed call. A handler may report
+  the call only after a successful POST and otherwise return text with an empty
+  tool-call list without fabricating execution; and
 - the branch ends there and cannot activate for an ordinary scored request.
 This allowance proves transport reachability and cannot improve a score. It
 does not whitelist near-miss prefixes, wrong tools, no actual POST attempt,
@@ -731,6 +733,119 @@ def _rust_reference_is_test_only(
     )
 
 
+def _is_standalone_shell_script(path: str) -> bool:
+    normalized = path.casefold().removeprefix("./")
+    return not normalized.startswith("src/") and normalized.endswith(
+        (".sh", ".bash", ".zsh")
+    )
+
+
+def _dockerfile_logical_instructions(source: str) -> list[tuple[str, str]]:
+    """Return bounded Dockerfile instructions with continuations joined."""
+    instructions: list[tuple[str, str]] = []
+    pending = ""
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not pending and (not line or line.startswith("#")):
+            continue
+        pending = f"{pending} {line}".strip()
+        if pending.endswith("\\"):
+            pending = pending[:-1].rstrip()
+            continue
+        instruction, separator, value = pending.partition(" ")
+        if separator:
+            instructions.append((instruction.upper(), value.strip()))
+        pending = ""
+    if pending:
+        instruction, separator, value = pending.partition(" ")
+        if separator:
+            instructions.append((instruction.upper(), value.strip()))
+    return instructions
+
+
+def _dockerfile_invoked_shell_paths(
+    source: str, candidates: frozenset[str]
+) -> frozenset[str]:
+    """Resolve shell helpers invoked by Docker build/runtime instructions.
+
+    COPY/ADD alone is not execution. It only establishes destination aliases
+    that a later RUN, CMD, or ENTRYPOINT may invoke.
+    """
+    normalized_candidates = {
+        candidate.removeprefix("./"): candidate for candidate in candidates
+    }
+    aliases: dict[str, set[str]] = {candidate: set() for candidate in candidates}
+    invocations: list[str] = []
+    for instruction, value in _dockerfile_logical_instructions(source):
+        if instruction in {"COPY", "ADD"}:
+            # Handle the ordinary single-source form. A broad `COPY . .` is
+            # covered when a later command names the original script.
+            tokens = re.findall(r'[^\s"\']+', value)
+            if len(tokens) >= 2 and not tokens[0].startswith("--"):
+                source_path = tokens[-2].removeprefix("./")
+                destination = tokens[-1].rstrip("/")
+                candidate = normalized_candidates.get(source_path)
+                if candidate is not None:
+                    aliases[candidate].update(
+                        {destination, posixpath.basename(destination)}
+                    )
+        elif instruction in {"RUN", "CMD", "ENTRYPOINT"}:
+            invocations.append(value)
+
+    reachable: set[str] = set()
+    for normalized, candidate in normalized_candidates.items():
+        names = {
+            normalized,
+            f"./{normalized}",
+            posixpath.basename(normalized),
+            *aliases[candidate],
+        }
+        for invocation in invocations:
+            for name in names:
+                escaped = re.escape(name)
+                direct = re.search(
+                    rf"(?:^|[;&|]\s*|\[\s*)['\"]?(?:\./|/)?{escaped}(?=$|[\],;'\"\s])",
+                    invocation,
+                )
+                interpreter = re.search(
+                    rf"\b(?:ba|z|k)?sh\s+(?:-[a-zA-Z]+\s+)*['\"]?(?:\./)?{escaped}(?=$|['\"\s])",
+                    invocation,
+                )
+                if direct or interpreter:
+                    reachable.add(candidate)
+                    break
+            if candidate in reachable:
+                break
+    return frozenset(reachable)
+
+
+def _source_invoked_shell_paths(
+    source: str, candidates: frozenset[str]
+) -> frozenset[str]:
+    """Resolve explicit command-execution references from shipped source."""
+    command_marker = re.compile(
+        r"(?:Command::new|subprocess\.(?:run|Popen|call)|os\.system|"
+        r"child_process\.(?:spawn|execFile)|\b(?:exec|spawn)\s*\(|"
+        r"^\s*(?:(?:ba|z|k)?sh\s+|source\s+|\.\s+|\./))"
+    )
+    reachable: set[str] = set()
+    for line in source.splitlines():
+        if not command_marker.search(line[:4096]):
+            continue
+        for candidate in candidates:
+            normalized = candidate.removeprefix("./")
+            names = {normalized, f"./{normalized}", posixpath.basename(normalized)}
+            if any(
+                re.search(
+                    rf"(?<![A-Za-z0-9_.-]){re.escape(name)}(?![A-Za-z0-9_.-])",
+                    line,
+                )
+                for name in names
+            ):
+                reachable.add(candidate)
+    return frozenset(reachable)
+
+
 class TarSourceRepository:
     """A read-only, size-bounded view over regular files in a verified tarball."""
 
@@ -770,8 +885,22 @@ class TarSourceRepository:
         boundary without letting a custom Cargo target, build script, or
         ``include!``/``#[path]`` indirection hide pre-build source.
         """
-        runtime = {name for name in self._members if is_executable_source_path(name)}
+        standalone_shell = frozenset(
+            name for name in self._members if _is_standalone_shell_script(name)
+        )
+        runtime = {
+            name
+            for name in self._members
+            if is_executable_source_path(name) and name not in standalone_shell
+        }
         self._add_cargo_runtime_paths(runtime)
+        dockerfile = (
+            self._read_text("Dockerfile") if "Dockerfile" in self._members else None
+        )
+        if dockerfile is not None:
+            runtime.update(
+                _dockerfile_invoked_shell_paths(dockerfile, standalone_shell)
+            )
 
         pending = list(runtime)
         scanned: set[str] = set()
@@ -783,6 +912,11 @@ class TarSourceRepository:
             source = self._read_text(source_path)
             if source is None:
                 continue
+            newly_invoked_shell = _source_invoked_shell_paths(
+                source, standalone_shell - runtime
+            )
+            runtime.update(newly_invoked_shell)
+            pending.extend(newly_invoked_shell - scanned - set(pending))
             parent = posixpath.dirname(source_path)
             references, unresolved = _rust_runtime_references(source)
             for reference in references:
