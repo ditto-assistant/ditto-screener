@@ -629,7 +629,7 @@ fn run() -> String {
     assert observation.risk_level == "high"
     assert observation.categories == ("benchmark_emulation",)
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v12"
+    assert observation.finding["prompt_revision"] == "source-review-v13"
     assert observation.finding["evidence"] == [
         {
             "path": "src/memory_solver.rs",
@@ -1514,7 +1514,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v12"
+    assert observation.finding["prompt_revision"] == "source-review-v13"
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
@@ -1980,7 +1980,6 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "preflight-wrong-tool-reported-as-search-web",
         "preflight-no-endpoint-execution",
         "preflight-fabricated-observed-call",
-        "preflight-failed-post-still-reports-call",
         "preflight-branch-leaks-into-scored-requests",
     } <= prohibited
     assert legitimate.isdisjoint(prohibited)
@@ -2004,10 +2003,13 @@ def test_dittobench_preflight_prompt_keeps_the_false_positive_boundary_narrow() 
         "near-miss prefixes",
         "wrong tools",
         "no actual POST attempt",
-        "self-reported preflight call with no matching POST",
+        "self-reported preflight call on a valid",
         "self-report paired with the required best-effort",
         "acknowledgement or error text is not an observed call",
         "tool-call list without fabricating execution",
+        "Judge the valid endpoint-present path separately",
+        "protocol-correctness",
+        "matching self-reported",
     }
 
     assert all(marker in _SYSTEM_PROMPT for marker in required)
@@ -2031,7 +2033,7 @@ def test_latest_backroom_safe_batch_is_fully_represented() -> None:
         "advisory_classes": 2,
     }
     assert fixture["operator_batch_2026_07_23"] == {
-        "legitimate_observed_preflight_handlers": 2,
+        "legitimate_observed_preflight_handlers": 4,
         "inert_local_launcher_submissions": 2,
         "benchmark_emulation_rejections": 3,
     }

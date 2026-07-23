@@ -31,7 +31,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v12"
+_PROMPT_REVISION = "source-review-v13"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -301,12 +301,12 @@ result. Strong examples are reachable code that:
 
 DittoBench v3 defines one narrow exception: the required, non-scored tool
 reachability preflight. Do not report case-ID dispatch or a mechanical
-acknowledgement as benchmark emulation only when the source proves every part of
-this exact contract:
+acknowledgement as benchmark emulation when the source proves every part of this
+exact contract on a valid protocol request:
 - the case-sensitive incoming case_id starts with the reserved `preflight:`
   prefix, not a near miss, substring, broader probe predicate, or arbitrary
   case-ID list;
-- that same request supplies a nonempty tool_endpoint, and the handler POSTs
+- when that request supplies a nonempty tool_endpoint, the handler POSTs
   exactly one ToolExecRequest to that exact supplied endpoint rather than a
   fixed, substituted, local, or no-op destination;
 - the posted body preserves the incoming case_id and request user (or protocol
@@ -320,12 +320,24 @@ this exact contract:
   the call only after a successful POST and otherwise return text with an empty
   tool-call list without fabricating execution; and
 - the branch ends there and cannot activate for an ordinary scored request.
+Judge the valid endpoint-present path separately from malformed input handling.
+The handler may return an acknowledgement or error without model inference when
+tool_endpoint is missing or empty. That malformed request cannot produce a
+validator-observed preflight pass, is not scored, and is a protocol-correctness
+issue rather than benchmark_emulation or fabricated_tool_trajectory. This
+remains true if the malformed branch includes a matching self-reported
+ObservedToolCall: the report is untrusted and cannot substitute for endpoint
+observation. Do not require model inference merely because the malformed
+preflight cannot execute. Only report a violation when a valid endpoint-present
+request skips or changes the required POST, or when the branch reaches ordinary
+scored requests.
 This allowance proves transport reachability and cannot improve a score. It
 does not whitelist near-miss prefixes, wrong tools, no actual POST attempt,
 fixed endpoints, scored-case answers, or preflight logic that leaks into
-ordinary request handling. A self-reported preflight call with no matching POST
-attempt remains suspicious; a self-report paired with the required best-effort
-POST is protocol-only and cannot fabricate authoritative execution. Evaluate
+ordinary request handling. A self-reported preflight call on a valid
+endpoint-present request with no matching POST attempt remains suspicious; a
+self-report paired with the required best-effort POST is protocol-only and
+cannot fabricate authoritative execution. Evaluate
 other paths under the ordinary benchmark-emulation and tool-fidelity rules.
 
 Distinguish generic mechanisms from benchmark fingerprints. Generic lexical

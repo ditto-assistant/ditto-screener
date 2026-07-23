@@ -91,7 +91,7 @@ POST exactly one real `ToolExecRequest` to that request's endpoint, and then
 return the mechanical acknowledgement.
 
 That branch is protocol compliance, not benchmark emulation, only when the
-source proves the complete boundary:
+source proves the complete boundary for a valid endpoint-present request:
 
 - the exact reserved `preflight:` prefix is checked;
 - the endpoint is the nonempty value supplied on the same request;
@@ -107,12 +107,21 @@ source proves the complete boundary:
 - the response is only the required acknowledgement and cannot affect an
   ordinary scored request.
 
+Missing or empty endpoints are malformed preflight input. A harness may return
+an acknowledgement or error without model inference in that case. Because the
+validator cannot observe endpoint traffic, the request cannot pass or score;
+even a matching self-reported call is untrusted protocol noise, not anti-cheat
+evidence. Reviewers must judge the valid endpoint-present path independently and
+must not quarantine an otherwise genuine harness merely because its malformed
+preflight branch is imperfect.
+
 The exception does not cover near-miss prefixes, substring or general probe
 detection, other tools, fixed or substituted endpoints, no actual POST attempt,
-scored answers, or a preflight branch that leaks into normal case handling. A
-self-reported call with no matching POST attempt remains suspicious. The same
-report paired with the required best-effort POST cannot fabricate authoritative
-success and is allowed. Other paths remain subject to the ordinary
+scored answers, or a preflight branch that leaks into normal case handling. On
+a valid endpoint-present request, a self-reported call with no matching POST
+attempt remains suspicious. The same report paired with the required
+best-effort POST cannot fabricate authoritative success and is allowed. Other
+paths remain subject to the ordinary
 benchmark-emulation, scorer-contract, and tool-fidelity rules.
 
 Generator mirroring may be distributed rather than expressed as one obvious
