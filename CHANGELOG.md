@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.15.2 (2026-07-23)
+
+### Bug Fixes
+
+- Require runtime reachability for source holds
+  ([#46](https://github.com/ditto-assistant/ditto-screener/pull/46),
+  [`e91376b`](https://github.com/ditto-assistant/ditto-screener/commit/e91376bab0df2289206f2e466015931a750dc8b5))
+
+
 ## v0.15.1 (2026-07-23)
 
 ### Bug Fixes
