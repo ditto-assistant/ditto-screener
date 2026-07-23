@@ -80,7 +80,7 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v24"
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v25"
     assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v22"
     assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v5")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
@@ -173,7 +173,7 @@ def test_l1_mechanism_narrowed_away_by_kimi_still_requires_sol() -> None:
 
 def test_request_local_identical_tool_memoization_is_not_fabrication() -> None:
     assert L2_CRITIC_PROMPT_REVISION == "l3-sol-adversarial-critic-v16"
-    assert L2_SAFETY_PROMPT_REVISION == "l3-sol-safety-adjudicator-v19"
+    assert L2_SAFETY_PROMPT_REVISION == "l3-sol-safety-adjudicator-v20"
     assert "Request-local memoization of an identical invocation" in _SYSTEM_PROMPT
     assert "deduplication is not fabricated telemetry" in _SYSTEM_PROMPT
     assert "distinguish execution from transport" in _SAFETY_ADJUDICATOR_TASK
@@ -202,6 +202,11 @@ def test_dittobench_preflight_clearance_is_exact_and_shared() -> None:
     assert "no actual POST attempt" in _SYSTEM_PROMPT
     assert "without the matching best-effort POST" in _SYSTEM_PROMPT
     assert "after the required POST attempt" in _SYSTEM_PROMPT
+    assert (
+        "Acknowledgement or error prose is not an observed tool call" in _SYSTEM_PROMPT
+    )
+    assert "empty" in _SAFETY_ADJUDICATOR_TASK
+    assert "call list on missing" in _SAFETY_ADJUDICATOR_TASK
 
 
 def _tar(tmp_path: Path, source: str) -> tuple[Path, str]:

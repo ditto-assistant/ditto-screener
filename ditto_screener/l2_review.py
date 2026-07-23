@@ -38,11 +38,11 @@ L2_MODEL = "moonshotai/kimi-k3"
 L2_FALLBACK_MODELS = ("z-ai/glm-5.2", "openai/gpt-5.6-sol")
 L3_MODEL = "openai/gpt-5.6-sol"
 L3_PROVIDER = "openrouter"
-L2_PROMPT_REVISION = "l2-kimi-source-review-v24"
+L2_PROMPT_REVISION = "l2-kimi-source-review-v25"
 L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v16"
 L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v22"
 L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v5"
-L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v19"
+L2_SAFETY_PROMPT_REVISION = "l3-sol-safety-adjudicator-v20"
 L2_STATIC_HOLD_REVISION = "l2-integrity-static-hold-v3"
 L2_DOSSIER_REVISION = "l1-compressed-dossier-v9"
 L2_CAUSE_REASONING_EFFORT = "medium"
@@ -376,6 +376,9 @@ discard the client-side send result and return the matching self-reported
 ObservedToolCall. Validator-side endpoint observation is authoritative: that
 self-report cannot make the probe pass, prevent retry, or add score. This is
 protocol compliance, not an audit bypass.
+Acknowledgement or error prose is not an observed tool call. Clear a handler
+that appends the reported call only after a successful POST and otherwise
+returns prose with an empty call list; it has not fabricated execution.
 Do not extend this clearance to near-miss prefixes, substring or generic probe
 checks, wrong tools, fixed/substituted endpoints, no actual POST attempt,
 hard-coded scored answers, or any branch that can affect ordinary scored
@@ -744,6 +747,9 @@ self-reported call because the validator ignores that report when deciding
 whether it observed the probe. A near-miss prefix, wrong tool, fixed or skipped
 endpoint, claimed call with no POST attempt, or scored-path leakage is not
 covered by this exception.
+Acknowledgement or failure text alone is not a claimed call. When the source
+adds an ObservedToolCall only after POST success and returns text plus an empty
+call list on missing, failed, or rejected transport, clear that preflight path.
 When scorer-contract evidence is present, call scorer_field_flow first and read
 the reported prior-population, condition, mutation, and response-sink locations.
 Treat same-function candidates as mandatory reading queues and trace whether the

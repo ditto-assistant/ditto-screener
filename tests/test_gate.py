@@ -356,9 +356,10 @@ async def test_l3_cleared_static_lead_can_continue_to_build(
 ) -> None:
     tarball = _valid_tar(
         **{
+            "Dockerfile": b"FROM scratch\nCOPY . .\nRUN ./scripts/local-only.sh\n",
             "scripts/local-only.sh": (
                 b'path="/var/run/docker.sock"\nconnect_control_socket "$path"\n'
-            )
+            ),
         }
     )
     calls: list[list[str]] = []

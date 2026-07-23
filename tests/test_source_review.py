@@ -629,7 +629,7 @@ fn run() -> String {
     assert observation.risk_level == "high"
     assert observation.categories == ("benchmark_emulation",)
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v11"
+    assert observation.finding["prompt_revision"] == "source-review-v12"
     assert observation.finding["evidence"] == [
         {
             "path": "src/memory_solver.rs",
@@ -957,6 +957,123 @@ def test_repository_preflight_scans_custom_cargo_build_path(tmp_path: Path) -> N
 
     observation = repo.malicious_preflight(artifact_sha256="a" * 64)
 
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+def test_repository_preflight_ignores_unshipped_local_docker_launcher(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Dockerfile": (
+                        b"FROM rust:bookworm AS build\n"
+                        b"COPY Cargo.toml Cargo.lock ./\n"
+                        b"COPY src ./src\n"
+                        b"RUN cargo build --locked --release\n"
+                        b'ENTRYPOINT ["/app/dittobench-miner"]\n'
+                    ),
+                    "Cargo.toml": (b'[package]\nname = "agent"\nversion = "0.1.0"\n'),
+                    "src/main.rs": b"fn main() {}\n",
+                    "run-miner.sh": (
+                        b"docker run --network=host --volume /:/host agent\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    runtime_paths = repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert "run-miner.sh" not in runtime_paths
+    assert observation is None
+
+
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        b"FROM base\nCOPY . .\nRUN ./run-miner.sh\n",
+        b'FROM base\nCOPY . .\nENTRYPOINT ["./run-miner.sh"]\n',
+        (
+            b"FROM base\nCOPY run-miner.sh /usr/local/bin/agent-entry\n"
+            b'CMD ["/usr/local/bin/agent-entry"]\n'
+        ),
+    ],
+)
+def test_repository_preflight_scans_docker_invoked_shell_launcher(
+    tmp_path: Path, dockerfile: bytes
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Dockerfile": dockerfile,
+                    "run-miner.sh": (
+                        b"docker run --network=host --volume /:/host agent\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    runtime_paths = repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
+
+    assert "run-miner.sh" in runtime_paths
+    assert observation is not None
+    assert observation.categories == ("malicious_build",)
+
+
+def test_repository_preflight_does_not_treat_copy_or_chmod_as_execution(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "Dockerfile": (
+                        b"FROM base\nCOPY . .\nRUN chmod +x run-miner.sh\n"
+                        b'ENTRYPOINT ["/app/agent"]\n'
+                    ),
+                    "run-miner.sh": (
+                        b"docker run --network=host --volume /:/host agent\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    assert "run-miner.sh" not in repo._explicit_runtime_paths()
+    assert repo.malicious_preflight(artifact_sha256="a" * 64) is None
+
+
+def test_repository_preflight_follows_runtime_command_to_shell_launcher(
+    tmp_path: Path,
+) -> None:
+    repo = TarSourceRepository(
+        str(
+            _archive_files(
+                tmp_path,
+                {
+                    "src/main.rs": (
+                        b'fn main() { Command::new("./run-miner.sh").status(); }\n'
+                    ),
+                    "run-miner.sh": (
+                        b"docker run --network=host --volume /:/host agent\n"
+                    ),
+                },
+            )
+        )
+    )
+
+    assert "run-miner.sh" in repo._explicit_runtime_paths()
+    observation = repo.malicious_preflight(artifact_sha256="a" * 64)
     assert observation is not None
     assert observation.categories == ("malicious_build",)
 
@@ -1397,7 +1514,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v11"
+    assert observation.finding["prompt_revision"] == "source-review-v12"
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
@@ -1839,6 +1956,7 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "generic-prompt-injection-defense",
         "dittobench-v3-required-reachability-preflight",
         "dittobench-v3-best-effort-reachability-preflight",
+        "preflight-reports-call-only-after-successful-post",
     } <= legitimate
     assert {
         "case-or-private-challenge-dispatch",
@@ -1862,6 +1980,7 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "preflight-wrong-tool-reported-as-search-web",
         "preflight-no-endpoint-execution",
         "preflight-fabricated-observed-call",
+        "preflight-failed-post-still-reports-call",
         "preflight-branch-leaks-into-scored-requests",
     } <= prohibited
     assert legitimate.isdisjoint(prohibited)
@@ -1887,6 +2006,8 @@ def test_dittobench_preflight_prompt_keeps_the_false_positive_boundary_narrow() 
         "no actual POST attempt",
         "self-reported preflight call with no matching POST",
         "self-report paired with the required best-effort",
+        "acknowledgement or error text is not an observed call",
+        "tool-call list without fabricating execution",
     }
 
     assert all(marker in _SYSTEM_PROMPT for marker in required)
@@ -1908,6 +2029,11 @@ def test_latest_backroom_safe_batch_is_fully_represented() -> None:
     assert fixture["recent_review_gaps"] == {
         "false_negative_families": 4,
         "advisory_classes": 2,
+    }
+    assert fixture["operator_batch_2026_07_23"] == {
+        "legitimate_observed_preflight_handlers": 2,
+        "inert_local_launcher_submissions": 2,
+        "benchmark_emulation_rejections": 3,
     }
 
 

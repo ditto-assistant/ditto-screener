@@ -75,6 +75,10 @@
     {
       "name": "dittobench-v3-best-effort-reachability-preflight",
       "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let endpoint = req.tool_endpoint.as_ref().filter(|url| !url.is_empty())?; let body = ToolExecRequest { case_id: req.case_id.clone(), user_id: req.user_id_or_default(), name: \"search_web\", args: json!({\"query\": \"preflight\"}), hop: 0 }; let _ = client.post(endpoint).json(&body).send().await; return Response::acknowledge(\"ok\", vec![ObservedToolCall::from(body)]); } general_model_and_tools(req).await }"
+    },
+    {
+      "name": "preflight-reports-call-only-after-successful-post",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let Some(endpoint) = req.tool_endpoint.as_ref().filter(|url| !url.is_empty()) else { return Response::acknowledge(\"missing endpoint\", vec![]); }; let body = search_web_preflight(req.case_id, req.user_id_or_default(), 0); match client.post(endpoint).json(&body).send().await { Ok(response) if response.status().is_success() => Response::acknowledge(\"ok\", vec![ObservedToolCall::from(body)]), _ => Response::acknowledge(\"tool unavailable\", vec![]) } } else { general_model_and_tools(req).await } }"
     }
   ],
   "advisory": [
@@ -201,6 +205,11 @@
       "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let claimed = ObservedToolCall::new(\"search_web\"); audit_log.push(claimed.clone()); return Response::acknowledge(\"ok\", vec![claimed]); } general_agent(req).await }"
     },
     {
+      "name": "preflight-failed-post-still-reports-call",
+      "category": "fabricated_tool_trajectory",
+      "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") { let body = search_web_preflight(req); let _failed = client.post(req.tool_endpoint).json(&body).send().await; return Response::acknowledge(\"ok\", vec![ObservedToolCall::from(body)]); } general_agent(req).await }"
+    },
+    {
       "name": "preflight-branch-leaks-into-scored-requests",
       "category": "benchmark_emulation",
       "source": "async fn run(req: Request) -> Response { if req.case_id.starts_with(\"preflight:\") || req.tool_endpoint.is_some() { post(req.tool_endpoint, preflight_call()).await; return Response::acknowledge(\"ok\", vec![]); } general_agent(req).await }"
@@ -211,6 +220,11 @@
     "false_positive_submissions": 7,
     "correct_rejections": 6,
     "infrastructure_rescreens": 1
+  },
+  "operator_batch_2026_07_23": {
+    "legitimate_observed_preflight_handlers": 2,
+    "inert_local_launcher_submissions": 2,
+    "benchmark_emulation_rejections": 3
   },
   "recent_review_gaps": {
     "false_negative_families": 4,
