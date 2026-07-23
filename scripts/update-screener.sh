@@ -66,6 +66,16 @@ ensure_enabled() {
     || systemctl enable "$SCREENER_UNIT" >/dev/null
 }
 
+verify_installed_signing_contract() {
+  # Exercise the installed venv, not the checkout import path. uv caches local
+  # directory packages by name/version; a protocol source change without a
+  # fresh install can otherwise leave the worker importing an older wheel while
+  # CI imports the newer workspace source. That skew crashes only after an
+  # expensive screen, when the worker signs its verdict.
+  runuser -u "$SCREENER_USER" -- \
+    "$venv/bin/python" "$checkout/scripts/verify-installed-signing-contract.py"
+}
+
 record_deployed_sha() {
   mkdir -p "$gc_state_dir"
   printf '%s\n' "$1" >"$deployed_marker"
@@ -379,7 +389,8 @@ requested_l2_mode="$(l2_mode)"
 if [[ -n "$deployed_sha" ]] && [[ "$deployed_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
   [[ "$current_sha" == "$SCREENER_EXPECTED_SHA" ]] && \
   [[ "$deployed_l2_mode" == "$requested_l2_mode" ]] && \
-  systemctl is-active --quiet "$SCREENER_UNIT"; then
+  systemctl is-active --quiet "$SCREENER_UNIT" && \
+  verify_installed_signing_contract; then
   ensure_l2_analyzer "$SCREENER_EXPECTED_SHA"
   probe_platform
   ensure_enabled
@@ -407,14 +418,17 @@ runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$resolved_sha"
 # ignored ``.venv`` and sibling state/secret dirs are never touched.
 runuser -u "$SCREENER_USER" -- git -C "$checkout" clean -fd -- ditto
 runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
-  "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+  "$SCREENER_UV_BIN" sync --frozen \
+    --reinstall-package ditto-screening-protocol --project "$checkout"
+verify_installed_signing_contract
 ensure_l2_analyzer "$resolved_sha"
 
 if [[ ! -f "$unit_source" ]]; then
   echo "required screener unit is missing: $unit_source" >&2
   runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$current_sha"
   runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
-    "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+    "$SCREENER_UV_BIN" sync --frozen \
+      --reinstall-package ditto-screening-protocol --project "$checkout"
   if [[ "$requested_l2_mode" != "$deployed_l2_mode" ]]; then
     upsert_env SCREENER_L2_REVIEW_MODE "$deployed_l2_mode"
   fi
@@ -442,7 +456,8 @@ if ! wait_for_health; then
   echo "new screener failed health checks; rolling back to $current_sha" >&2
   runuser -u "$SCREENER_USER" -- git -C "$checkout" reset --hard "$current_sha"
   runuser -u "$SCREENER_USER" -- env UV_PROJECT_ENVIRONMENT="$venv" \
-    "$SCREENER_UV_BIN" sync --frozen --project "$checkout"
+    "$SCREENER_UV_BIN" sync --frozen \
+      --reinstall-package ditto-screening-protocol --project "$checkout"
   if [[ "$requested_l2_mode" != "$deployed_l2_mode" ]]; then
     upsert_env SCREENER_L2_REVIEW_MODE "$deployed_l2_mode"
   fi

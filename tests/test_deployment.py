@@ -1,6 +1,45 @@
+import subprocess
+import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_embedded_protocol_version_matches_root_pin_and_lock() -> None:
+    root = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    protocol = tomllib.loads(
+        (ROOT / "packages" / "ditto-screening-protocol" / "pyproject.toml").read_text()
+    )
+    version = protocol["project"]["version"]
+    assert f"ditto-screening-protocol=={version}" in root["project"]["dependencies"]
+    assert (
+        f'name = "ditto-screening-protocol"\nversion = "{version}"'
+        in (ROOT / "uv.lock").read_text()
+    )
+
+
+def test_installed_signing_contract_probe_exercises_reviewer_binding() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "verify-installed-signing-contract.py"),
+        ],
+        check=True,
+    )
+
+
+def test_deploy_reinstalls_and_probes_embedded_protocol() -> None:
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+    bootstrap = (ROOT / "scripts" / "bootstrap-screener.sh").read_text()
+
+    assert updater.count("--reinstall-package ditto-screening-protocol") == 3
+    assert "verify_installed_signing_contract" in updater
+    assert updater.index(
+        "verify_installed_signing_contract\nensure_l2_analyzer"
+    ) < updater.index('systemctl restart "$SCREENER_UNIT"')
+    assert "--reinstall-package ditto-screening-protocol" in bootstrap
+    assert "verify-installed-signing-contract.py" in bootstrap
 
 
 def test_deploy_workflow_discovers_screeners_by_label_not_a_fixed_vm() -> None:
