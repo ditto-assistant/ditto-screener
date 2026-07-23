@@ -77,6 +77,18 @@ def test_quarantine_request_accepts_digest_bound_finding() -> None:
     assert request.finding.canonical_digest() == request.finding_digest
 
 
+def test_review_settings_binding_is_all_or_nothing() -> None:
+    with pytest.raises(ValidationError, match="binding must be complete"):
+        _request(review_settings_revision=7)
+    request = _request(
+        review_settings_revision=7,
+        review_settings_instance_id="ditto-screener-prod",
+        review_settings_scope="*",
+        review_settings_checksum="12" * 32,
+    )
+    assert request.review_settings_revision == 7
+
+
 def test_finding_digest_mismatch_is_rejected() -> None:
     with pytest.raises(ValidationError, match="does not match finding_digest"):
         _request(finding_digest="ef" * 32)
