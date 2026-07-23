@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.16.1 (2026-07-23)
+
+### Bug Fixes
+
+- Keep screener runtime state writable
+  ([#49](https://github.com/ditto-assistant/ditto-screener/pull/49),
+  [`93297b8`](https://github.com/ditto-assistant/ditto-screener/commit/93297b85f098fb1d9d2ceb0fa135223aefcb787c))
+
+
 ## v0.16.0 (2026-07-23)
 
 ### Bug Fixes
