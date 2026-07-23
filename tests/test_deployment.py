@@ -125,11 +125,31 @@ def test_single_ssh_transport_preserves_bytes_and_exit_status(tmp_path: Path) ->
     assert remote_command in args
 
 
-def test_core_e2e_runs_the_l2_sandbox_integration() -> None:
+def test_pull_request_ci_keeps_fast_safety_gates() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
+    assert "pull_request:" in workflow
+    assert 'uv run pytest -m "not integration"' in workflow
+    assert "uv run ruff format --check ." in workflow
+    assert "uv run ruff check ." in workflow
+    assert "uv run mypy ditto_screener" in workflow
+    assert "docker build -t ditto-screener:${{ github.sha }} ." in workflow
+    assert "tests/test_gate_docker_integration.py" not in workflow
+    assert "screener-core-e2e" not in workflow
+
+
+def test_core_e2e_is_daily_and_manually_dispatchable() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "core-e2e.yml").read_text()
+
+    assert "schedule:" in workflow
+    assert 'cron: "17 8 * * *"' in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "pull_request:" not in workflow
+    assert "push:" not in workflow
     assert "tests/test_gate_docker_integration.py" in workflow
     assert "tests/test_l2_review.py" in workflow
+    assert "DITTO_STARTER_KIT_DIR" in workflow
+    assert "if: always()" in workflow
 
 
 def test_release_commit_triggers_deploy_without_recursive_release() -> None:

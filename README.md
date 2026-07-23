@@ -81,6 +81,13 @@ DITTO_STARTER_KIT_DIR=/path/to/dittobench-starter-kit \
 Set `DITTOBENCH_API_DIR=/path/to/dittobench-api` as well to pass that exact
 export through the real validator-side image loader during the integration test.
 
+Pull requests retain the fast Python 3.11/3.12 unit suite, formatting, lint,
+type-check, and production Docker image build gates. The full canonical-starter
+build/health and isolated L2 coding-harness integration suite runs in
+`Daily anti-cheat core E2E` every day at 08:17 UTC and on manual dispatch. Run
+that workflow before merging changes to the real Docker gate or L2 analyzer
+boundary when waiting for the next scheduled signal would be too risky.
+
 ## Runtime configuration
 
 Required values are supplied through the production host's protected
