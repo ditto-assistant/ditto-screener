@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.15.1 (2026-07-23)
+
+### Bug Fixes
+
+- Keep inert Rust targets out of decisive preflight
+  ([#45](https://github.com/ditto-assistant/ditto-screener/pull/45),
+  [`1304183`](https://github.com/ditto-assistant/ditto-screener/commit/130418342ee6718d59de99dd19b5f0012651dddc))
+
+
 ## v0.15.0 (2026-07-22)
 
 ### Bug Fixes
