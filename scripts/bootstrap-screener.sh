@@ -53,6 +53,7 @@ SCREENER_USER=deploy
 SCREENER_GROUP=ditto
 LOGS_DIR=/opt/ditto/logs
 SECRETS_DIR=/opt/ditto/secrets
+STATE_DIR="$SCREENER_ROOT/state"
 MARKER=/opt/ditto/.screener-bootstrapped
 LOCK_FILE=/opt/ditto/.screener-deploy.lock
 
@@ -178,6 +179,7 @@ fi
 usermod -aG docker "$SCREENER_USER"
 
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0755 "$SCREENER_ROOT"
+install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$STATE_DIR"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$LOGS_DIR"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$SECRETS_DIR"
 

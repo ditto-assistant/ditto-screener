@@ -88,6 +88,19 @@ def test_updater_and_bootstrap_serialize_on_a_shared_deploy_lock() -> None:
     assert "SCREENER_DEPLOY_LOCK_HELD:-" in updater
 
 
+def test_bootstrap_and_updater_keep_runtime_state_writable_by_worker() -> None:
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+    bootstrap = (ROOT / "scripts" / "bootstrap-screener.sh").read_text()
+
+    expected = 'install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 '
+    assert expected + '"$STATE_DIR"' in bootstrap
+    assert expected + '"$gc_state_dir"' in updater
+    # Ownership repair must run before the updater's healthy fast-path exit.
+    repair = updater.index("\nensure_state_dir\n")
+    fast_path = updater.index('echo "healthy: $SCREENER_UNIT already at')
+    assert repair < fast_path
+
+
 def test_bootstrap_blocks_metadata_and_mounts_no_build_credential() -> None:
     bootstrap = (ROOT / "scripts" / "bootstrap-screener.sh").read_text()
     gate = (ROOT / "ditto_screener" / "gate.py").read_text()

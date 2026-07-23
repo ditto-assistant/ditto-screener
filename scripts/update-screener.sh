@@ -5,6 +5,7 @@ set -euo pipefail
 
 SCREENER_ROOT="${SCREENER_ROOT:-/opt/ditto/screener}"
 SCREENER_USER="${SCREENER_USER:-deploy}"
+SCREENER_GROUP="${SCREENER_GROUP:-ditto}"
 SCREENER_UNIT="${SCREENER_UNIT:-ditto-screener}"
 SCREENER_EXPECTED_SHA="${SCREENER_EXPECTED_SHA:?missing SCREENER_EXPECTED_SHA}"
 SCREENER_UV_BIN="${SCREENER_UV_BIN:-/usr/local/bin/uv}"
@@ -49,6 +50,14 @@ if [[ "${SCREENER_DEPLOY_LOCK_HELD:-}" != "1" ]]; then
     exit 1
   fi
 fi
+
+ensure_state_dir() {
+  # The updater runs as root, but the worker atomically writes its settings
+  # cache and L2 audit data here. Repair ownership on every deploy, including
+  # the no-op fast path, so a legacy root-created directory cannot pin the
+  # worker to bootstrap settings.
+  install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$gc_state_dir"
+}
 
 ensure_enabled() {
   # First boot restarts the unit but a reboot then short-circuits on the
@@ -205,7 +214,7 @@ materialize_source_review_key() {
     echo "gcloud is required to materialize the source review key" >&2
     return 1
   }
-  install -d -o "$SCREENER_USER" -g ditto -m 0750 "$secret_dir"
+  install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$secret_dir"
   tmp="$(mktemp)"
   if ! gcloud secrets versions access latest \
     --project="$SCREENER_GCP_PROJECT" \
@@ -340,6 +349,7 @@ maintain_logs() {
   fi
 }
 
+ensure_state_dir
 current_sha="$(runuser -u "$SCREENER_USER" -- git -C "$checkout" rev-parse HEAD)"
 current_origin="$(runuser -u "$SCREENER_USER" -- git -C "$checkout" remote get-url origin)"
 if [[ "$current_origin" != "$SCREENER_REPOSITORY_URL" ]]; then
