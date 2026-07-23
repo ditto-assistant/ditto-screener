@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.16.0 (2026-07-23)
+
+### Bug Fixes
+
+- Stop quarantining malformed preflight handling
+  ([#48](https://github.com/ditto-assistant/ditto-screener/pull/48),
+  [`63624c2`](https://github.com/ditto-assistant/ditto-screener/commit/63624c20f89501273d98413e84627e4270b8de93))
+
+### Features
+
+- Bind reviewer settings into screener verdicts
+  ([#47](https://github.com/ditto-assistant/ditto-screener/pull/47),
+  [`e7980dc`](https://github.com/ditto-assistant/ditto-screener/commit/e7980dc4a92c2e3152a6a9bdaea0a63307014467))
+
+
 ## v0.15.2 (2026-07-23)
 
 ### Bug Fixes
