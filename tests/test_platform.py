@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -121,8 +121,11 @@ async def test_submit_heartbeat_matches_open_platform_contract(
 async def test_get_artifact_parses_url(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
+    attempt_id = uuid4()
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == f"/api/v1/screener/agent/{_AGENT}/artifact"
+        assert request.url.params.get("attempt_id") == str(attempt_id)
         _assert_auth(request)
         return httpx.Response(
             200,
@@ -136,7 +139,7 @@ async def test_get_artifact_parses_url(
 
     client, http = _make_client(make_config(), handler)
     async with http:
-        art = await client.get_artifact(_AGENT)
+        art = await client.get_artifact(_AGENT, attempt_id=attempt_id)
     assert str(art.download_url).startswith("https://storage.test/")
 
 

@@ -112,7 +112,7 @@ class _FakePlatform:
         self.claim_calls = 0
         self.heartbeats: list[Any] = []
         self.heartbeat_error: Exception | None = None
-        self.artifact_calls: list[UUID] = []
+        self.artifact_calls: list[tuple[UUID, UUID | None]] = []
         self.image_uploads: list[dict[str, Any]] = []
         self.review_settings_source = "bootstrap"
         self.review_settings: Any = None
@@ -153,8 +153,10 @@ class _FakePlatform:
             required_policy_version=policy_version,
         )
 
-    async def get_artifact(self, agent_id: UUID) -> ArtifactResponse:
-        self.artifact_calls.append(agent_id)
+    async def get_artifact(
+        self, agent_id: UUID, *, attempt_id: UUID | None = None
+    ) -> ArtifactResponse:
+        self.artifact_calls.append((agent_id, attempt_id))
         return ArtifactResponse(
             agent_id=agent_id,
             sha256="de" * 32,
