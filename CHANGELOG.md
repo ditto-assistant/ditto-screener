@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.16.3 (2026-07-23)
+
+### Bug Fixes
+
+- **security**: Pass screening attempt_id on artifact download
+  ([#55](https://github.com/ditto-assistant/ditto-screener/pull/55),
+  [`806f493`](https://github.com/ditto-assistant/ditto-screener/commit/806f493f86d92b6723d4645ebd43c7ce4c17cb21))
+
+
 ## v0.16.2 (2026-07-23)
 
 ### Bug Fixes
