@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.16.2 (2026-07-23)
+
+### Bug Fixes
+
+- Reinstall embedded signing protocol on deploy
+  ([#56](https://github.com/ditto-assistant/ditto-screener/pull/56),
+  [`d3188a8`](https://github.com/ditto-assistant/ditto-screener/commit/d3188a87c000c659591abfaa0ac7e312ac717c79))
+
+
 ## v0.16.1 (2026-07-23)
 
 ### Bug Fixes
