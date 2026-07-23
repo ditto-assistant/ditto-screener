@@ -391,6 +391,16 @@ class ScreenResultRequest(BaseModel):
     outcome: ScreenResultOutcome | None = None
     manifest_digest: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
     finding_digest: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
+    review_settings_revision: Annotated[int | None, Field(ge=1)] = None
+    review_settings_instance_id: Annotated[
+        str | None, Field(pattern=r"^[a-zA-Z0-9._-]{1,63}$")
+    ] = None
+    review_settings_scope: Annotated[
+        str | None, Field(pattern=r"^(?:\*|[a-zA-Z0-9._-]{1,63})$")
+    ] = None
+    review_settings_checksum: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None
     reason_code: Annotated[str | None, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")] = (
         None
     )
@@ -514,6 +524,16 @@ class ScreenResultRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_review_payloads(self) -> ScreenResultRequest:
+        settings_binding = (
+            self.review_settings_revision,
+            self.review_settings_instance_id,
+            self.review_settings_scope,
+            self.review_settings_checksum,
+        )
+        if any(value is not None for value in settings_binding) and any(
+            value is None for value in settings_binding
+        ):
+            raise ValueError("review settings binding must be complete")
         if (self.evidence is not None or self.finding is not None) and (
             self.outcome
             not in {ScreenResultOutcome.QUARANTINE, ScreenResultOutcome.INCONCLUSIVE}

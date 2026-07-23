@@ -90,6 +90,10 @@ def test_typed_quarantine_signature_binds_private_evidence_digests() -> None:
         manifest_digest="12" * 32,
         finding_digest="34" * 32,
         reason_code="agentic-source-review-tripwire",
+        review_settings_revision=42,
+        review_settings_instance_id="ditto-screener-prod",
+        review_settings_scope="*",
+        review_settings_checksum="56" * 32,
     )
     payload = json.loads(message.removeprefix(b"ditto-screen-result:v5:").decode())
     assert payload == {
@@ -105,6 +109,10 @@ def test_typed_quarantine_signature_binds_private_evidence_digests() -> None:
         "outcome": "quarantine",
         "policy_version": SCREENING_POLICY_VERSION,
         "reason_code": "agentic-source-review-tripwire",
+        "review_settings_checksum": "56" * 32,
+        "review_settings_instance_id": "ditto-screener-prod",
+        "review_settings_revision": 42,
+        "review_settings_scope": "*",
         "screener_hotkey": _HOTKEY,
     }
 
@@ -116,6 +124,18 @@ def test_policy_v9_signature_requires_typed_outcome() -> None:
             agent_id=_AGENT,
             passed=True,
         )
+
+
+def test_typed_signature_without_binding_remains_rolling_deploy_compatible() -> None:
+    message = verdict_signing_message(
+        screener_hotkey=_HOTKEY,
+        agent_id=_AGENT,
+        attempt_id=_ATTEMPT,
+        passed=False,
+        outcome=ScreenResultOutcome.RETRYABLE_INFRA,
+    )
+    payload = json.loads(message.removeprefix(b"ditto-screen-result:v5:").decode())
+    assert not any(key.startswith("review_settings_") for key in payload)
 
 
 def test_heartbeat_signature_binds_allowlisted_coarse_metrics() -> None:

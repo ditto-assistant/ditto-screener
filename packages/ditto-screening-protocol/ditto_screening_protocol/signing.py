@@ -21,6 +21,10 @@ def verdict_signing_message(
     outcome: ScreenResultOutcome | None = None,
     manifest_digest: str | None = None,
     finding_digest: str | None = None,
+    review_settings_revision: int | None = None,
+    review_settings_instance_id: str | None = None,
+    review_settings_scope: str | None = None,
+    review_settings_checksum: str | None = None,
     reason_code: str | None = None,
     image_sha256: str | None = None,
     image_size_bytes: int | None = None,
@@ -32,24 +36,34 @@ def verdict_signing_message(
     if outcome is not None:
         if attempt_id is None:
             raise ValueError("typed result signature requires attempt_id")
+        fields: dict[str, str | int | bool | None] = {
+            "agent_id": str(agent_id),
+            "attempt_id": str(attempt_id),
+            "finding_digest": finding_digest,
+            "image_id": image_id,
+            "image_ref": image_ref,
+            "image_sha256": image_sha256,
+            "image_size_bytes": image_size_bytes,
+            "image_upload_id": (
+                str(image_upload_id) if image_upload_id is not None else None
+            ),
+            "manifest_digest": manifest_digest,
+            "outcome": outcome.value,
+            "policy_version": policy_version,
+            "reason_code": reason_code,
+            "screener_hotkey": screener_hotkey,
+        }
+        if review_settings_revision is not None:
+            fields.update(
+                {
+                    "review_settings_checksum": review_settings_checksum,
+                    "review_settings_instance_id": review_settings_instance_id,
+                    "review_settings_revision": review_settings_revision,
+                    "review_settings_scope": review_settings_scope,
+                }
+            )
         payload = json.dumps(
-            {
-                "agent_id": str(agent_id),
-                "attempt_id": str(attempt_id),
-                "finding_digest": finding_digest,
-                "image_id": image_id,
-                "image_ref": image_ref,
-                "image_sha256": image_sha256,
-                "image_size_bytes": image_size_bytes,
-                "image_upload_id": (
-                    str(image_upload_id) if image_upload_id is not None else None
-                ),
-                "manifest_digest": manifest_digest,
-                "outcome": outcome.value,
-                "policy_version": policy_version,
-                "reason_code": reason_code,
-                "screener_hotkey": screener_hotkey,
-            },
+            fields,
             sort_keys=True,
             separators=(",", ":"),
         )

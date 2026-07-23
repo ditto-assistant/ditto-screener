@@ -439,6 +439,26 @@ class ScreenerWorker:
                 outcome=typed_outcome,
                 manifest_digest=result.manifest_digest if is_quarantine else None,
                 finding_digest=finding_digest,
+                review_settings_revision=(
+                    self._review_settings_status.revision
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
+                review_settings_instance_id=(
+                    self._instance_id
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
+                review_settings_scope=(
+                    self._review_settings_status.scope
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
+                review_settings_checksum=(
+                    self._review_settings_status.checksum
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
                 reason_code=reason_code,
                 image_sha256=screened_image.sha256 if screened_image else None,
                 image_size_bytes=screened_image.size_bytes if screened_image else None,
@@ -456,6 +476,26 @@ class ScreenerWorker:
                 outcome=typed_outcome,
                 manifest_digest=result.manifest_digest if is_quarantine else None,
                 finding_digest=finding_digest,
+                review_settings_revision=(
+                    self._review_settings_status.revision
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
+                review_settings_instance_id=(
+                    self._instance_id
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
+                review_settings_scope=(
+                    self._review_settings_status.scope
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
+                review_settings_checksum=(
+                    self._review_settings_status.checksum
+                    if self._review_settings_status.revision >= 1
+                    else None
+                ),
                 reason_code=reason_code,
                 evidence=evidence,
                 finding=finding,
