@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.16.4 (2026-07-23)
+
+### Bug Fixes
+
+- Deploy screeners over one SSH session
+  ([#57](https://github.com/ditto-assistant/ditto-screener/pull/57),
+  [`83f0f64`](https://github.com/ditto-assistant/ditto-screener/commit/83f0f642731b9a3475b96c17ab9bf923fa577fae))
+
+
 ## v0.16.3 (2026-07-23)
 
 ### Bug Fixes

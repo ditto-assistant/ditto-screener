@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ditto-screener"
-version = "0.16.3"
+version = "0.16.4"
 description = "Private platform-operated screening worker for Ditto SN118."
 readme = "README.md"
 license = "MIT"
