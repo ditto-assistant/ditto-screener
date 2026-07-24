@@ -72,7 +72,7 @@ L2_STARTER_MANIFESTS = tuple(
     sorted((Path(__file__).parent / "data").glob("starter-kit-provenance-*.json"))
 )
 _MAX_ARCHIVE_FILES = 512
-_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
+_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 _MAX_TOOL_BYTES = 256_000
 _MAX_AUDIT_TAIL_BYTES = 64 * 1024 * 1024
 _RETRY_DELAYS_SECONDS = (0.5, 1.0)

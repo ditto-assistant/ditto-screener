@@ -6,17 +6,51 @@ import hashlib
 import json
 import time
 from dataclasses import replace
+from uuid import UUID
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from ditto_screener.errors import PlatformError
 from ditto_screener.platform import PlatformClient
 from ditto_screener.review_settings import (
     CachedReviewSettings,
     ReviewSettingsCache,
+    ShadowReviewObservationRequest,
+    ShadowReviewUsage,
     bootstrap_review_settings,
 )
+
+
+def _shadow_observation(*, stages: int) -> ShadowReviewObservationRequest:
+    return ShadowReviewObservationRequest(
+        attempt_id=UUID("96af45fd-65da-4f59-87f8-8ddf5d57f88c"),
+        artifact_sha256="ab" * 32,
+        settings_revision=1,
+        settings_scope="*",
+        settings_checksum="cd" * 32,
+        disposition="safe",
+        risk_level="low",
+        response_models=tuple(f"model-{index}" for index in range(stages)),
+        response_providers=tuple(f"provider-{index}" for index in range(stages)),
+        usage=ShadowReviewUsage(
+            input_tokens=1,
+            output_tokens=1,
+            cached_input_tokens=0,
+            reasoning_tokens=0,
+            estimated_cost_usd=0,
+        ),
+    )
+
+
+def test_shadow_observation_allows_fifty_provider_stages() -> None:
+    assert len(_shadow_observation(stages=50).response_models) == 50
+
+
+def test_shadow_observation_rejects_more_than_fifty_provider_stages() -> None:
+    with pytest.raises(ValidationError, match="too many provider stages"):
+        _shadow_observation(stages=51)
 
 
 @pytest.mark.asyncio
