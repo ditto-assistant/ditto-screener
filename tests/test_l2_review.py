@@ -64,6 +64,21 @@ ROOT = Path(__file__).resolve().parents[1]
 ATTEMPT = UUID("96af45fd-65da-4f59-87f8-8ddf5d57f88c")
 
 
+def test_l2_extraction_budget_allows_archives_over_twenty_mib(tmp_path: Path) -> None:
+    size = 20 * 1024 * 1024 + 1
+    archive = tmp_path / "large-source.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("large-source.bin")
+        info.size = size
+        tar.addfile(info, io.BytesIO(b"\0" * size))
+    workspace = tmp_path / "large-source"
+    workspace.mkdir()
+
+    _extract_readonly_workspace(archive, workspace)
+
+    assert (workspace / "large-source.bin").stat().st_size == size
+
+
 def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
     manifests = [json.loads(path.read_text()) for path in L2_STARTER_MANIFESTS]
     assert [manifest["revision"] for manifest in manifests] == [

@@ -22,6 +22,8 @@ ReviewModel = Literal[
     "openai/gpt-5.6-sol",
 ]
 
+_MAX_SHADOW_PROVIDER_STAGES = 50
+
 
 class ShadowReviewUsage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -60,7 +62,10 @@ class ShadowReviewObservationRequest(BaseModel):
     def validate_bounds(self) -> ShadowReviewObservationRequest:
         if len(self.categories) > 8:
             raise ValueError("shadow review has too many categories")
-        if len(self.response_models) > 8 or len(self.response_providers) > 8:
+        if (
+            len(self.response_models) > _MAX_SHADOW_PROVIDER_STAGES
+            or len(self.response_providers) > _MAX_SHADOW_PROVIDER_STAGES
+        ):
             raise ValueError("shadow review has too many provider stages")
         if self.disposition in {"safe", "violation"} and self.risk_level is None:
             raise ValueError("decisive shadow review requires a risk level")
