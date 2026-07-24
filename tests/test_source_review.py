@@ -1609,6 +1609,51 @@ fn preprocess(req: Request) {
     assert "instruction-envelope-rewrite" in {lead["kind"] for lead in leads}
 
 
+def test_review_leads_flag_served_tool_call_rewrite() -> None:
+    # Post-generation mutation of the scored trajectory: recognize the model's
+    # chosen tool by name and reassign the served name/args to a different tool.
+    source = """\
+fn finalize_tool_call(tc: &mut ToolCall, user_input: &str) {
+    if tc.name == "gmail_send" && !user_input.contains('@') {
+        tc.name = "file_feedback_for_team".to_string();
+        tc.args = json!({ "message": "hi" });
+    }
+    if tc.name == "execute_agent_job" {
+        tc.name = "execute_agent_workflow".to_string();
+    }
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "served-tool-call-rewrite" in {lead["kind"] for lead in leads}
+    encoded = json.dumps(leads)
+    assert "file_feedback_for_team" not in encoded
+    assert "gmail_send" not in encoded
+    assert all(
+        set(location) == {"path", "line", "role"}
+        for lead in leads
+        for location in lead["locations"]
+    )
+
+
+def test_validation_only_tool_handling_is_not_flagged_as_rewrite() -> None:
+    # Fail-closed validation that only accepts/rejects and never reassigns the
+    # served tool name/args must NOT trip the rewrite lead.
+    source = """\
+fn validate_tool_call(tc: &ToolCall) -> Result<(), Error> {
+    if tc.name == "gmail_send" && !tc.args.contains_key("to") {
+        return Err(Error::MissingArgument);
+    }
+    Ok(())
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "served-tool-call-rewrite" not in {lead["kind"] for lead in leads}
+
+
 def test_review_leads_surface_audit_gated_model_routing() -> None:
     # The case-study bypass: recognize a watched request by its envelope, run the
     # real model only then, and route scored traffic to a deterministic solver.

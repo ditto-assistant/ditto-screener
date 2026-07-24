@@ -215,6 +215,30 @@ _RULES = (
         ),
         build_files_only=True,
     ),
+    _Rule(
+        "served-tool-call-rewrite",
+        (
+            _Role(
+                "observed-tool-call",
+                _words(
+                    r"\btc\.name\b|\btool[\s.]?calls?\b|\bcall\.name\b|"
+                    r"\bfunction[\s.]?call\b|"
+                    r"\b(?:chosen|selected|model|observed)[\s]?tool\b"
+                ),
+            ),
+            _Role(
+                "name-match-condition",
+                _words(r"\b(?:if|match|when|contains|equals)\b|==|\bstarts\s?with\b"),
+            ),
+            _Role(
+                "name-arg-reassignment",
+                _words(
+                    r"\.(?:name|args|arguments)\s*=(?!=)|"
+                    r"\b(?:rename|remap|coerce|substitute)\b"
+                ),
+            ),
+        ),
+    ),
 )
 
 
