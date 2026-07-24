@@ -216,25 +216,65 @@ _RULES = (
         build_files_only=True,
     ),
     _Rule(
+        # Flags source that recognizes the model's chosen tool call by name and
+        # then, conditioned on the request/user content, reassigns the served
+        # tool NAME to a different tool -- a post-generation rewrite of the
+        # scored trajectory (the validator observes tool-name + arg F1).
+        #
+        # Four roles must co-occur in the window. The discriminator against
+        # legitimate code is deliberately narrow:
+        #   * "served-tool-call": we are operating on a tool call (field access,
+        #     struct literal, or ["name"]/["args"] index into a call).
+        #   * "name-match-condition": a NAME-specific comparison/match -- not a
+        #     bare `if`. This drops the router idiom where a bare `if` guards an
+        #     arg-only reassignment.
+        #   * "name-reassignment": the served NAME is rewritten (`.name =`,
+        #     `["name"] =`, struct-literal `name:`, or a `.with_name(...)`
+        #     builder). Requiring a NAME rewrite -- not merely `.args =` --
+        #     drops legitimate dispatch/retry that only re-derives `.args`.
+        #   * "request-conditional": the rewrite is gated on request/user
+        #     content (user_input / prompt / query / case / contains /
+        #     starts_with). This is what fires on the malicious example yet
+        #     stays silent on UNCONDITIONAL deprecated-alias normalization
+        #     (`if name == old { name = new }`), which has no content gate.
+        #
+        # Covered rewrite forms: field assignment, struct-literal construction,
+        # ["name"] index assignment, and `.with_name(...)` builders.
+        # Known-open (accepted as low-volume shadow-mode trips, not faked):
+        # rewrites via an opaque helper such as `set_name(tc, ...)` (no literal
+        # NAME target), name taken from a variable with no nearby content gate,
+        # or a condition and reassignment separated by more than the window.
         "served-tool-call-rewrite",
         (
             _Role(
-                "observed-tool-call",
+                "served-tool-call",
                 _words(
                     r"\btc\.name\b|\btool[\s.]?calls?\b|\bcall\.name\b|"
                     r"\bfunction[\s.]?call\b|"
-                    r"\b(?:chosen|selected|model|observed)[\s]?tool\b"
+                    r"\b(?:chosen|selected|model|observed|served)[\s]?tool\b|"
+                    r"\[[\"'](?:name|args|arguments)[\"']\]"
                 ),
             ),
             _Role(
                 "name-match-condition",
-                _words(r"\b(?:if|match|when|contains|equals)\b|==|\bstarts\s?with\b"),
+                _words(
+                    r"\.name\s*==|\[[\"']name[\"']\]\s*==|"
+                    r"\bmatch\s+[\w.]*name\b"
+                ),
             ),
             _Role(
-                "name-arg-reassignment",
+                "name-reassignment",
                 _words(
-                    r"\.(?:name|args|arguments)\s*=(?!=)|"
-                    r"\b(?:rename|remap|coerce|substitute)\b"
+                    r"\.name\s*=(?!=)|\[[\"']name[\"']\]\s*=(?!=)|"
+                    r"\bname\s*:|\.with[\s]?name\b"
+                ),
+            ),
+            _Role(
+                "request-conditional",
+                _words(
+                    r"\buser[\s]?input\b|\buser[\s]?content\b|\bprompt\b|"
+                    r"\bquery\b|\bcase\b|\bcontains\b|"
+                    r"\bstarts[\s]?with\b|\bends[\s]?with\b"
                 ),
             ),
         ),
