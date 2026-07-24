@@ -2,6 +2,41 @@
 
 <!-- version list -->
 
+## v0.17.0 (2026-07-24)
+
+### Bug Fixes
+
+- **source-signals**: Build on WindFox-1 served-tool-call-rewrite lead — tighten FP + cover evasions
+  ([#64](https://github.com/ditto-assistant/ditto-screener/pull/64),
+  [`b7f844f`](https://github.com/ditto-assistant/ditto-screener/commit/b7f844f5d107ef3b625ce943fbdae924a20174af))
+
+- **source-signals**: Tighten served-tool-call-rewrite lead + cover evasions
+  ([#64](https://github.com/ditto-assistant/ditto-screener/pull/64),
+  [`b7f844f`](https://github.com/ditto-assistant/ditto-screener/commit/b7f844f5d107ef3b625ce943fbdae924a20174af))
+
+### Features
+
+- **binary-analysis**: Advisory answer-shaped token density stat
+  ([#65](https://github.com/ditto-assistant/ditto-screener/pull/65),
+  [`b046a51`](https://github.com/ditto-assistant/ditto-screener/commit/b046a514197d18df445d1df15da0a63a85478a11))
+
+- **screener**: Proactive v7 overfit-detection screens (advisory, shadow-first)
+  ([#65](https://github.com/ditto-assistant/ditto-screener/pull/65),
+  [`b046a51`](https://github.com/ditto-assistant/ditto-screener/commit/b046a514197d18df445d1df15da0a63a85478a11))
+
+- **source-review**: V14 prompt clauses for v7 overfit leads
+  ([#65](https://github.com/ditto-assistant/ditto-screener/pull/65),
+  [`b046a51`](https://github.com/ditto-assistant/ditto-screener/commit/b046a514197d18df445d1df15da0a63a85478a11))
+
+- **source-signals**: Add served-tool-call-rewrite review lead
+  ([#64](https://github.com/ditto-assistant/ditto-screener/pull/64),
+  [`b7f844f`](https://github.com/ditto-assistant/ditto-screener/commit/b7f844f5d107ef3b625ce943fbdae924a20174af))
+
+- **source-signals**: Suppressor engine + v7 overfit leads
+  ([#65](https://github.com/ditto-assistant/ditto-screener/pull/65),
+  [`b046a51`](https://github.com/ditto-assistant/ditto-screener/commit/b046a514197d18df445d1df15da0a63a85478a11))
+
+
 ## v0.16.5 (2026-07-24)
 
 ### Bug Fixes
