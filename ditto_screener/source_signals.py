@@ -32,6 +32,14 @@ class _Rule:
     kind: str
     roles: tuple[_Role, ...]
     build_files_only: bool = False
+    # Suppressors encode the verifier's false-positive guards structurally: if
+    # ANY suppressor role also matches within ``_WINDOW_LINES`` of the anchor,
+    # the lead is dropped. This keeps a lead from firing on a legitimate
+    # look-alike (a genuine model call in the window, an injection-defense
+    # strip sink, a request-user source, or a documented list/history family)
+    # without turning the co-occurrence engine into a verdict engine. A lead is
+    # still only a location-only routing signal for the agentic reviewer.
+    suppressors: tuple[_Role, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -180,6 +188,190 @@ _RULES = (
                     r"\b(?:deterministic|solver|solve[-_ ]?(?:known|case)|lookup|"
                     r"answer[-_ ]?table|phrase[-_ ]?table|precomputed|hard[-_ ]?coded|"
                     r"canned|shortcut|fast[-_ ]?path)\b"
+                ),
+            ),
+        ),
+    ),
+    # --- v7 proactive overfit leads (locations/roles only) ---------------
+    # Each of these is a routing signal for the agentic reviewer, never a
+    # finding. The prompt clauses in source_review.py carry the causal
+    # discriminator and the two-location evidence bar; these rules only
+    # surface a nearby co-occurrence worth a reachability check. Suppressors
+    # implement the verifier's FP guards so the honest look-alike stays clear.
+    _Rule(
+        # Pre-model deterministic resolver whose computed value is forced into
+        # the exact answer slot a faithful extractor then lifts verbatim.
+        # (screen: "Pre-model deterministic resolver feeding the answer-slot")
+        "precomputed-answer-slot-injection",
+        (
+            _Role(
+                "template-family-resolver",
+                _words(
+                    r"\b(?:as of|temporal|ordering|latest before|"
+                    r"resolve challenge|challenge template|template family)\b"
+                ),
+            ),
+            _Role(
+                # A computed value written into the answer slot / fact block by
+                # code, not lifted from the model's own output.
+                "answer-value-injection",
+                _words(
+                    r"\b(?:inject|force|pin|splice|override|write|set)\b"
+                    r".{0,40}\b(?:answer|slot|fact block)\b"
+                ),
+            ),
+            _Role(
+                "verbatim-slot-extract",
+                _words(
+                    r"\b(?:extract|lift|parse|read)\b.{0,20}\b(?:answer|slot)\b"
+                    r"|\banswer slot\b|\btrailing answer\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
+        # Prompt-injection "refuse-and-answer" grader seam abused by emitting
+        # BOTH the true and the injected value so the excused-forbidden path
+        # scores without any precedence decision.
+        # (screen: "Refuse-and-answer dual-path abuse")
+        "authority-envelope-answer-shotgun",
+        (
+            _Role(
+                "authority-envelope-recognition",
+                _words(
+                    r"\b(?:sync|takes precedence|verified value|supersede|"
+                    r"authority note|admin override|correction channel)\b"
+                ),
+            ),
+            _Role(
+                "multi-value-emit",
+                _words(
+                    r"\b(?:append all|push all|emit both|all candidates|"
+                    r"both values|every value|all values)\b"
+                ),
+            ),
+            _Role(
+                # The fix's required fourth role: at least one emitted candidate
+                # comes from a directive/instruction-styled note.
+                "directive-sourced-candidate",
+                _words(
+                    r"\b(?:report as|reply with|treat as|from now on|"
+                    r"system:|admin:|instruction value|payload value)\b"
+                ),
+            ),
+        ),
+        suppressors=(
+            _Role(
+                "intervening-model-call",
+                _words(
+                    r"\b(?:call model|invoke model|llm|chat|inference|"
+                    r"agent path|generate)\b"
+                ),
+            ),
+            _Role(
+                "list-or-history-family",
+                _words(
+                    r"\b(?:date order|second to last|previous|list every|"
+                    r"how many|as of|timeline)\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
+        # Hand-written character-class table mirroring the private generator's
+        # CoinShaped alphabet used to SELECT the served answer token.
+        # (screen: "Coined-token shape extractor")
+        "coined-token-shape-mirror",
+        (
+            _Role(
+                "restricted-alphabet-table",
+                re.compile(r"BCDFGHJKLMNPRSTVZ|\bAEIOU\b"),
+            ),
+            _Role(
+                "shape-literal",
+                _words(
+                    r"\bVK\b|coined (?:token|shape)|4 digit|prefix literal|"
+                    r"coined at\b"
+                ),
+            ),
+            _Role(
+                "answer-selection",
+                _words(
+                    r"\b(?:select|pick|return|pin)\b.{0,40}"
+                    r"\b(?:answer|token|value)\b|\banswer token\b"
+                ),
+            ),
+        ),
+        suppressors=(
+            _Role(
+                # Injection-defense sink or the request user's own message:
+                # both must hand-write the same public alphabet to be precise.
+                "defensive-or-user-source",
+                _words(
+                    r"\b(?:strip|remove|block|redact|refuse|saniti[sz]e)\b"
+                    r"|\buser input\b|\buser message\b|\brequest user\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
+        # Advisory only: an enumerate-all-conversions / range-hedge computed
+        # answer. A range-hedged computed value is genuinely allowed, so this
+        # never becomes a finding on source alone.
+        # (screen: "Computed-answer numeric / unit-conversion shotgun")
+        "numeric-candidate-shotgun",
+        (
+            _Role(
+                "computed-answer",
+                _words(
+                    r"\b(?:convert|conversion|unit|arithmetic|compute|"
+                    r"calculate)\b"
+                ),
+            ),
+            _Role(
+                "multi-numeric-emit",
+                _words(
+                    r"\b(?:all conversions|every conversion|enumerate|range|"
+                    r"min max|band|spread)\b"
+                ),
+            ),
+        ),
+        suppressors=(
+            _Role(
+                "single-value-resolution",
+                _words(
+                    r"\b(?:single value|exactly one|one value|"
+                    r"resolve to one|final value)\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
+        # Advisory only: positional/marker number-grep instead of a
+        # subject-anchored read. Structurally identical to faithful
+        # serialization, so it is never a finding without corroborating
+        # scorer-aware source.
+        # (screen: "Positional/marker number-grep answer extractor")
+        "positional-number-extraction",
+        (
+            _Role(
+                "number-extraction",
+                _words(r"\b(?:number|numeric|digit)\b"),
+            ),
+            _Role(
+                "positional-selector",
+                re.compile(
+                    r"\.first\(\)|\[0\]|\bfirst\b|\bconnective\b|\boffset\b",
+                    re.IGNORECASE,
+                ),
+            ),
+        ),
+        suppressors=(
+            _Role(
+                "subject-anchored-read",
+                _words(
+                    r"\b(?:asked subject|by subject|for the subject|needle|"
+                    r"subject anchored)\b"
                 ),
             ),
         ),
@@ -346,6 +538,14 @@ def find_source_review_leads(
             }
             if any(not hits for hits in role_hits.values()):
                 continue
+            suppressor_hits = [
+                line_number
+                for suppressor in rule.suppressors
+                for line_number, line in enumerate(lines, 1)
+                if suppressor.pattern.search(
+                    line[:4096].replace("_", " ").replace("-", " ")
+                )
+            ]
             seen: set[tuple[tuple[str, int], ...]] = set()
             anchors = sorted({line for hits in role_hits.values() for line in hits})
             for anchor in anchors:
@@ -361,6 +561,13 @@ def find_source_review_leads(
                     signature.append((role.name, nearby))
                     locations.append({"path": path, "line": nearby, "role": role.name})
                 else:
+                    if any(
+                        abs(hit - anchor) <= _WINDOW_LINES for hit in suppressor_hits
+                    ):
+                        # A verifier FP guard fired in-window (a genuine model
+                        # call, a defensive/user-source sink, a documented
+                        # list/history family, or a single-value resolution).
+                        continue
                     normalized = tuple(signature)
                     if normalized in seen:
                         continue
