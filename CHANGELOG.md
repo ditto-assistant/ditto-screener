@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v0.16.5 (2026-07-24)
+
+### Bug Fixes
+
+- Raise L2 shadow review budgets ([#60](https://github.com/ditto-assistant/ditto-screener/pull/60),
+  [`5c53353`](https://github.com/ditto-assistant/ditto-screener/commit/5c533530c7ad729640133b4022b0311426019eb7))
+
+### Chores
+
+- Move core E2E off the PR hot path
+  ([#58](https://github.com/ditto-assistant/ditto-screener/pull/58),
+  [`4e8a8c6`](https://github.com/ditto-assistant/ditto-screener/commit/4e8a8c6614e60ce44a9371fceac5ef165c9efeed))
+
+- **skills**: Add GitHub Stacks workflow
+  ([#59](https://github.com/ditto-assistant/ditto-screener/pull/59),
+  [`de513d5`](https://github.com/ditto-assistant/ditto-screener/commit/de513d5d842e99cbf69ecff6e939f5daa5876171))
+
+
 ## v0.16.4 (2026-07-23)
 
 ### Bug Fixes
