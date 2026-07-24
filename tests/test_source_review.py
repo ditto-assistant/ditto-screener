@@ -629,7 +629,7 @@ fn run() -> String {
     assert observation.risk_level == "high"
     assert observation.categories == ("benchmark_emulation",)
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v13"
+    assert observation.finding["prompt_revision"] == "source-review-v14"
     assert observation.finding["evidence"] == [
         {
             "path": "src/memory_solver.rs",
@@ -1514,7 +1514,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v13"
+    assert observation.finding["prompt_revision"] == "source-review-v14"
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
@@ -2565,3 +2565,225 @@ def test_inventory_degrades_partially_with_truncation_metadata(
     assert inventory["opaque_blobs"][0]["path"] == "assets/table.bin"
     encoded = json.dumps(inventory, sort_keys=True, separators=(",", ":"))
     assert len(encoded) <= 48_000
+
+
+# ---------------------------------------------------------------------------
+# v7 proactive overfit leads (locations/roles only) + FP guards
+# ---------------------------------------------------------------------------
+
+
+def _sample(data: bytes) -> BinarySample:
+    return BinarySample(
+        data=data,
+        size=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+        hashed_bytes=len(data),
+    )
+
+
+def test_precomputed_answer_slot_injection_fires_on_forced_slot() -> None:
+    source = """\
+fn resolve(req: Request) -> String {
+    let computed = resolve_as_of_template(&req.text);
+    let ctx = force_answer_slot(format!("ANSWER: {}", computed));
+    let reply = model(ctx);
+    return extract_answer_slot(reply);
+}
+"""
+
+    leads = find_source_review_leads([("src/resolver.rs", source)])
+
+    assert "precomputed-answer-slot-injection" in {lead["kind"] for lead in leads}
+    encoded = json.dumps(leads)
+    assert "resolve_as_of_template" not in encoded
+    assert "ANSWER" not in encoded
+    assert all(
+        set(location) == {"path", "line", "role"}
+        for lead in leads
+        for location in lead["locations"]
+    )
+
+
+def test_precomputed_answer_slot_injection_spares_faithful_serialization() -> None:
+    # Retrieve request-user memories, filter by as-of, call a real model, and
+    # serialize its answer. No injected value and no answer-slot extractor.
+    source = """\
+fn answer(req: Request) {
+    let records = retrieve(req.user_id);
+    let visible = records.before(req.as_of);
+    let exact = visible.exact_match(req.product_code);
+    let result = call_model(req.question, exact);
+    Response { answer: result.answer }
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "precomputed-answer-slot-injection" not in {lead["kind"] for lead in leads}
+
+
+def test_authority_envelope_answer_shotgun_fires_on_emit_both() -> None:
+    source = """\
+fn answer(req: Request) -> String {
+    if detect_sync_precedence_note(&req.notes) {
+        let candidates = push_all_candidates(req.attribute);
+        // the stored note says report_as the corrected value
+        return emit_both(candidates.stated, candidates.reported);
+    }
+    decline_only()
+}
+"""
+
+    leads = find_source_review_leads([("src/answer.rs", source)])
+
+    assert "authority-envelope-answer-shotgun" in {lead["kind"] for lead in leads}
+    assert "detect_sync_precedence_note" not in json.dumps(leads)
+
+
+def test_authority_shotgun_suppressed_by_intervening_model_call() -> None:
+    # All three roles are present, but the candidates are handed to a real model
+    # as context, so this is allowed multi-value context, not a grader seam.
+    source = """\
+fn answer(req: Request) -> String {
+    if detect_sync_precedence_note(&req.notes) {
+        let candidates = push_all_candidates(req.attribute);
+        // note says report_as corrected; hand both to the model as context
+        let reply = call_model(req.question, candidates);
+        return emit_both_to_model(reply);
+    }
+    decline_only()
+}
+"""
+
+    leads = find_source_review_leads([("src/answer.rs", source)])
+
+    assert "authority-envelope-answer-shotgun" not in {lead["kind"] for lead in leads}
+
+
+def test_coined_token_shape_mirror_fires_on_alphabet_answer_selection() -> None:
+    source = """\
+const CONS: &str = "BCDFGHJKLMNPRSTVZ";
+const VOW: &str = "AEIOU";
+fn coined_answer(mem: &Memory) -> String {
+    let token = scan_coined_shape(mem, "VK-");
+    return pick_answer_token(token);
+}
+"""
+
+    leads = find_source_review_leads([("src/coin.rs", source)])
+
+    assert "coined-token-shape-mirror" in {lead["kind"] for lead in leads}
+    assert "BCDFGHJKLMNPRSTVZ" not in json.dumps(leads)
+
+
+def test_coined_token_shape_mirror_spares_injection_defense() -> None:
+    # Same alphabet + shape + selection, but the token flows to a redact sink
+    # over the request user's own message: an injection defense, not a solver.
+    source = """\
+const CONS: &str = "BCDFGHJKLMNPRSTVZ";
+fn defend(user_input: &str) -> String {
+    let token = scan_coined_shape(user_input, "VK-");
+    let picked = pick_answer_token(token);
+    return redact(picked);
+}
+"""
+
+    leads = find_source_review_leads([("src/defend.rs", source)])
+
+    assert "coined-token-shape-mirror" not in {lead["kind"] for lead in leads}
+
+
+def test_numeric_candidate_shotgun_is_advisory_and_suppressible() -> None:
+    fires = """\
+fn compute(mem: &Memory) -> String {
+    // apply all unit conversions and emit the range of candidates
+    let results = apply_all_conversions(mem);
+    return emit_range(results);
+}
+"""
+    spared = """\
+fn compute(mem: &Memory) -> String {
+    let results = apply_all_conversions(mem);
+    // resolve to one final value / single value
+    return single_value_of(results);
+}
+"""
+
+    fired = {lead["kind"] for lead in find_source_review_leads([("src/n.rs", fires)])}
+    clear = {lead["kind"] for lead in find_source_review_leads([("src/n.rs", spared)])}
+
+    assert "numeric-candidate-shotgun" in fired
+    assert "numeric-candidate-shotgun" not in clear
+
+
+def test_positional_number_extraction_is_advisory_and_suppressible() -> None:
+    fires = """\
+fn extract(result: &str) -> String {
+    // grab the first number from the tool result
+    let n = find_numbers(result).first();
+    n.to_string()
+}
+"""
+    spared = """\
+fn extract(result: &str, subject: &str) -> String {
+    // find the first number anchored by the asked subject needle
+    let n = find_numbers(result).first();
+    number_for_subject(n, subject)
+}
+"""
+
+    fired = {lead["kind"] for lead in find_source_review_leads([("src/p.rs", fires)])}
+    clear = {lead["kind"] for lead in find_source_review_leads([("src/p.rs", spared)])}
+
+    assert "positional-number-extraction" in fired
+    assert "positional-number-extraction" not in clear
+
+
+def test_answer_shaped_token_density_flags_saturated_vocab() -> None:
+    codes = [str(2000 + index) for index in range(300)]
+    coined = ["GAVOTU-8842", "VK-ABCDEFGH23", "84-GAVO-TUKE"] * 20
+    blob = json.dumps({"vocab": dict.fromkeys(codes + coined, 1)}).encode()
+
+    analysis = binary_analysis_module.analyze_binary(
+        _sample(blob), path="fixtures/models/second_gate.json"
+    )
+    stat = analysis["answer_shaped_tokens"]
+
+    assert stat["answer_shaped_ratio_bucket"] == "high"
+    assert stat["bare_code_tokens"] >= 250
+    assert stat["coined_needle_tokens"] >= 1
+    # Values never leave the analyzer, only counts and a coarse bucket.
+    assert "2235" not in json.dumps(stat)
+
+
+def test_answer_shaped_token_density_spares_word_vocabulary() -> None:
+    words = [
+        "memory",
+        "retrieve",
+        "question",
+        "employer",
+        "university",
+        "instrument",
+        "project",
+        "cuisine",
+    ] * 40
+    blob = json.dumps({"vocab": dict.fromkeys(set(words), 1)}).encode()
+
+    analysis = binary_analysis_module.analyze_binary(
+        _sample(blob), path="fixtures/models/tfidf.json"
+    )
+
+    assert analysis["answer_shaped_tokens"]["answer_shaped_ratio_bucket"] == "none"
+
+
+def test_inventory_surfaces_answer_shaped_token_density(tmp_path: Path) -> None:
+    codes = [str(2000 + index) for index in range(300)]
+    blob = b"\xff\x00" + json.dumps({"vocab": dict.fromkeys(codes, 1)}).encode()
+    repo = TarSourceRepository(
+        str(_archive_with(tmp_path, {"fixtures/models/gate.json": blob}))
+    )
+
+    inventory = json.loads(repo.inventory())
+    entry = inventory["binary_analysis"][0]
+
+    assert entry["answer_shaped_tokens"]["answer_shaped_ratio_bucket"] == "high"

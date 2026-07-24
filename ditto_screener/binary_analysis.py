@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import math
+import re
 import zipfile
 from collections import Counter
 from dataclasses import dataclass
@@ -25,6 +26,23 @@ _BENCHMARK_SCHEMA_MARKERS = (
     "memory_cases",
     "run_after_wave",
     "tool_cases",
+)
+
+# Bounded, advisory-only saturation signal for opaque model/vocab blobs. It is
+# NEVER a tripwire or a finding on its own: a genuine TF-IDF vocabulary is
+# dominated by word tokens and an opaque reranker exposes no vocab, so both stay
+# low. It reports only bucketed counts/ratios and never the token values,
+# preserving the locations/ratios-only boundary. The reviewer must still prove
+# runtime reachability AND that the saturated literals are consumed as a served
+# answer (not retrieval features / user-scoped values) before it can matter.
+_ANSWER_SHAPED_TOKEN_SCAN_CAP = 40_000
+_TOKEN_PATTERN = re.compile(rb"[A-Za-z0-9][A-Za-z0-9-]{2,31}")
+# Bare 4-6 digit codes: the challenge verification-code / count shape.
+_BARE_CODE_SHAPE = re.compile(r"^\d{4,6}$")
+# Coined needle shapes (persona.CoinShaped): VK-ABCDEFGH23, GAVOTU-8842,
+# 84-GAVO-TUKE. A consonant/digit-heavy segmented token, not a dictionary word.
+_COINED_NEEDLE_SHAPE = re.compile(
+    r"^(?:VK-[A-Z0-9]{6,}|[A-Z]{4,8}-\d{3,4}|\d{2}-[A-Z]{4}-[A-Z]{4})$"
 )
 
 
@@ -85,6 +103,7 @@ def analyze_binary(sample: BinarySample, *, path: str) -> dict[str, object]:
         "format_confidence": confidence,
         "entropy_bits_per_byte": _entropy(data),
         "benchmark_schema_markers": markers,
+        "answer_shaped_tokens": _answer_shaped_token_density(data),
         "printable_strings": strings,
         "details": details,
         "safety": {
@@ -92,6 +111,45 @@ def analyze_binary(sample: BinarySample, *, path: str) -> dict[str, object]:
             "decompressed_payloads": False,
             "external_data_loaded": False,
         },
+    }
+
+
+def _answer_shaped_token_density(data: bytes) -> dict[str, object]:
+    """Bounded, values-free saturation stat for opaque model/vocab blobs.
+
+    Tokenizes a bounded prefix and reports how many tokens are answer-shaped
+    (bare verification codes / coined needle shapes) versus total tokens. Only
+    counts and a coarse ratio bucket leave this module; the matched tokens
+    never do. This is advisory context for the reviewer, not a tripwire.
+    """
+    bare_codes = 0
+    coined_needles = 0
+    total = 0
+    for match in _TOKEN_PATTERN.finditer(data):
+        if total >= _ANSWER_SHAPED_TOKEN_SCAN_CAP:
+            break
+        total += 1
+        token = match.group().decode("ascii", errors="replace")
+        if _BARE_CODE_SHAPE.match(token):
+            bare_codes += 1
+        elif _COINED_NEEDLE_SHAPE.match(token.upper()):
+            coined_needles += 1
+    answer_shaped = bare_codes + coined_needles
+    ratio = (answer_shaped / total) if total else 0.0
+    if ratio >= 0.4:
+        bucket = "high"
+    elif ratio >= 0.15:
+        bucket = "elevated"
+    elif ratio > 0.0:
+        bucket = "low"
+    else:
+        bucket = "none"
+    return {
+        "total_tokens": total,
+        "bare_code_tokens": bare_codes,
+        "coined_needle_tokens": coined_needles,
+        "answer_shaped_ratio_bucket": bucket,
+        "scan_capped": total >= _ANSWER_SHAPED_TOKEN_SCAN_CAP,
     }
 
 
@@ -137,6 +195,7 @@ def compact_binary_analysis(value: dict[str, object]) -> dict[str, object]:
         "format_confidence": value.get("format_confidence"),
         "entropy_bits_per_byte": value.get("entropy_bits_per_byte"),
         "benchmark_schema_markers": value.get("benchmark_schema_markers"),
+        "answer_shaped_tokens": value.get("answer_shaped_tokens"),
         "printable_strings": strings[:6] if isinstance(strings, list) else [],
         "details": compact_details,
     }

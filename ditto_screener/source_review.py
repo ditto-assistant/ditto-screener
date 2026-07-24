@@ -31,7 +31,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v13"
+_PROMPT_REVISION = "source-review-v14"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -480,6 +480,51 @@ context, trace it to or away from the service entrypoint, and classify the
 actual behavior. A lead in a test, comment, unreachable helper, legitimate
 request-grounded retrieval path, locked build, or ordinary serializer must not
 be promoted merely because it was surfaced.
+
+The inventory may surface additional v7 overfit routing leads. Each is a
+location-only co-occurrence hint, never a finding. Apply these discriminators
+and the two-location evidence bar before citing anything:
+- precomputed-answer-slot-injection: distinguish supplying computed
+  temporal/count/ordering CONTEXT derived from REQUEST-USER retrieval to a real
+  model (allowed) from injecting a PRE-COMPUTED ANSWER value whose provenance is
+  a static table, recognized challenge template, or generator mirror (NOT
+  request-user retrieval) into the exact slot a faithful extractor lifts
+  verbatim (benchmark_emulation + scorer_contract_manipulation). The tell is the
+  injected value's provenance and the forced verbatim lift, not the presence of
+  an answer slot. Lifting the model's OWN trailing answer line, or letting a
+  genuine model override the supplied context, is allowed.
+- authority-envelope-answer-shotgun: an injection-robust resister that emits
+  exactly one value (the request-user's stored value) and declines the injected
+  update is allowed. Only quarantine (scorer_contract_manipulation +
+  benchmark_emulation) when, on detecting an authority/override envelope, the
+  code routes BOTH the true stored value and the injected payload value into the
+  response slot with NO precedence decision AND no authoritative model call
+  between recognition and the emitted answer. A documented list/history/count
+  answer, or multi-value context handed to a real model, must be cleared.
+- coined-token-shape-mirror: generic high-entropy/identifier tokenization for
+  retrieval is allowed, and so is an injection defense that strips a coined
+  token or faithful serialization of the request user's own token. Quarantine
+  (benchmark_emulation) only when a hand-written character-class table mirrors
+  the private generator's coined alphabet AND the recognized shape selects a
+  value sourced from a static/seed/canary/expected-answer store (not the current
+  request's own message) AND that value reaches the response without a model or
+  tool round trip.
+- numeric-candidate-shotgun and positional-number-extraction are ADVISORY only.
+  A range-hedged computed answer and a numeric serializer over a genuine tool
+  result are both allowed and are structurally identical to the exploit. Never
+  make either a finding on source alone; record it for the behavioral oracle,
+  and only let it support a hold when a separate validated scorer-awareness
+  structure on the same value-selection path is also cited.
+- answer_shaped_tokens (binary_analysis): a high answer-shaped ratio in a model
+  or vocab blob is advisory context, not proof. A modified opaque ONNX/BERT
+  reranker exposes no vocab (ratio none), and a natural-language TF-IDF vocab is
+  word-dominated. Only treat it as suspicious_static_tables / benchmark_emulation
+  when the blob is loaded on the served path, the saturated literals are
+  canary/verification-code/coined shapes consumed as a served ANSWER (compared
+  to the query/case_id and emitted), and they are NOT user-scoped values the
+  harness retrieves for the request user. v7 deliberately gives user-owned
+  answers the canary shape, so a fixture keyed to the request user is cleared
+  even at high density.
 
 For every medium/high category, cite at least one exact reachable path:line for
 that category. For benchmark_emulation or scorer_contract_manipulation, cite at
