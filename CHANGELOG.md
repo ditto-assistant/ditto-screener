@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.17.1 (2026-07-25)
+
+### Bug Fixes
+
+- Report inconclusive screening completion
+  ([#66](https://github.com/ditto-assistant/ditto-screener/pull/66),
+  [`0a3efc2`](https://github.com/ditto-assistant/ditto-screener/commit/0a3efc2c61ac017871dc61281d64b710bde5b354))
+
+
 ## v0.17.0 (2026-07-24)
 
 ### Bug Fixes
