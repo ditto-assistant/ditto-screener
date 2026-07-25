@@ -363,17 +363,16 @@ class ScreenerWorker:
                     artifact_sha256=item.sha256.lower(),
                     result=shadow_review,
                 )
-            # INCONCLUSIVE is a NON-verdict by platform contract: the result
-            # endpoint rejects a submitted inconclusive outcome and expects the
-            # worker to post nothing and let the lease expire as the backoff
-            # ("we could not tell; try again later"). Reporting it as
-            # retryable_infra instead re-queues the agent immediately and hot-
-            # loops as a mislabeled "Screening infrastructure error", so we honor
-            # the contract and stay silent. QUARANTINE is the only non-boolean
-            # outcome that still submits.
-            submits_result = (
-                result.submits_verdict or result.outcome.value == "quarantine"
-            )
+            # Typed non-verdicts still complete the attempt. The platform keeps
+            # INCONCLUSIVE in backoff until the original lease deadline, so
+            # reporting it removes the false "running" state without creating
+            # an immediate retry loop. During a platform-first rolling deploy,
+            # an older platform can reject this report safely: the worker logs
+            # the failure and the legacy lease-expiry path remains authoritative.
+            submits_result = result.submits_verdict or result.outcome in {
+                ScreeningOutcome.QUARANTINE,
+                ScreeningOutcome.INCONCLUSIVE,
+            }
             if not submits_result:
                 logger.warning(
                     "screening agent_id=%s outcome=%s manifest=%s; "
