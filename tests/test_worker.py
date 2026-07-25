@@ -395,7 +395,7 @@ async def test_screen_one_retryable_failure_preserves_v6_screening_failed_verdic
     assert platform.verdicts[0]["outcome"] == ScreenResultOutcome.RETRYABLE_INFRA
 
 
-async def test_inconclusive_submits_nothing_and_lets_the_lease_expire(
+async def test_inconclusive_completes_attempt_without_mislabeling_infrastructure(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
     platform = _FakePlatform([])
@@ -404,11 +404,11 @@ async def test_inconclusive_submits_nothing_and_lets_the_lease_expire(
     )
     worker = _worker(make_config(), platform, gate)
     await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
-    # INCONCLUSIVE is a non-verdict: the platform rejects a submitted inconclusive
-    # outcome and expects the worker to post nothing and let the lease expire as
-    # the backoff. Reporting retryable_infra would hot-loop as a mislabeled
-    # "Screening infrastructure error", so no verdict must be submitted.
-    assert platform.verdicts == []
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    assert verdict["passed"] is False
+    assert verdict["outcome"] == ScreenResultOutcome.INCONCLUSIVE
+    assert verdict["detail"] == "behavioral oracle inconclusive"
 
 
 async def test_screen_passes_lease_deadline_budget_to_gate(
