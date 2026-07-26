@@ -2422,7 +2422,7 @@ async def test_internally_inconsistent_review_is_retryable_not_a_weak_finding(
     )
 
     assert not observation.ok
-    assert observation.error_code == "source-review-valueerror"
+    assert observation.error_code == "source-review-inconsistent-verdict"
 
 
 async def test_expired_lease_deadline_stops_review_before_first_call(
@@ -2451,7 +2451,7 @@ async def test_expired_lease_deadline_stops_review_before_first_call(
     # timeout on every step.
     assert calls == 0
     assert not observation.ok
-    assert observation.error_code == "source-review-valueerror"
+    assert observation.error_code == "source-review-lease-budget-exhausted"
 
 
 async def test_transient_openrouter_failure_is_retried(
@@ -2787,3 +2787,81 @@ def test_inventory_surfaces_answer_shaped_token_density(tmp_path: Path) -> None:
     entry = inventory["binary_analysis"][0]
 
     assert entry["answer_shaped_tokens"]["answer_shaped_ratio_bucket"] == "high"
+
+
+def test_every_static_review_failure_message_maps_to_a_named_code() -> None:
+    """No source-review failure may silently collapse to a bare exception name.
+
+    Collapsing every ``ValueError`` into ``source-review-valueerror`` is what
+    made the miner-visible "Screening infrastructure error" undiagnosable and
+    frequently untrue. If a new ``raise ValueError("...")`` is added to the
+    review path, this test forces the author to classify it.
+    """
+    import ast
+    import inspect
+
+    source = inspect.getsource(source_review_module)
+    unmapped = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Raise) or node.exc is None:
+            continue
+        call = node.exc
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            continue
+        if call.func.id != "ValueError" or not call.args:
+            continue
+        literal = call.args[0]
+        # f-strings interpolate a runtime value and are matched by prefix.
+        if not isinstance(literal, ast.Constant) or not isinstance(literal.value, str):
+            continue
+        if literal.value not in source_review_module._SOURCE_REVIEW_FAILURE_CODES:
+            unmapped.add(literal.value)
+
+    assert not unmapped, (
+        "add these to _SOURCE_REVIEW_FAILURE_CODES so the failure keeps a cause: "
+        f"{sorted(unmapped)}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            ValueError("source archive contains a duplicate path"),
+            "source-review-archive-invalid",
+        ),
+        (
+            ValueError("source reviewer exceeded read budget"),
+            "source-review-read-budget-exhausted",
+        ),
+        (
+            ValueError("source reviewer exceeded step budget"),
+            "source-review-step-budget-exhausted",
+        ),
+        (
+            ValueError("source reviewer returned no tool call"),
+            "source-review-model-response-invalid",
+        ),
+        (
+            ValueError("source reviewer cited an unknown archive member"),
+            "source-review-model-cited-unknown-member",
+        ),
+        (
+            ValueError("provenance manifest is too large"),
+            "source-review-provenance-invalid",
+        ),
+        (
+            ValueError(
+                "source review category benchmark_emulation requires two "
+                "source locations"
+            ),
+            "source-review-inconsistent-verdict",
+        ),
+        # Anything unrecognized must degrade to the historical shape rather
+        # than lose the failure.
+        (ValueError("brand new unmapped failure"), "source-review-valueerror"),
+        (OSError("source review API key is unavailable"), "source-review-oserror"),
+    ],
+)
+def test_failure_codes_name_the_cause(error: Exception, expected: str) -> None:
+    assert source_review_module._source_review_failure_code(error) == expected

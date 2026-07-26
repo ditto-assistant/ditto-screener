@@ -11,7 +11,7 @@ import posixpath
 import re
 import tarfile
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -46,6 +46,61 @@ _MAX_SEARCH_HITS = 80
 _MAX_LEAD_SCAN_BYTES = 64 * 1024 * 1024
 _MAX_LEAD_SCAN_FILES = 20_000
 _MAX_SOURCE_ARCHIVE_MEMBERS = 20_000
+# Every ``ValueError`` raised inside :meth:`OpenRouterSourceReviewAgent.review`
+# carries a static, non-miner-controlled message, so mapping it to a stable code
+# leaks nothing. Without this table all ~30 of them collapsed into the single
+# opaque ``source-review-valueerror``, which the platform renders to miners as
+# "Screening infrastructure error" — a lie for the causes that are not
+# infrastructure at all (reviewer budget exhaustion, a malformed submission
+# archive, a self-inconsistent model verdict). The code only names the cause; the
+# failure disposition is unchanged, so an attempt that retried before still
+# retries now.
+_SOURCE_REVIEW_FAILURE_CODES: Mapping[str, str] = {
+    # The submitted archive itself is malformed: this is the miner's input, not
+    # our infrastructure.
+    "source archive contains too many members": "archive-invalid",
+    "source archive contains a non-canonical path": "archive-invalid",
+    "source archive contains a duplicate path": "archive-invalid",
+    "provenance file could not be read": "archive-invalid",
+    # The reviewer exhausted a budget we set. Not infrastructure: the submission
+    # was too large or too deep to review within the configured bounds.
+    "source reviewer exceeded lease budget": "lease-budget-exhausted",
+    "source reviewer exceeded read budget": "read-budget-exhausted",
+    "source reviewer exceeded step budget": "step-budget-exhausted",
+    # The upstream model misbehaved (truncated completion, malformed tool call,
+    # a citation to a path that is not in the archive). Genuinely transient.
+    "source reviewer returned no tool call": "model-response-invalid",
+    "source reviewer response is not an object": "model-response-invalid",
+    "source reviewer response has no choice": "model-response-invalid",
+    "source reviewer response has no message": "model-response-invalid",
+    "source reviewer tool call is invalid": "model-response-invalid",
+    "source reviewer function call is invalid": "model-response-invalid",
+    "source reviewer arguments are invalid": "model-response-invalid",
+    "source reviewer arguments are not an object": "model-response-invalid",
+    "list_files prefix is invalid": "model-tool-call-invalid",
+    "read_file arguments are invalid": "model-tool-call-invalid",
+    "search query is invalid": "model-tool-call-invalid",
+    "analyze_binary path is invalid": "model-tool-call-invalid",
+    "source reviewer requested an unsupported tool": "model-tool-call-invalid",
+    "source reviewer cited an unknown archive member": "model-cited-unknown-member",
+    # The model returned a verdict that contradicts itself.
+    "source review has unexpected fields": "inconsistent-verdict",
+    "source review fields are invalid": "inconsistent-verdict",
+    "source review evidence is invalid": "inconsistent-verdict",
+    "source review evidence fields are invalid": "inconsistent-verdict",
+    "source review none category must be exclusive": "inconsistent-verdict",
+    "low-risk source review contains a prohibited category": "inconsistent-verdict",
+    "elevated source review cannot use none": "inconsistent-verdict",
+    "elevated source review is missing category evidence": "inconsistent-verdict",
+    # Screener-side data we ship. This one really is our infrastructure.
+    "at least one provenance manifest is required": "provenance-invalid",
+    "provenance manifest is too large": "provenance-invalid",
+    "provenance manifest has unexpected fields": "provenance-invalid",
+    "provenance manifest version is unsupported": "provenance-invalid",
+    "provenance manifest fields are invalid": "provenance-invalid",
+    "provenance manifest file entry is invalid": "provenance-invalid",
+    "provenance manifest Rust function entry is invalid": "provenance-invalid",
+}
 _ALLOWED_CATEGORIES = frozenset(
     {
         "benchmark_emulation",
@@ -1755,12 +1810,25 @@ class OpenRouterSourceReviewAgent:
                 ),
             )
         except (OSError, ValueError, tarfile.TarError, httpx.HTTPError) as error:
+            code = _source_review_failure_code(error)
+            # The cause used to be discarded entirely, so a screening attempt
+            # that failed here was undiagnosable after the fact: the operator
+            # saw only "valueerror" and the miner saw "Screening infrastructure
+            # error". Log the real reason (all of these messages are static and
+            # screener-authored, never miner-controlled text).
+            logger.warning(
+                "source review failed artifact_sha256=%s code=%s cause=%s: %s",
+                artifact_sha256,
+                code,
+                type(error).__name__,
+                error,
+            )
             return SourceReviewObservation(
                 ok=False,
                 risk_level=None,
                 finding_digest=None,
                 categories=(),
-                error_code=f"source-review-{type(error).__name__.lower()}",
+                error_code=code,
             )
 
     def _read_api_key(self) -> str:
@@ -1902,6 +1970,22 @@ class OpenRouterSourceReviewAgent:
                 )
                 await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt])
         raise RuntimeError("unreachable")
+
+
+def _source_review_failure_code(error: BaseException) -> str:
+    """Name the cause of a failed source review as a stable, public-safe code.
+
+    Falls back to the historical ``source-review-<exception>`` shape for anything
+    unrecognized, so an unmapped message degrades to exactly the old behavior
+    instead of losing the failure.
+    """
+    message = str(error).strip()
+    suffix = _SOURCE_REVIEW_FAILURE_CODES.get(message)
+    if suffix is None and message.startswith("source review category "):
+        suffix = "inconsistent-verdict"
+    if suffix is None:
+        return f"source-review-{type(error).__name__.lower()}"
+    return f"source-review-{suffix}"
 
 
 def _assistant_message(payload: object) -> dict[str, object]:
