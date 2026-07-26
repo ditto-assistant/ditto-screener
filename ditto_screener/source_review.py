@@ -2191,11 +2191,26 @@ def _parse_review(
             admissible_by_category.setdefault(str(item["category"]), set()).add(
                 (str(item["path"]), line)
             )
+        # One admissible location keeps a category, including the
+        # multi-location ones. That bar is a check on the *model* — it stops a
+        # reviewer asserting benchmark_emulation off a single sighting — and it
+        # has already been enforced above against the citations as given.
+        # Re-applying it after our own filtering would impose a second,
+        # stricter test the policy never wrote, and it bites hardest exactly
+        # where the reviewer was most thorough: a finding that cited four real
+        # locations and one comment would be held to a higher standard than one
+        # that cited two.
+        #
+        # This is not theoretical. Backtested against the twelve resolved
+        # cases, `banblackycat v12` loses three of six citations to comments;
+        # under the stricter bar its `benchmark_emulation` collapses to one
+        # location and the finding survives only because
+        # `scorer_contract_manipulation` retains exactly two. That is a
+        # correct rejection sitting one comment away from becoming a release.
         surviving = {
             category
             for category in category_set
-            if len(admissible_by_category.get(category, set()))
-            >= (2 if category in _MULTI_LOCATION_CATEGORIES else 1)
+            if admissible_by_category.get(category)
         }
         if risk in {"medium", "high"} and not surviving:
             # Nothing the reviewer pointed at can execute. The finding has

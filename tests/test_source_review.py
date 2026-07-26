@@ -3075,3 +3075,47 @@ async def test_reachability_gate_attribute_stays_citable(tmp_path: Path) -> None
     assert observation.ok and observation.risk_level == "high"
     parsed = SourceReviewFinding.model_validate(observation.finding)
     assert [item.line for item in parsed.evidence] == [1, 2]
+
+
+async def test_a_dropped_comment_does_not_reapply_the_two_location_bar(
+    tmp_path: Path,
+) -> None:
+    """The `banblackycat v12` margin, pinned.
+
+    That rejection cites six locations and loses three to comments. The
+    two-location bar for `benchmark_emulation` is a check on the *model* and is
+    enforced above against the citations as given; re-applying it after our own
+    filtering would turn a correct rejection into a release the moment one
+    cited line happened to be prose.
+    """
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    source = (
+        "// a note about the loop outcome\n"
+        "fn run(case: &str) -> LoopOutcome {\n"
+        "    let text = table(case);\n"
+        "    LoopOutcome { text, prompt_tokens: 0, output_tokens: 0 }\n"
+        "}\n"
+    )
+    final = {
+        "risk_level": "high",
+        "confidence": 0.99,
+        "categories": ["benchmark_emulation"],
+        "evidence": [
+            # Two cited locations satisfy the model-consistency bar; one of
+            # them is a comment and drops.
+            {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 4, "category": "benchmark_emulation"},
+        ],
+        "summary": "Graded answer returned with no model call.",
+    }
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, source)), artifact_sha256=_SHA
+    )
+
+    assert observation.ok
+    assert observation.risk_level == "high"
+    assert observation.categories == ("benchmark_emulation",)
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert [item.line for item in parsed.evidence] == [4]
