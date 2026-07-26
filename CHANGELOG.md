@@ -2,6 +2,35 @@
 
 <!-- version list -->
 
+## v0.18.0 (2026-07-26)
+
+### Bug Fixes
+
+- **evidence**: One admissible location keeps a category
+  ([#72](https://github.com/ditto-assistant/ditto-screener/pull/72),
+  [`c5e100e`](https://github.com/ditto-assistant/ditto-screener/commit/c5e100ef31dcfbf158156bc1ec192a75ad471df1))
+
+- **evidence**: Stop citing lines that cannot execute
+  ([#72](https://github.com/ditto-assistant/ditto-screener/pull/72),
+  [`c5e100e`](https://github.com/ditto-assistant/ditto-screener/commit/c5e100ef31dcfbf158156bc1ec192a75ad471df1))
+
+- **leads**: Stop routing a source review on comment prose
+  ([#71](https://github.com/ditto-assistant/ditto-screener/pull/71),
+  [`c1dd23b`](https://github.com/ditto-assistant/ditto-screener/commit/c1dd23b1cb53d47d383ba2b50ac8669cf829451b))
+
+### Documentation
+
+- **policy**: Name an inexecutable citation as insufficient evidence
+  ([#72](https://github.com/ditto-assistant/ditto-screener/pull/72),
+  [`c5e100e`](https://github.com/ditto-assistant/ditto-screener/commit/c5e100ef31dcfbf158156bc1ec192a75ad471df1))
+
+### Features
+
+- **reachability**: Decide whether a category guard can match at all
+  ([#73](https://github.com/ditto-assistant/ditto-screener/pull/73),
+  [`c633a4a`](https://github.com/ditto-assistant/ditto-screener/commit/c633a4a3add52561e2eb7ad43c67c382ffbf3870))
+
+
 ## v0.17.2 (2026-07-26)
 
 ### Bug Fixes
