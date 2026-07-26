@@ -587,13 +587,20 @@ def find_source_review_leads(
         lines = text.splitlines()
         if not lines:
             continue
+        # Roles must match executable source. Suppressors deliberately keep
+        # reading the raw line: a suppressor is a false-positive guard, and a
+        # guard that fires too readily costs a missed lead, while a role that
+        # fires on prose costs a wrongly quarantined miner. The brief's
+        # asymmetry (prefer false negatives) picks the direction.
+        code_lines = _mask_comments(text).splitlines()
+        code_lines.extend([""] * (len(lines) - len(code_lines)))
         for rule in _RULES:
             if rule.build_files_only and not _is_build_file(path):
                 continue
             role_hits = {
                 role.name: [
                     line_number
-                    for line_number, line in enumerate(lines, 1)
+                    for line_number, line in enumerate(code_lines, 1)
                     if role.pattern.search(
                         line[:4096].replace("_", " ").replace("-", " ")
                     )
@@ -659,12 +666,21 @@ def find_decisive_malicious_source(
         lines = text.splitlines()
         if not lines:
             continue
-        executable_lines = _mask_string_literals(text).splitlines()
+        # Three views of the same file, each with a different job:
+        #   ``comment_masked`` — comments gone, string literals intact. Target
+        #     roles (paths, secret names) live inside string literals.
+        #   ``executable_lines`` — comments and strings gone. Effect roles must
+        #     be real operations, not words inside a prompt literal.
+        #   ``lines`` — raw, used only to report the location back.
+        comment_masked = _mask_comments(text).splitlines()
+        comment_masked.extend([""] * (len(lines) - len(comment_masked)))
+        executable_lines = _mask_string_literals("\n".join(comment_masked)).splitlines()
+        executable_lines.extend([""] * (len(lines) - len(executable_lines)))
         for rule in _STATIC_MALICIOUS_RULES:
             role_hits = {
                 role.name: [
                     line_number
-                    for line_number, line in enumerate(lines, 1)
+                    for line_number, line in enumerate(comment_masked, 1)
                     if role.pattern.search(
                         _static_role_search_text(
                             role.name,
@@ -672,7 +688,7 @@ def find_decisive_malicious_source(
                             executable_lines[line_number - 1][:4096],
                         )
                     )
-                    and not line.lstrip().startswith(("//", "#", "/*", "*"))
+                    and line.strip()
                 ]
                 for role in rule.roles
             }
@@ -720,6 +736,98 @@ def _static_role_search_text(
     ):
         return source_line
     return executable_line
+
+
+def _mask_comments(text: str) -> str:
+    """Blank comment content while preserving layout, strings, and line count.
+
+    Prose is not behavior. A lead that fires on a comment cites something the
+    compiler never sees, which is how a submission whose *code* refuses to
+    write the graded slot can still be quarantined by three stale sentences
+    describing a design it no longer has.
+
+    The scanner is string-aware in both directions, because the cheap ways to
+    fool a line-prefix heuristic run both ways:
+
+    - ``"https://llm.example/v1"`` must not lose its second half to a ``//``
+      that is inside a string literal;
+    - ``let x = r#"*/"#;`` must not be able to terminate a block comment that
+      was never open, desynchronizing the mask for the rest of the file.
+
+    Rust raw strings (``r"..."``, ``r#"..."#``) and byte strings are handled
+    explicitly. A ``'`` is treated as a character literal only when it closes
+    within the three characters a character literal can span; otherwise it is
+    a lifetime (``&'a str``) and is left alone.
+    """
+    chars = list(text)
+    length = len(text)
+    index = 0
+    while index < length:
+        char = text[index]
+        # Line comment: blank to end of line, newline preserved.
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = length if end < 0 else end
+            for offset in range(index, end):
+                chars[offset] = " "
+            index = end
+            continue
+        # Block comment: Rust nests them, so track depth. Newlines preserved.
+        if text.startswith("/*", index):
+            depth = 1
+            chars[index] = chars[index + 1] = " "
+            cursor = index + 2
+            while cursor < length and depth:
+                if text.startswith("/*", cursor):
+                    depth += 1
+                    chars[cursor] = chars[cursor + 1] = " "
+                    cursor += 2
+                elif text.startswith("*/", cursor):
+                    depth -= 1
+                    chars[cursor] = chars[cursor + 1] = " "
+                    cursor += 2
+                else:
+                    if text[cursor] != "\n":
+                        chars[cursor] = " "
+                    cursor += 1
+            index = cursor
+            continue
+        # Raw string: no escapes, terminated by the matching hash run.
+        if char in {"r", "b"} or text.startswith("br", index):
+            cursor = index + (2 if text.startswith("br", index) else 1)
+            hashes = 0
+            while cursor < length and text[cursor] == "#":
+                hashes += 1
+                cursor += 1
+            if cursor < length and text[cursor] == '"':
+                terminator = '"' + "#" * hashes
+                end = text.find(terminator, cursor + 1)
+                index = length if end < 0 else end + len(terminator)
+                continue
+        # Ordinary string literal: skip past it untouched, honoring escapes.
+        if char == '"':
+            cursor = index + 1
+            while cursor < length:
+                if text[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if text[cursor] == '"':
+                    cursor += 1
+                    break
+                cursor += 1
+            index = cursor
+            continue
+        # Character literal vs lifetime.
+        if char == "'":
+            for span in (3, 4):
+                if text[index + span - 1 : index + span] == "'":
+                    index += span
+                    break
+            else:
+                index += 1
+            continue
+        index += 1
+    return "".join(chars)
 
 
 def _mask_string_literals(text: str) -> str:
