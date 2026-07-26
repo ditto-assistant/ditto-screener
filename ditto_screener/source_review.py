@@ -22,6 +22,7 @@ from ditto_screener.binary_analysis import (
     compact_binary_analysis,
     sample_stream,
 )
+from ditto_screener.evidence_quality import citation_admissibility
 from ditto_screener.policy import SourceReviewObservation
 from ditto_screener.source_signals import (
     find_decisive_malicious_source,
@@ -1651,6 +1652,13 @@ class TarSourceRepository:
     def has_member(self, path: str) -> bool:
         return path.removeprefix("./") in self._members
 
+    def member_text(self, path: str) -> str | None:
+        """Readable UTF-8 content of a member, or ``None`` when opaque."""
+        normalized = path.removeprefix("./")
+        if normalized not in self._members:
+            return None
+        return self._read_text(normalized)
+
     def list_files(self, prefix: str = "") -> str:
         prefix = prefix.removeprefix("./")
         paths = sorted(path for path in self._members if path.startswith(prefix))
@@ -2141,6 +2149,89 @@ def _parse_review(
             raise ValueError(
                 f"source review category {category} requires two source locations"
             )
+    # Inadmissible-citation filter.
+    #
+    # This runs AFTER the invariants above on purpose. Those invariants police
+    # the *model*: a reviewer that returns an elevated risk without citing
+    # anything for its own categories has contradicted itself, and that stays a
+    # hard error. Starvation caused by *this* filter is our doing, not the
+    # model's, so it must not raise — a ValueError here becomes
+    # ``inconsistent-verdict`` -> ``retryable_infra``, which burns the attempt
+    # and rescreens it instead of releasing a submission whose evidence was
+    # never about executable code.
+    admissible_evidence: list[dict[str, object]] = []
+    inadmissible: dict[str, int] = {}
+    for item in normalized_evidence:
+        cited_path = str(item["path"])
+        cited_line = item["line"]
+        assert isinstance(cited_line, int)
+        verdict = citation_admissibility(
+            cited_path, repository.member_text(cited_path), cited_line
+        )
+        if verdict.admissible:
+            admissible_evidence.append(item)
+        else:
+            inadmissible[verdict.reason] = inadmissible.get(verdict.reason, 0) + 1
+    if inadmissible:
+        # Report the drop even when the finding survives: an operator who can
+        # see "cited 9, admissible 1" learns something about the finding that
+        # the finding itself does not say.
+        logger.warning(
+            "source review cited %d inadmissible location(s) (%s); %d admissible",
+            sum(inadmissible.values()),
+            ", ".join(
+                f"{reason}={count}" for reason, count in sorted(inadmissible.items())
+            ),
+            len(admissible_evidence),
+        )
+        admissible_by_category: dict[str, set[tuple[str, int]]] = {}
+        for item in admissible_evidence:
+            line = item["line"]
+            assert isinstance(line, int)
+            admissible_by_category.setdefault(str(item["category"]), set()).add(
+                (str(item["path"]), line)
+            )
+        # One admissible location keeps a category, including the
+        # multi-location ones. That bar is a check on the *model* — it stops a
+        # reviewer asserting benchmark_emulation off a single sighting — and it
+        # has already been enforced above against the citations as given.
+        # Re-applying it after our own filtering would impose a second,
+        # stricter test the policy never wrote, and it bites hardest exactly
+        # where the reviewer was most thorough: a finding that cited four real
+        # locations and one comment would be held to a higher standard than one
+        # that cited two.
+        #
+        # This is not theoretical. Backtested against the twelve resolved
+        # cases, `banblackycat v12` loses three of six citations to comments;
+        # under the stricter bar its `benchmark_emulation` collapses to one
+        # location and the finding survives only because
+        # `scorer_contract_manipulation` retains exactly two. That is a
+        # correct rejection sitting one comment away from becoming a release.
+        surviving = {
+            category
+            for category in category_set
+            if admissible_by_category.get(category)
+        }
+        if risk in {"medium", "high"} and not surviving:
+            # Nothing the reviewer pointed at can execute. The finding has
+            # demonstrated no behaviour, so it cannot select a quarantine.
+            # ``policy.AgenticSourceReviewModule`` clears a low/none observation
+            # while still carrying the finding forward as operator context.
+            logger.warning(
+                "source review evidence was wholly inadmissible; "
+                "demoting %s risk to low",
+                risk,
+            )
+            risk = "low"
+            categories = ["none"]
+            normalized_evidence = []
+        else:
+            categories = sorted(surviving) or list(categories)
+            normalized_evidence = [
+                item
+                for item in admissible_evidence
+                if str(item["category"]) in surviving
+            ]
     # The finding travels to the platform on quarantine and must hash to the
     # digest bound into the signed verdict, so build it through the shared
     # protocol model rather than a local canonicalization.
