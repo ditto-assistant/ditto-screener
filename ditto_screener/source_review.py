@@ -22,12 +22,17 @@ from ditto_screener.binary_analysis import (
     compact_binary_analysis,
     sample_stream,
 )
+from ditto_screener.category_guards import (
+    find_unmatchable_category_guards,
+    guard_report,
+)
 from ditto_screener.evidence_quality import citation_admissibility
 from ditto_screener.policy import SourceReviewObservation
 from ditto_screener.source_signals import (
     find_decisive_malicious_source,
     find_source_review_leads,
     is_executable_source_path,
+    mask_comments,
     source_path_priority,
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
@@ -1212,6 +1217,11 @@ class TarSourceRepository:
                 files_scanned += 1
         return {
             "items": find_source_review_leads(readable),
+            "unmatchable_category_guards": guard_report(
+                find_unmatchable_category_guards(
+                    (path, mask_comments(text)) for path, text in readable
+                )
+            ),
             "generator_mirroring": self._generator_mirroring_analysis(readable),
             "review_adaptive_model_routing": (
                 self._review_adaptive_model_routing_analysis(readable)
