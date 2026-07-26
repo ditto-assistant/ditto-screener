@@ -2930,3 +2930,148 @@ def test_every_static_review_failure_message_maps_to_a_named_code() -> None:
 )
 def test_failure_codes_name_the_cause(error: Exception, expected: str) -> None:
     assert source_review_module._source_review_failure_code(error) == expected
+
+
+# --- inadmissible-citation filter -------------------------------------------
+
+
+async def test_wholly_inadmissible_evidence_demotes_instead_of_quarantining(
+    tmp_path: Path,
+) -> None:
+    """The infinity v10 shape: every citation is stock prose or an attribute.
+
+    `protocol.rs:174` in the official starter kit is
+    `#[serde(default, skip_serializing_if = "Option::is_none")]` — a stock
+    attribute on a stock field the kit explicitly invites miners to populate.
+    A finding built only from lines like that has demonstrated no behaviour.
+    """
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    source = (
+        "/// Optional short answer slot: the bare value final_text asserts.\n"
+        '#[serde(default, skip_serializing_if = "Option::is_none")]\n'
+        "fn main() { call_model(); }\n"
+    )
+    final = {
+        "risk_level": "high",
+        "confidence": 0.99,
+        "categories": ["benchmark_emulation"],
+        "evidence": [
+            {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 2, "category": "benchmark_emulation"},
+        ],
+        "summary": "Answer slot is populated outside the model result.",
+    }
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, source)), artifact_sha256=_SHA
+    )
+
+    assert observation.ok
+    # Demoted, not failed: a ValueError here would surface as retryable_infra
+    # and burn the attempt instead of releasing the submission.
+    assert observation.risk_level == "low"
+    assert observation.categories == ("none",)
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert parsed.evidence == []
+
+
+async def test_admissible_citations_keep_the_finding(tmp_path: Path) -> None:
+    """Dropping prose must not disarm a finding that also cites real code."""
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    source = (
+        "// stale note describing a design that is gone\n"
+        "fn answer(req: Request) -> String {\n"
+        "    let v = lookup_table(&req.case_id);\n"
+        '    return format!("The answer is {v}.");\n'
+        "}\n"
+    )
+    final = {
+        "risk_level": "high",
+        "confidence": 0.99,
+        "categories": ["benchmark_emulation"],
+        "evidence": [
+            {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 3, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 4, "category": "benchmark_emulation"},
+        ],
+        "summary": "Deterministic table answer returned before the model.",
+    }
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, source)), artifact_sha256=_SHA
+    )
+
+    assert observation.ok and observation.risk_level == "high"
+    assert observation.categories == ("benchmark_emulation",)
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert [item.line for item in parsed.evidence] == [3, 4]
+
+
+async def test_cfg_test_helper_is_not_citable(tmp_path: Path) -> None:
+    """`async fn serve(...)` inside `#[cfg(test)] mod preflight_tests` is stock.
+
+    It ships in the official starter kit and never runs in the served image,
+    yet it was cited as HTTP-setup evidence.
+    """
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    source = (
+        "fn main() { call_model(); }\n"
+        "\n"
+        "#[cfg(all(test))]\n"
+        "mod preflight_tests {\n"
+        "    async fn serve(app: Router) -> String { bind_listener() }\n"
+        "    fn capture_call() -> String { record() }\n"
+        "}\n"
+    )
+    final = {
+        "risk_level": "high",
+        "confidence": 0.99,
+        "categories": ["benchmark_emulation"],
+        "evidence": [
+            {"path": "src/main.rs", "line": 5, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 6, "category": "benchmark_emulation"},
+        ],
+        "summary": "Test-only harness cited as served behaviour.",
+    }
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, source)), artifact_sha256=_SHA
+    )
+
+    assert observation.ok and observation.risk_level == "low"
+
+
+async def test_reachability_gate_attribute_stays_citable(tmp_path: Path) -> None:
+    """`#[cfg(feature = ...)]` is a gate a submission can flip between versions.
+
+    Attribute lines are normally inert, but a reachability gate can genuinely
+    be the trigger half of a causal path, so it must remain admissible.
+    """
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+    source = (
+        '#[cfg(feature = "grounding")]\n'
+        "fn shortcut(case: &str) -> String { answer_table(case) }\n"
+        "fn main() { call_model(); }\n"
+    )
+    final = {
+        "risk_level": "high",
+        "confidence": 0.99,
+        "categories": ["benchmark_emulation"],
+        "evidence": [
+            {"path": "src/main.rs", "line": 1, "category": "benchmark_emulation"},
+            {"path": "src/main.rs", "line": 2, "category": "benchmark_emulation"},
+        ],
+        "summary": "Feature-gated answer table.",
+    }
+    observation = await _agent(key, _transport(final, [])).review(
+        str(_archive(tmp_path, source)), artifact_sha256=_SHA
+    )
+
+    assert observation.ok and observation.risk_level == "high"
+    parsed = SourceReviewFinding.model_validate(observation.finding)
+    assert [item.line for item in parsed.evidence] == [1, 2]

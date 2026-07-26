@@ -935,9 +935,15 @@ def source_path_priority(path: str) -> tuple[int, str]:
     return _path_priority(path)
 
 
+def mask_comments(text: str) -> str:
+    """Blank comment content, preserving layout, strings, and line count."""
+    return _mask_comments(text)
+
+
 __all__ = [
     "find_decisive_malicious_source",
     "find_source_review_leads",
     "is_executable_source_path",
+    "mask_comments",
     "source_path_priority",
 ]
