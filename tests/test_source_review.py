@@ -2627,8 +2627,7 @@ def test_authority_envelope_answer_shotgun_fires_on_emit_both() -> None:
 fn answer(req: Request) -> String {
     if detect_sync_precedence_note(&req.notes) {
         let candidates = push_all_candidates(req.attribute);
-        // the stored note says report_as the corrected value
-        return emit_both(candidates.stated, candidates.reported);
+        return emit_both(candidates.stated, candidates.report_as_value);
     }
     decline_only()
 }
@@ -2716,19 +2715,85 @@ fn compute(mem: &Memory) -> String {
     assert "numeric-candidate-shotgun" not in clear
 
 
+def test_leads_do_not_fire_on_comment_prose_alone() -> None:
+    """A stale comment describing a design must not route a review.
+
+    This is the isop v3 shape: the code refuses to write the graded slot and
+    says so, while three leftover comments still describe the design it no
+    longer has. Every role word here lives in prose; the executable statement
+    is an ordinary model call.
+    """
+    source = """\
+fn answer(req: Request) -> String {
+    // Historical note: we used to detect the sync precedence note and
+    // push all candidates, then emit both values and report as corrected.
+    // That design is gone; the model authors the answer now.
+    call_model(req.question)
+}
+"""
+
+    leads = find_source_review_leads([("src/answer.rs", source)])
+
+    assert leads == []
+
+
+def test_leads_read_through_a_url_containing_a_double_slash() -> None:
+    """`//` inside a string literal does not start a comment.
+
+    The only ``multi-value-emit`` hit sits *after* the URL on the same line,
+    so a mask that treated `https://` as a line comment would lose the role
+    and silently drop the lead.
+    """
+    source = """\
+fn answer(req: Request) -> String {
+    if detect_sync_precedence_note(&req.notes) {
+        let base = "https://api.example/v1"; let c = push_all_candidates(req.a);
+        return emit_pair(c.stated, c.report_as_value);
+    }
+    decline_only()
+}
+"""
+
+    leads = find_source_review_leads([("src/answer.rs", source)])
+
+    assert "authority-envelope-answer-shotgun" in {lead["kind"] for lead in leads}
+
+
+def test_a_raw_string_cannot_desynchronize_the_comment_mask() -> None:
+    """`r#"*/"#` must not terminate a block comment that was never open.
+
+    Without raw-string handling the mask desynchronizes and blanks the rest
+    of the file, which would silently blind every later rule — a one-line,
+    fully deniable way to hide the executable half of a violation.
+    """
+    source = """\
+const TRAP: &str = r#"*/"#;
+fn answer(req: Request) -> String {
+    if detect_sync_precedence_note(&req.notes) {
+        let candidates = push_all_candidates(req.attribute);
+        return emit_both(candidates.stated, candidates.report_as_value);
+    }
+    decline_only()
+}
+"""
+
+    leads = find_source_review_leads([("src/answer.rs", source)])
+
+    assert "authority-envelope-answer-shotgun" in {lead["kind"] for lead in leads}
+
+
 def test_positional_number_extraction_is_advisory_and_suppressible() -> None:
     fires = """\
 fn extract(result: &str) -> String {
-    // grab the first number from the tool result
-    let n = find_numbers(result).first();
-    n.to_string()
+    let number = find_numbers(result).first();
+    number.to_string()
 }
 """
     spared = """\
 fn extract(result: &str, subject: &str) -> String {
-    // find the first number anchored by the asked subject needle
-    let n = find_numbers(result).first();
-    number_for_subject(n, subject)
+    // anchored by the asked subject needle
+    let number = find_numbers(result).first();
+    number_for_subject(number, subject)
 }
 """
 
