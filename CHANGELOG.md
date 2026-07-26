@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.17.2 (2026-07-26)
+
+### Bug Fixes
+
+- Name the cause of a failed source review
+  ([#70](https://github.com/ditto-assistant/ditto-screener/pull/70),
+  [`e3dfebe`](https://github.com/ditto-assistant/ditto-screener/commit/e3dfebeee5bd5e8119b2b6330efbafd38c393b1a))
+
+
 ## v0.17.1 (2026-07-25)
 
 ### Bug Fixes
