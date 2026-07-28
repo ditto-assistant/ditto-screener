@@ -95,7 +95,7 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
-    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v26"
+    assert L2_PROMPT_REVISION == "l2-kimi-source-review-v27"
     assert L2_CAUSE_PROMPT_REVISION == "l3-sol-violation-cause-v22"
     assert L2_CAUSE_TIEBREAKER_PROMPT_REVISION == ("l3-sol-cause-disagreement-v5")
     assert "Generator mirroring is earlier and therefore" in _VIOLATION_CAUSE_TASK
@@ -212,6 +212,7 @@ def test_dittobench_preflight_clearance_is_exact_and_shared() -> None:
         assert "ordinary" in prompt
         assert "scored" in prompt
 
+    assert "absence of a preflight branch is not a finding" in _SYSTEM_PROMPT
     assert "near-miss prefix" in _SYSTEM_PROMPT
     assert "wrong tool" in _SYSTEM_PROMPT
     assert "no actual POST attempt" in _SYSTEM_PROMPT

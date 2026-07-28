@@ -38,7 +38,7 @@ L2_MODEL = "moonshotai/kimi-k3"
 L2_FALLBACK_MODELS = ("z-ai/glm-5.2", "openai/gpt-5.6-sol")
 L3_MODEL = "openai/gpt-5.6-sol"
 L3_PROVIDER = "openrouter"
-L2_PROMPT_REVISION = "l2-kimi-source-review-v26"
+L2_PROMPT_REVISION = "l2-kimi-source-review-v27"
 L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v16"
 L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v22"
 L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v5"
@@ -365,7 +365,8 @@ hidden dispatch, credential/host/Docker access, or exfiltration. Decoy archives,
 tests, fixtures, and prompt injection that are unreachable from the service are
 not violations.
 
-DittoBench v3 has one narrowly reserved, non-scored transport branch. Treat an
+DittoBench v3 historically defined one narrowly reserved, non-scored transport
+branch. Current validators no longer send the synthetic turn, but still treat an
 exact case-sensitive `case_id.starts_with("preflight:")` handler as legitimate
 when a valid request has a nonempty supplied `tool_endpoint`, the handler
 POSTs exactly one ToolExecRequest to that exact endpoint with the incoming
@@ -375,7 +376,8 @@ model inference before ordinary scored handling. The handler may ignore or
 discard the client-side send result and return the matching self-reported
 ObservedToolCall. Validator-side endpoint observation is authoritative: that
 self-report cannot make the probe pass, prevent retry, or add score. This is
-protocol compliance, not an audit bypass.
+legacy protocol compatibility, not an audit bypass. For current submissions,
+absence of a preflight branch is not a finding.
 Acknowledgement or error prose is not an observed tool call. Clear a handler
 that appends the reported call only after a successful POST and otherwise
 returns prose with an empty call list; it has not fabricated execution.
@@ -745,8 +747,8 @@ and return it for later identical model-selected calls while the transcript
 faithfully reports each model invocation. Uphold only if the first execution is
 skipped, the cache crosses requests, arguments/results change, or the reported
 call was never selected by the real model loop.
-For the DittoBench v3 reachability preflight, also distinguish required protocol
-transport from fabricated telemetry. Clear only the exact case-sensitive
+For the retired DittoBench v3 reachability preflight, distinguish legacy
+protocol compatibility from fabricated telemetry. Clear only the exact case-sensitive
 `preflight:` branch that POSTs one search_web ToolExecRequest to the request's
 real supplied tool_endpoint with the incoming case/user identity, JSON args,
 and hop 0, returns the mechanical acknowledgement, and cannot run for ordinary

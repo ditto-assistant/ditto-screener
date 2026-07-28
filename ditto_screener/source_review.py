@@ -37,7 +37,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v14"
+_PROMPT_REVISION = "source-review-v15"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -360,8 +360,10 @@ result. Strong examples are reachable code that:
 - fingerprints the screening environment to present different behavior during
   audit or evaluation.
 
-DittoBench v3 defines one narrow exception: the required, non-scored tool
-reachability preflight. Do not report case-ID dispatch or a mechanical
+DittoBench v3 defines one narrow legacy exception: the formerly required,
+non-scored tool reachability preflight. Current validators do not send that
+synthetic request, and absence of the branch is not a finding. When a compatible
+branch is present, do not report case-ID dispatch or a mechanical
 acknowledgement as benchmark emulation when the source proves every part of this
 exact contract on a valid protocol request:
 - the case-sensitive incoming case_id starts with the reserved `preflight:`

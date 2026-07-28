@@ -629,7 +629,7 @@ fn run() -> String {
     assert observation.risk_level == "high"
     assert observation.categories == ("benchmark_emulation",)
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v14"
+    assert observation.finding["prompt_revision"] == "source-review-v15"
     assert observation.finding["evidence"] == [
         {
             "path": "src/memory_solver.rs",
@@ -1514,7 +1514,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v14"
+    assert observation.finding["prompt_revision"] == "source-review-v15"
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
