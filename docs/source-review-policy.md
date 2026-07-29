@@ -81,16 +81,19 @@ abstain fields outside the genuine agent result.
 Public source code or documentation for a benchmark does not make these runtime
 shortcuts acceptable.
 
-### DittoBench v3 reachability preflight
+### Legacy DittoBench v3 reachability preflight
 
-DittoBench v3 reserves one exact, non-scored transport handshake. A `/run`
+DittoBench v3 historically reserved one exact, non-scored transport handshake.
+Current validators self-check their listener and infer tool use from scored
+cases, so they do not send this synthetic request and a harness need not
+implement it. For backward compatibility, a `/run`
 request whose case-sensitive `case_id` starts with `preflight:` asks the harness
 to prove that the validator-supplied `tool_endpoint` is reachable from the
-harness network namespace. The handler is required to bypass model inference,
+harness network namespace. When implemented, the handler bypasses model inference,
 POST exactly one real `ToolExecRequest` to that request's endpoint, and then
 return the mechanical acknowledgement.
 
-That branch is protocol compliance, not benchmark emulation, only when the
+That legacy branch is protocol compatibility, not benchmark emulation, when the
 source proves the complete boundary for a valid endpoint-present request:
 
 - the exact reserved `preflight:` prefix is checked;

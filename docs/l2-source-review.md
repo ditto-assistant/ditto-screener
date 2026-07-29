@@ -92,7 +92,7 @@ transcript faithfully records those invocations. Cross-request replay,
 argument/result mutation, skipping the first execution, or reporting calls the
 model never selected remains a violation.
 
-The non-scored DittoBench v3 reachability preflight has a narrower authority
+The retired, non-scored DittoBench v3 reachability preflight has a narrower legacy authority
 boundary: attempting the required POST to the request-supplied endpoint is the
 harness action, while validator-side observation decides success. A handler may
 discard the client response and return a matching self-reported call; that
