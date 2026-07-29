@@ -33,6 +33,24 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _tracked_files(root: Path) -> list[Path]:
+    """Return only Git-tracked regular files from the canonical starter tree."""
+    raw = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    files = []
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        path = root / item.decode("utf-8")
+        if path.is_file() and not path.is_symlink():
+            files.append(path)
+    return files
+
+
 def _rust_functions(path: Path, relative: str) -> list[dict[str, object]]:
     raw = path.read_bytes()
     tree = Parser(RUST_LANGUAGE).parse(raw)
@@ -78,9 +96,7 @@ def main() -> int:
         raise ValueError("starter revision is not a full Git SHA")
     files: dict[str, str] = {}
     functions: list[dict[str, object]] = []
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        if ".git" in path.relative_to(root).parts or path.is_symlink():
-            continue
+    for path in _tracked_files(root):
         relative = path.relative_to(root).as_posix()
         files[relative] = _sha256(path)
         if path.suffix == ".rs":

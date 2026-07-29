@@ -59,6 +59,7 @@ from ditto_screener.l2_review import (
 )
 from ditto_screener.policy import SourceReviewObservation
 from ditto_screener.source_review import TarSourceRepository
+from scripts.generate_starter_provenance import _tracked_files
 
 ROOT = Path(__file__).resolve().parents[1]
 ATTEMPT = UUID("96af45fd-65da-4f59-87f8-8ddf5d57f88c")
@@ -85,7 +86,7 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
         "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
         "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
         "106076a40e4214cda821dfd0bee5c9c6785d425c",
-        "52cbcedf9dce75813d97ee949333dd1f033bb68c",
+        "23d9e87039a66e08548ec95826e7201b90988c5a",
     ]
     assert all(
         manifest["origin"] == "ditto-assistant/dittobench-starter-kit"
@@ -96,7 +97,23 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
         98,
         103,
         103,
-        0,
+        111,
+    ]
+
+
+def test_starter_provenance_generator_ignores_untracked_build_outputs(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "starter"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "lib.rs").write_text("fn tracked() {}\n")
+    (root / "target" / "debug").mkdir(parents=True)
+    (root / "target" / "debug" / "artifact").write_text("untracked\n")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "src/lib.rs"], cwd=root, check=True)
+
+    assert [path.relative_to(root).as_posix() for path in _tracked_files(root)] == [
+        "src/lib.rs"
     ]
 
 
