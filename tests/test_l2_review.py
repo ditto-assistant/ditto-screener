@@ -85,13 +85,19 @@ def test_supported_starter_manifests_are_versioned_and_distinct() -> None:
         "959cd69a1a8d3b0defbfb8296518adb7d4f17c14",
         "60aab4e5e2839ddb0fe8c80492bd7b76ba2668fd",
         "106076a40e4214cda821dfd0bee5c9c6785d425c",
+        "52cbcedf9dce75813d97ee949333dd1f033bb68c",
     ]
     assert all(
         manifest["origin"] == "ditto-assistant/dittobench-starter-kit"
         for manifest in manifests
     )
-    assert [len(manifest["files"]) for manifest in manifests] == [38, 38, 42]
-    assert [len(manifest["rust_functions"]) for manifest in manifests] == [98, 103, 103]
+    assert [len(manifest["files"]) for manifest in manifests] == [38, 38, 42, 42]
+    assert [len(manifest["rust_functions"]) for manifest in manifests] == [
+        98,
+        103,
+        103,
+        0,
+    ]
 
 
 def test_causal_basis_prefers_reconstructed_generator_over_downstream_effects() -> None:
@@ -1699,7 +1705,7 @@ async def test_sol_request_is_provider_locked_cached_and_concurrency_safe(
     )
     assert all(record["dossier_revision"] == L2_DOSSIER_REVISION for record in records)
     assert all(record["harness_revision"] == L2_HARNESS_REVISION for record in records)
-    assert all(len(record["starter_revisions"]) == 3 for record in records)
+    assert all(len(record["starter_revisions"]) == 4 for record in records)
     assert all(record["budgets"]["max_cost_usd"] == 1.5 for record in records)
     assert all(record["budgets"]["max_analyzer_calls"] == 24 for record in records)
     assert all(
