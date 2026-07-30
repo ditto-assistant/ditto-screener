@@ -1,0 +1,13 @@
+[Unit]
+Description=Restrict untrusted Ditto screener build egress to public networks
+Before=ditto-screener-docker.service
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ditto-screener-egress-guard
+
+[Install]
+WantedBy=multi-user.target

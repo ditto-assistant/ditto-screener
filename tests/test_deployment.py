@@ -233,6 +233,38 @@ def test_bootstrap_blocks_metadata_and_mounts_no_build_credential() -> None:
     assert "--secret" not in gate
 
 
+def test_rootless_executor_is_separate_from_worker_and_denies_private_egress() -> None:
+    installer = (ROOT / "scripts" / "install-rootless-docker.sh").read_text()
+    bootstrap = (ROOT / "scripts" / "bootstrap-screener.sh").read_text()
+    updater = (ROOT / "scripts" / "update-screener.sh").read_text()
+    egress = (ROOT / "deploy" / "executor-egress-guard.sh").read_text()
+    executor_unit = (
+        ROOT / "deploy" / "ditto-screener-egress-guard.service"
+    ).read_text()
+
+    assert 'EXECUTOR_USER="${SCREENER_EXECUTOR_USER:-ditto-builder}"' in installer
+    assert "User=${EXECUTOR_USER}" in installer
+    assert "User=${SCREENER_USER}" not in installer
+    assert "RuntimeDirectory=ditto-screener-docker" in installer
+    assert "RuntimeDirectoryMode=0750" in installer
+    assert 'gpasswd -d "$SCREENER_USER" docker' in installer
+    assert "SCREENER_REQUIRE_ROOTLESS_DOCKER=1" in bootstrap
+    assert "DITTO-EXEC-EGRESS" in egress
+    assert "10.0.0.0/8" in egress
+    assert "127.0.0.0/8" in egress
+    assert "169.254.0.0/16" in egress
+    assert "192.168.0.0/16" in egress
+    assert "Before=ditto-screener-docker.service" in executor_unit
+    assert "Requires=ditto-screener-egress-guard.service" in installer
+    assert 'daemon_root="$EXECUTOR_HOME/docker"' in installer
+    assert "SCREENER_EXECUTOR_HOME=/var/lib/ditto-screener-docker" in bootstrap
+    assert 'executor_home="$(env_value SCREENER_EXECUTOR_HOME)"' in updater
+    assert 'target="$executor_home/docker/daemon.json"' in updater
+    assert 'owner="$(env_value SCREENER_EXECUTOR_USER)"' in updater
+    assert 'group="$(env_value SCREENER_EXECUTOR_GROUP)"' in updater
+    assert "$SCREENER_ROOT/docker/daemon.json" not in updater
+
+
 def test_updater_ensures_the_metadata_guard_on_every_deploy() -> None:
     # The pet VM was hand-provisioned and never ran bootstrap, so the guard has
     # to be (re)installed by the updater — the one path that runs on both the pet
@@ -394,5 +426,5 @@ def test_updater_defers_daemon_restart_during_an_active_build() -> None:
     assert 'pgrep -f "build -t ditto-screen"' in updater
     # The guard must sit before the disruptive docker restart.
     guard = updater.index("deferring daemon.json apply")
-    restart = updater.index("systemctl restart docker")
+    restart = updater.index('systemctl restart "$daemon_unit"')
     assert guard < restart

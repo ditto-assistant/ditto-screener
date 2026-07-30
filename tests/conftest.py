@@ -22,6 +22,8 @@ def _default_config(**overrides: Any) -> ScreenerConfig:
         "screener_mnemonic": "x " * 11 + "x",
         "netuid": 3,
         "docker_bin": "docker",
+        "docker_host": None,
+        "require_rootless_docker": False,
         "build_timeout_seconds": 60.0,
         "run_timeout_seconds": 3.0,
         "build_memory": "2g",

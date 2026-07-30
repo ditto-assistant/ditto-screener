@@ -97,6 +97,8 @@ if ! command -v docker >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io
 fi
+apt-get install -y -qq \
+  docker-ce-rootless-extras uidmap slirp4netns fuse-overlayfs dbus-user-session
 systemctl enable --now docker
 
 # --- Metadata (IMDS) guard: block metadata API, preserve GCE DNS -------------
@@ -124,13 +126,19 @@ iptables -A "$guard_tmp" -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT
 iptables -A "$guard_tmp" -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT
 iptables -A "$guard_tmp" -d 169.254.169.254/32 -j DROP
 iptables -I DOCKER-USER 1 -j "$guard_tmp"
+# RootlessKit/slirp traffic originates from an unprivileged host process and
+# traverses OUTPUT, not DOCKER-USER. Keep root-owned host administration able
+# to use metadata while applying the same DNS-only policy to non-root callers.
+iptables -I OUTPUT 1 -m owner ! --uid-owner 0 -d 169.254.169.254/32 -j "$guard_tmp"
 # The replacement now protects metadata. Remove the DNS-breaking legacy rule
 # and old jump before renaming the referenced replacement to the stable name.
 while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
 while iptables -D DOCKER-USER -j DITTO-IMDS-GUARD 2>/dev/null; do :; done
+while iptables -D OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254/32 -j DITTO-IMDS-GUARD 2>/dev/null; do :; done
 iptables -F DITTO-IMDS-GUARD 2>/dev/null || true
 iptables -X DITTO-IMDS-GUARD 2>/dev/null || true
 iptables -E "$guard_tmp" DITTO-IMDS-GUARD
+
 GUARD
 cat >/etc/systemd/system/ditto-imds-guard.service <<'UNIT'
 [Unit]
@@ -176,8 +184,6 @@ getent group "$SCREENER_GROUP" >/dev/null || groupadd --system "$SCREENER_GROUP"
 if ! id "$SCREENER_USER" >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash --gid "$SCREENER_GROUP" "$SCREENER_USER"
 fi
-usermod -aG docker "$SCREENER_USER"
-
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0755 "$SCREENER_ROOT"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$STATE_DIR"
 install -d -o "$SCREENER_USER" -g "$SCREENER_GROUP" -m 0750 "$LOGS_DIR"
@@ -218,6 +224,16 @@ if [[ ! -d "$checkout/.git" ]]; then
     runuser -u "$SCREENER_USER" -- git clone "$SCREENER_REPOSITORY_URL" "$checkout"
   fi
 fi
+
+# Untrusted Dockerfiles are built only by a daemon running as the unprivileged
+# screener identity. The system daemon remains temporarily for additive service
+# dependency compatibility, but deploy is deliberately not in its docker group.
+rootless_host="$(
+  SCREENER_USER="$SCREENER_USER" \
+  SCREENER_GROUP="$SCREENER_GROUP" \
+  SCREENER_ROOT="$SCREENER_ROOT" \
+  bash "$checkout/scripts/install-rootless-docker.sh"
+)"
 
 # --- Bake: warm the venv, then stop (no secrets, no worker) -------------------
 if [[ "$SCREENER_BAKE_ONLY" == "1" ]]; then
@@ -263,6 +279,12 @@ SCREENER_BUILD_TIMEOUT_SECONDS=2700
 SCREENER_RUN_TIMEOUT_SECONDS=120
 SCREENER_BUILD_MEMORY=2g
 SCREENER_PIDS_LIMIT=512
+SCREENER_DOCKER_HOST=$rootless_host
+DOCKER_HOST=$rootless_host
+SCREENER_REQUIRE_ROOTLESS_DOCKER=1
+SCREENER_EXECUTOR_USER=ditto-builder
+SCREENER_EXECUTOR_GROUP=ditto-builder
+SCREENER_EXECUTOR_HOME=/var/lib/ditto-screener-docker
 # MUST stay >= the platform upload cap (DITTO_MAX_TARBALL_SIZE_BYTES, 20 MiB).
 SCREENER_MAX_TARBALL_BYTES=20971520
 SCREENER_READINESS_PORT=$SCREENER_READINESS_PORT

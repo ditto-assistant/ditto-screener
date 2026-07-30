@@ -118,13 +118,19 @@ iptables -A "$guard_tmp" -p udp -d 169.254.169.254/32 --dport 53 -j ACCEPT
 iptables -A "$guard_tmp" -p tcp -d 169.254.169.254/32 --dport 53 -j ACCEPT
 iptables -A "$guard_tmp" -d 169.254.169.254/32 -j DROP
 iptables -I DOCKER-USER 1 -j "$guard_tmp"
+# RootlessKit/slirp traffic originates from an unprivileged host process and
+# traverses OUTPUT, not DOCKER-USER. Preserve metadata DNS, but deny every
+# non-root host process the metadata API and attached service-account token.
+iptables -I OUTPUT 1 -m owner ! --uid-owner 0 -d 169.254.169.254/32 -j "$guard_tmp"
 # The replacement now protects metadata. Remove the DNS-breaking legacy rule
 # and old jump before renaming the referenced replacement to the stable name.
 while iptables -D DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null; do :; done
 while iptables -D DOCKER-USER -j DITTO-IMDS-GUARD 2>/dev/null; do :; done
+while iptables -D OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254/32 -j DITTO-IMDS-GUARD 2>/dev/null; do :; done
 iptables -F DITTO-IMDS-GUARD 2>/dev/null || true
 iptables -X DITTO-IMDS-GUARD 2>/dev/null || true
 iptables -E "$guard_tmp" DITTO-IMDS-GUARD
+
 GUARD
   if ! cmp -s "$tmp" "$guard_bin"; then
     install -m 0755 "$tmp" "$guard_bin"
@@ -182,6 +188,22 @@ done
 env_value() {
   local key="$1"
   sed -n "s/^${key}=//p" "$env_file" | tail -n 1
+}
+
+configure_docker_endpoint() {
+  local docker_host require_rootless security_options
+  docker_host="$(env_value SCREENER_DOCKER_HOST)"
+  require_rootless="$(env_value SCREENER_REQUIRE_ROOTLESS_DOCKER)"
+  if [[ -n "$docker_host" ]]; then
+    export DOCKER_HOST="$docker_host"
+  fi
+  if [[ "$require_rootless" == "1" || "$require_rootless" == "true" ]]; then
+    security_options="$(docker info --format '{{json .SecurityOptions}}')"
+    if [[ "$security_options" != *rootless* ]]; then
+      echo "configured Docker endpoint is not rootless" >&2
+      return 1
+    fi
+  fi
 }
 
 probe_platform() {
@@ -323,8 +345,33 @@ maintain_daemon_config() {
   # between updater passes. Docker is only restarted when the config actually
   # changes; a killed in-flight build reports retryable-infra and the lease
   # requeues the submission.
-  local source="$checkout/deploy/daemon.json"
-  local target="/etc/docker/daemon.json"
+  local source target daemon_unit owner group executor_home
+  if [[ -n "${DOCKER_HOST:-}" ]]; then
+    source="$checkout/deploy/rootless-daemon.json"
+    # Must match install-rootless-docker.sh's daemon_root exactly. Maintaining
+    # a lookalike file under the worker checkout would restart the daemon while
+    # leaving its live security policy unchanged.
+    executor_home="$(env_value SCREENER_EXECUTOR_HOME)"
+    executor_home="${executor_home:-/var/lib/ditto-screener-docker}"
+    target="$executor_home/docker/daemon.json"
+    daemon_unit="ditto-screener-docker"
+    owner="$(env_value SCREENER_EXECUTOR_USER)"
+    owner="${owner:-ditto-builder}"
+    group="$(env_value SCREENER_EXECUTOR_GROUP)"
+    group="${group:-ditto-builder}"
+    if [[ "$executor_home" != /var/lib/ditto-screener-docker ]] \
+      || [[ ! "$owner" =~ ^[a-z_][a-z0-9_-]*$ ]] \
+      || [[ ! "$group" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+      echo "invalid rootless executor daemon identity" >&2
+      return 1
+    fi
+  else
+    source="$checkout/deploy/daemon.json"
+    target="/etc/docker/daemon.json"
+    daemon_unit="docker"
+    owner="root"
+    group="root"
+  fi
   [[ -f "$source" ]] || return 0
   if cmp -s "$source" "$target" 2>/dev/null; then
     return 0
@@ -337,8 +384,8 @@ maintain_daemon_config() {
     echo "deferring daemon.json apply: a screening build is in flight" >&2
     return 0
   fi
-  install -o root -g root -m 0644 "$source" "$target"
-  systemctl restart docker
+  install -o "$owner" -g "$group" -m 0640 "$source" "$target"
+  systemctl restart "$daemon_unit"
   # Requires=docker.service can propagate the stop to the worker; make sure
   # it is running again (no-op when the restart left it untouched).
   systemctl start "$SCREENER_UNIT"
@@ -366,6 +413,11 @@ if [[ "$current_origin" != "$SCREENER_REPOSITORY_URL" ]]; then
   runuser -u "$SCREENER_USER" -- git -C "$checkout" remote set-url origin \
     "$SCREENER_REPOSITORY_URL"
 fi
+
+# Select and verify the deploy-owned daemon before any Docker command. An
+# invalid/missing rootless endpoint fails the deployment without touching the
+# currently running worker.
+configure_docker_endpoint
 
 # Refresh the protected key on every scheduled deployment run so Secret Manager
 # rotation does not require an unrelated code change.
