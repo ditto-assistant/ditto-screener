@@ -9,7 +9,7 @@ the worker. They do not change `SCREENING_POLICY_VERSION`.
 | Outcome | Source | Public behavior |
 | --- | --- | --- |
 | `pass` | Stable core passed; selected private audit, if any, cleared | Signed `passed=true`; existing promotion applies |
-| `deterministic_reject` | Objective stable-core archive, Rust package, build, or health failure | Signed `passed=false`; terminal `rejected` |
+| `deterministic_reject` | Objective stable-core archive, container contract, build, or health failure | Signed `passed=false`; terminal `rejected` |
 | `retryable_infra` | Download, Docker host, policy feed/pack, or other infrastructure failure | Signed `passed=false` with the existing `screener error:` marker; retryable `screening_failed` |
 | `quarantine` | Private source review or behavioral audit needs review | Signed attempt-bound quarantine result; platform persists a non-scoreable hold |
 | `inconclusive` | Selected private challenge could not yield usable evidence | No public verdict; bounded private journal entry; lease remains authoritative |

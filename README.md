@@ -3,7 +3,7 @@
 Platform-operated screening worker for Ditto SN118 submissions.
 
 The stable core leases one submission at a time from `ditto-platform`,
-downloads and verifies its tarball, enforces safe archive and root Rust package
+downloads and verifies its tarball, enforces safe language-neutral Docker
 rules, builds the Docker image, starts it with resource caps and an internal fake
 gateway, waits for `/health`, then performs a bounded, read-only Luna source
 review before submitting a lease-bound sr25519 result. An optional, default-off
@@ -36,7 +36,14 @@ The platform streams the completed object to verify the full archive SHA-256
 before acknowledging it. The worker then binds that verified upload ID, archive
 digest, byte size, immutable Docker image ID, and image reference into the
 canonical signed verdict. Validators can therefore load the screened image
-instead of repeating the Rust build.
+instead of repeating the untrusted build.
+
+Rust is the reference starter implementation, not a competition requirement.
+Python, TypeScript/JavaScript, Go, Rust, or any other implementation is accepted
+when its root `Dockerfile` builds an image that serves the same `/health`,
+`/seed`, and `/run` HTTP contract on port 8080. The screener never infers the
+contract from a language manifest such as `Cargo.toml`, `package.json`,
+`pyproject.toml`, or `go.mod`.
 
 The only shared application boundary is the dependency-light
 `packages/ditto-screening-protocol` package. It owns request/response models,

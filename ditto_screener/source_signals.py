@@ -876,7 +876,40 @@ def _is_build_file(path: str) -> bool:
     normalized = path.casefold()
     name = normalized.rsplit("/", 1)[-1]
     return (
-        name in {"dockerfile", "cargo.toml", "cargo.lock", "build.rs"}
+        name
+        in {
+            "dockerfile",
+            "cargo.toml",
+            "cargo.lock",
+            "build.rs",
+            "package.json",
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lock",
+            "bun.lockb",
+            "deno.json",
+            "deno.lock",
+            "pyproject.toml",
+            "poetry.lock",
+            "uv.lock",
+            "requirements.txt",
+            "pipfile",
+            "pipfile.lock",
+            "go.mod",
+            "go.sum",
+            "makefile",
+            "cmakelists.txt",
+            "build.gradle",
+            "build.gradle.kts",
+            "pom.xml",
+            "gemfile",
+            "gemfile.lock",
+            "composer.json",
+            "composer.lock",
+            "mix.exs",
+            "mix.lock",
+        }
         or name.endswith((".sh", ".bash", ".zsh"))
         or normalized.startswith(".github/workflows/")
     )
@@ -908,9 +941,67 @@ def _is_executable_source_path(path: str) -> bool:
     name = normalized.rsplit("/", 1)[-1]
     return (
         normalized.startswith("src/")
-        or name == "build.rs"
         or name.startswith("dockerfile")
-        or name.endswith((".rs", ".py", ".go", ".js", ".ts", ".sh", ".bash", ".zsh"))
+        or name
+        in {
+            "cargo.toml",
+            "build.rs",
+            "package.json",
+            "deno.json",
+            "pyproject.toml",
+            "pipfile",
+            "go.mod",
+            "makefile",
+            "cmakelists.txt",
+            "build.gradle",
+            "build.gradle.kts",
+            "pom.xml",
+            "gemfile",
+            "composer.json",
+            "mix.exs",
+        }
+        or name.endswith(
+            (
+                ".rs",
+                ".py",
+                ".pyx",
+                ".go",
+                ".js",
+                ".jsx",
+                ".mjs",
+                ".cjs",
+                ".ts",
+                ".tsx",
+                ".mts",
+                ".cts",
+                ".c",
+                ".cc",
+                ".cpp",
+                ".cxx",
+                ".h",
+                ".hpp",
+                ".java",
+                ".kt",
+                ".kts",
+                ".cs",
+                ".rb",
+                ".php",
+                ".swift",
+                ".scala",
+                ".ex",
+                ".exs",
+                ".erl",
+                ".hrl",
+                ".fs",
+                ".fsx",
+                ".lua",
+                ".dart",
+                ".zig",
+                ".sh",
+                ".bash",
+                ".zsh",
+            )
+        )
     )
 
 
