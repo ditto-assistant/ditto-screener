@@ -246,6 +246,8 @@ def test_rootless_executor_is_separate_from_worker_and_denies_private_egress() -
     assert 'EXECUTOR_USER="${SCREENER_EXECUTOR_USER:-ditto-builder}"' in installer
     assert "User=${EXECUTOR_USER}" in installer
     assert "User=${SCREENER_USER}" not in installer
+    assert "Type=notify\n# dockerd runs inside RootlessKit" in installer
+    assert "NotifyAccess=all" in installer
     assert "RuntimeDirectory=ditto-screener-docker" in installer
     assert "RuntimeDirectoryMode=0750" in installer
     assert 'gpasswd -d "$SCREENER_USER" docker' in installer

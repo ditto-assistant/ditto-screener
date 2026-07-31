@@ -93,6 +93,9 @@ After=ditto-screener-egress-guard.service
 
 [Service]
 Type=notify
+# dockerd runs inside RootlessKit, so the readiness notification is emitted by
+# a child process rather than the systemd-tracked wrapper process.
+NotifyAccess=all
 User=${EXECUTOR_USER}
 Group=${EXECUTOR_GROUP}
 Environment=HOME=${EXECUTOR_HOME}
