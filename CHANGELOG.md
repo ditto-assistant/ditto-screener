@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.6 (2026-07-31)
+
+### Bug Fixes
+
+- Expose rootless socket to screener worker
+  ([#92](https://github.com/ditto-assistant/ditto-screener/pull/92),
+  [`82b7c75`](https://github.com/ditto-assistant/ditto-screener/commit/82b7c75487c83b1792c78529a88f1b6bd91a64c6))
+
+
 ## v0.20.5 (2026-07-31)
 
 ### Bug Fixes
