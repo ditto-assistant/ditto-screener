@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from ditto_screener.heartbeat import (
     ScreenerHeartbeatRequest,
     ScreenerProgress,
     SystemMetricsCollector,
+    probe_docker_health,
     source_review_progress_stage,
 )
 
@@ -122,6 +124,29 @@ def test_collector_rounds_and_caches_without_identifying_metadata() -> None:
         "memory_percent",
         "disk_percent",
         "docker",
+    }
+
+
+def test_docker_probe_preserves_only_rootless_socket_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(*_args: object, **kwargs: object) -> SimpleNamespace:
+        observed.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="Up 5 minutes\n", stderr="")
+
+    monkeypatch.setenv("DOCKER_HOST", "unix:///run/ditto-screener-docker/docker.sock")
+    monkeypatch.setenv("SCREENER_API_TOKEN", "must-not-reach-docker-cli")
+    monkeypatch.setattr("ditto_screener.heartbeat.subprocess.run", fake_run)
+
+    health = probe_docker_health()
+
+    assert health.status == "healthy"
+    assert health.running_containers == 1
+    assert observed["env"] == {
+        "PATH": os.environ.get("PATH", ""),
+        "DOCKER_HOST": "unix:///run/ditto-screener-docker/docker.sock",
     }
 
 
