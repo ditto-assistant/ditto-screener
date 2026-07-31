@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.5 (2026-07-31)
+
+### Bug Fixes
+
+- Accept rootless Docker readiness notifications
+  ([#91](https://github.com/ditto-assistant/ditto-screener/pull/91),
+  [`46ee650`](https://github.com/ditto-assistant/ditto-screener/commit/46ee6501057c005b2c6608fb8cc19cb26249c27a))
+
+
 ## v0.20.4 (2026-07-31)
 
 ### Bug Fixes
