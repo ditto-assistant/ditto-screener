@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.1 (2026-07-31)
+
+### Bug Fixes
+
+- Make Docker build limits language-neutral
+  ([#83](https://github.com/ditto-assistant/ditto-screener/pull/83),
+  [`fcad264`](https://github.com/ditto-assistant/ditto-screener/commit/fcad264deac0ed92bd532dc45227aae3d4bf753f))
+
+
 ## v0.20.0 (2026-07-31)
 
 ### Features
