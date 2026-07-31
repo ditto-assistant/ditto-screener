@@ -104,6 +104,10 @@ Environment=DOCKER_HOST=${docker_host}
 RuntimeDirectory=ditto-screener-docker
 RuntimeDirectoryMode=0750
 ExecStart=/usr/bin/dockerd-rootless.sh --host=${docker_host} --group=${EXECUTOR_GROUP} --data-root=${daemon_root}/data --exec-root=${runtime_dir}/exec --pidfile=${runtime_dir}/docker.pid --config-file=${daemon_root}/daemon.json
+# RootlessKit maps the daemon's supplementary group into the subordinate GID
+# range. Reset only the control socket to the real host group so the screener
+# worker can reach it without granting access to the rootful Docker daemon.
+ExecStartPost=+/bin/chgrp ${EXECUTOR_GROUP} ${runtime_dir}/docker.sock
 ExecStartPost=/bin/chmod 0660 ${runtime_dir}/docker.sock
 Restart=always
 RestartSec=5
