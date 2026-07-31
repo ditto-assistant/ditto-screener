@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -90,17 +91,21 @@ async def test_current_starter_kit_builds_and_health_checks_without_run(
             capture_output=True,
             text=True,
         )
-        # Saving by immutable image ID deliberately makes the archive independent
-        # of a mutable daemon tag. Docker therefore reports a loaded image ID;
-        # the validator-side loader verifies that ID and applies image_ref itself.
-        assert image.image_id in loaded.stdout or image.image_ref in loaded.stdout
+        # The portable archive is intentionally untagged. A classic daemon
+        # reports the signed config ID; a containerd-backed diagnostic daemon
+        # may report its derived manifest ID. The validator fleet pins the
+        # classic store, while the scorer verifies either identity from these
+        # exact archive bytes before it invokes Docker.
+        match = re.search(r"Loaded image ID: (sha256:[0-9a-f]{64})", loaded.stdout)
+        assert match is not None, loaded.stdout
+        loaded_id = match.group(1)
         inspected = subprocess.run(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", image.image_id],
+            ["docker", "image", "inspect", "--format", "{{.Id}}", loaded_id],
             check=True,
             capture_output=True,
             text=True,
         )
-        assert inspected.stdout.strip() == image.image_id
+        assert inspected.stdout.strip() == loaded_id
         dittobench_dir = os.environ.get("DITTOBENCH_API_DIR")
         if dittobench_dir:
             env = {

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import io
+import json
 import logging
 import os
 import shutil
@@ -70,6 +72,43 @@ def _make_tar(files: dict[str, bytes]) -> bytes:
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
     return buffer.getvalue()
+
+
+def _oci_image_save_archive() -> tuple[bytes, str, bytes]:
+    layer = _make_tar({"app/ready.txt": b"ready\n"})
+    compressed_layer = gzip.compress(layer, mtime=0)
+    diff_id = "sha256:" + hashlib.sha256(layer).hexdigest()
+    config = json.dumps(
+        {
+            "architecture": "amd64",
+            "os": "linux",
+            "rootfs": {"type": "layers", "diff_ids": [diff_id]},
+        },
+        separators=(",", ":"),
+    ).encode()
+    config_hex = hashlib.sha256(config).hexdigest()
+    layer_hex = hashlib.sha256(compressed_layer).hexdigest()
+    manifest = json.dumps(
+        [
+            {
+                "Config": f"blobs/sha256/{config_hex}",
+                "RepoTags": None,
+                "Layers": [f"blobs/sha256/{layer_hex}"],
+            }
+        ],
+        separators=(",", ":"),
+    ).encode()
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:") as tar:
+        for name, payload in (
+            ("manifest.json", manifest),
+            (f"blobs/sha256/{config_hex}", config),
+            (f"blobs/sha256/{layer_hex}", compressed_layer),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+    return archive.getvalue(), f"sha256:{config_hex}", layer
 
 
 def _valid_tar(**overrides: bytes) -> bytes:
@@ -147,8 +186,8 @@ def test_root_and_log_helpers() -> None:
 async def test_export_image_hashes_exact_docker_archive(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
-    archive = b"synthetic docker save archive"
-    image_id = "sha256:" + "34" * 32
+    archive, config_id, layer = _oci_image_save_archive()
+    daemon_image_id = "sha256:" + "34" * 32
     gate = _gate_with(make_config(), _ok_run(), tarball=_valid_tar())
 
     async def run(args: list[str], **_: Any) -> tuple[int, str]:
@@ -161,15 +200,26 @@ async def test_export_image_hashes_exact_docker_archive(
 
     gate._run = run  # type: ignore[method-assign]
     exported = await gate._export_image(
-        image_id,
+        daemon_image_id,
         image_ref=f"ditto-screen/{_AGENT}:latest",
         deadline=None,
     )
     try:
-        assert exported.sha256 == hashlib.sha256(archive).hexdigest()
-        assert exported.size_bytes == len(archive)
-        assert exported.image_id == image_id
-        assert Path(exported.path).read_bytes() == archive
+        assert exported.image_id == config_id
+        assert exported.sha256 != hashlib.sha256(archive).hexdigest()
+        assert exported.size_bytes == Path(exported.path).stat().st_size
+        with tarfile.open(exported.path, mode="r:") as portable:
+            names = portable.getnames()
+            assert names[0] == "manifest.json"
+            manifest = json.load(portable.extractfile("manifest.json"))
+            assert manifest == [
+                {
+                    "Config": config_id.removeprefix("sha256:") + ".json",
+                    "RepoTags": None,
+                    "Layers": [hashlib.sha256(layer).hexdigest() + "/layer.tar"],
+                }
+            ]
+            assert portable.extractfile(manifest[0]["Layers"][0]).read() == layer
     finally:
         os.unlink(exported.path)
 
@@ -233,6 +283,7 @@ async def test_publish_failure_demotes_pass_with_dedicated_reason(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
     tarball = _valid_tar()
+    saved_archive, _, _ = _oci_image_save_archive()
 
     async def run(args: list[str], *, stdin: Any = None, **_: Any) -> tuple[int, str]:
         if args[0] == "build":
@@ -244,9 +295,9 @@ async def test_publish_failure_demotes_pass_with_dedicated_reason(
         elif args[:3] == ["image", "inspect", "--format"]:
             if "Config.Volumes" in args[3]:
                 return 0, ""
-            return 0, "32"
+            return 0, str(len(saved_archive))
         elif args[:3] == ["image", "save", "--output"]:
-            Path(args[3]).write_bytes(b"screened-image")
+            Path(args[3]).write_bytes(saved_archive)
         return 0, ""
 
     async def fail_publish(_image: Any) -> None:
@@ -271,6 +322,7 @@ async def test_publish_uses_stable_agent_ref_with_attempt_scoped_build(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
     tarball = _valid_tar()
+    saved_archive, config_id, _ = _oci_image_save_archive()
     calls: list[list[str]] = []
     published: list[BuiltImageArtifact] = []
 
@@ -285,9 +337,9 @@ async def test_publish_uses_stable_agent_ref_with_attempt_scoped_build(
         elif args[:3] == ["image", "inspect", "--format"]:
             if "Config.Volumes" in args[3]:
                 return 0, ""
-            return 0, "32"
+            return 0, str(len(saved_archive))
         elif args[:3] == ["image", "save", "--output"]:
-            Path(args[3]).write_bytes(b"screened-image")
+            Path(args[3]).write_bytes(saved_archive)
         return 0, ""
 
     async def publish(image: BuiltImageArtifact) -> None:
@@ -307,6 +359,7 @@ async def test_publish_uses_stable_agent_ref_with_attempt_scoped_build(
     attempt_ref = f"ditto-screen/{_AGENT}-{_ATTEMPT}:latest"
     assert result.outcome == ScreeningOutcome.PASS
     assert [image.image_ref for image in published] == [f"ditto-screen/{_AGENT}:latest"]
+    assert [image.image_id for image in published] == [config_id]
     assert any(call[0] == "build" and attempt_ref in call for call in calls)
     assert ["rmi", "-f", attempt_ref] in calls
 

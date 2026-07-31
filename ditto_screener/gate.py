@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import gzip
 import hashlib
 import io
 import json
@@ -55,10 +56,11 @@ import shutil
 import signal
 import tarfile
 import tempfile
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO, cast
 from uuid import UUID
 
 import httpx
@@ -194,6 +196,14 @@ class BuiltImageArtifact:
     size_bytes: int
     image_id: str
     image_ref: str
+
+
+@dataclass(frozen=True)
+class _PortableImageArchive:
+    """Classic single-image transport plus its config-digest identity."""
+
+    path: str
+    image_id: str
 
 
 class _ScreenedImageTooLargeError(ValueError):
@@ -989,6 +999,251 @@ class BuildGate:
 
     # --- stages -----------------------------------------------------------
 
+    @staticmethod
+    def _portable_image_archive(
+        source_path: str,
+        destination_path: str,
+        *,
+        deadline: float | None,
+    ) -> _PortableImageArchive:
+        """Normalize Docker 29 output to the portable pre-OCI save contract.
+
+        Docker 25+ writes an OCI-layout envelope even for a single-platform
+        ``docker image save``. Validators that predate that producer change
+        intentionally accept the classic Docker save contract instead: one
+        config-digest identity, one manifest, and uncompressed ``layer.tar``
+        members. Preserve the exact config and filesystem bytes that passed the
+        screener while changing only that transport envelope.
+        """
+
+        def check_deadline() -> None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _LeaseDeadlineError(
+                    "lease expired during portable image normalization"
+                )
+
+        def safe_member_name(name: str) -> str:
+            normalized = str(PurePosixPath(name))
+            if (
+                not name
+                or name.startswith("/")
+                or normalized != name
+                or any(part in {"", ".", ".."} for part in PurePosixPath(name).parts)
+            ):
+                raise _ScreenedImageExportError(
+                    "Docker image archive contains a non-canonical path"
+                )
+            return normalized
+
+        def regular_member(
+            members: Mapping[str, tarfile.TarInfo], name: str
+        ) -> tarfile.TarInfo:
+            member = members.get(safe_member_name(name))
+            if member is None or not member.isfile():
+                raise _ScreenedImageExportError(
+                    f"Docker image archive is missing regular member {name!r}"
+                )
+            return member
+
+        def layer_stream(archive: tarfile.TarFile, member: tarfile.TarInfo) -> BinaryIO:
+            raw = archive.extractfile(member)
+            if raw is None:
+                raise _ScreenedImageExportError(
+                    f"Docker image layer {member.name!r} is unreadable"
+                )
+            prefix = raw.read(2)
+            raw.seek(0)
+            if prefix == b"\x1f\x8b":
+                return cast(BinaryIO, gzip.GzipFile(fileobj=raw, mode="rb"))
+            return cast(BinaryIO, raw)
+
+        def copy_info(name: str, size: int) -> tarfile.TarInfo:
+            info = tarfile.TarInfo(name)
+            info.size = size
+            info.mode = 0o600
+            info.uid = 0
+            info.gid = 0
+            info.mtime = 0
+            return info
+
+        try:
+            with tarfile.open(source_path, mode="r:") as source:
+                all_members = source.getmembers()
+                if len(all_members) > 4096:
+                    raise _ScreenedImageExportError(
+                        "Docker image archive contains too many members"
+                    )
+                members: dict[str, tarfile.TarInfo] = {}
+                for member in all_members:
+                    name = safe_member_name(member.name)
+                    if name in members:
+                        raise _ScreenedImageExportError(
+                            "Docker image archive contains a duplicate path"
+                        )
+                    members[name] = member
+
+                manifest_member = regular_member(members, "manifest.json")
+                if manifest_member.size <= 0 or manifest_member.size > 1 << 20:
+                    raise _ScreenedImageExportError(
+                        "Docker image manifest has an invalid size"
+                    )
+                manifest_file = source.extractfile(manifest_member)
+                if manifest_file is None:
+                    raise _ScreenedImageExportError(
+                        "Docker image manifest is unreadable"
+                    )
+                try:
+                    manifest = json.load(manifest_file)
+                except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                    raise _ScreenedImageExportError(
+                        "Docker image manifest is invalid JSON"
+                    ) from error
+                if not isinstance(manifest, list) or len(manifest) != 1:
+                    raise _ScreenedImageExportError(
+                        "Docker image archive must contain exactly one image"
+                    )
+                entry = manifest[0]
+                if not isinstance(entry, dict):
+                    raise _ScreenedImageExportError(
+                        "Docker image manifest entry has an invalid shape"
+                    )
+                config_name = entry.get("Config")
+                layer_names = entry.get("Layers")
+                repo_tags = entry.get("RepoTags")
+                if (
+                    not isinstance(config_name, str)
+                    or not isinstance(layer_names, list)
+                    or not all(isinstance(name, str) for name in layer_names)
+                    or len(layer_names) > 256
+                    or repo_tags not in (None, [])
+                ):
+                    raise _ScreenedImageExportError(
+                        "Docker image manifest entry has an invalid shape"
+                    )
+
+                config_member = regular_member(members, config_name)
+                if config_member.size <= 0 or config_member.size > 4 << 20:
+                    raise _ScreenedImageExportError(
+                        "Docker image config has an invalid size"
+                    )
+                config_file = source.extractfile(config_member)
+                if config_file is None:
+                    raise _ScreenedImageExportError("Docker image config is unreadable")
+                config_bytes = config_file.read(config_member.size + 1)
+                if len(config_bytes) != config_member.size:
+                    raise _ScreenedImageExportError("Docker image config is truncated")
+                try:
+                    config = json.loads(config_bytes)
+                    diff_ids = config["rootfs"]["diff_ids"]
+                except (json.JSONDecodeError, KeyError, TypeError) as error:
+                    raise _ScreenedImageExportError(
+                        "Docker image config has an invalid rootfs"
+                    ) from error
+                if (
+                    not isinstance(diff_ids, list)
+                    or len(diff_ids) != len(layer_names)
+                    or not all(
+                        isinstance(digest, str)
+                        and re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+                        for digest in diff_ids
+                    )
+                ):
+                    raise _ScreenedImageExportError(
+                        "Docker image layer identities do not match the manifest"
+                    )
+
+                portable_layers: list[tuple[str, tarfile.TarInfo, int]] = []
+                chain_id: str | None = None
+                projected_size = 10240
+                for layer_name, diff_id in zip(layer_names, diff_ids, strict=True):
+                    check_deadline()
+                    member = regular_member(members, layer_name)
+                    digest = hashlib.sha256()
+                    expanded_size = 0
+                    stream = layer_stream(source, member)
+                    try:
+                        while chunk := stream.read(_IMAGE_HASH_CHUNK_BYTES):
+                            check_deadline()
+                            digest.update(chunk)
+                            expanded_size += len(chunk)
+                            if expanded_size > _MAX_SCREENED_IMAGE_BYTES:
+                                raise _ScreenedImageTooLargeError(
+                                    "screened image archive expands beyond the size cap"
+                                )
+                    except (gzip.BadGzipFile, EOFError, OSError) as error:
+                        raise _ScreenedImageExportError(
+                            f"Docker image layer {layer_name!r} is not readable"
+                        ) from error
+                    finally:
+                        stream.close()
+                    if "sha256:" + digest.hexdigest() != diff_id:
+                        raise _ScreenedImageExportError(
+                            "Docker image layer bytes do not match the config digest"
+                        )
+                    if chain_id is None:
+                        chain_id = diff_id
+                    else:
+                        chain_id = (
+                            "sha256:"
+                            + hashlib.sha256(
+                                f"{chain_id} {diff_id}".encode()
+                            ).hexdigest()
+                        )
+                    portable_name = chain_id.removeprefix("sha256:") + "/layer.tar"
+                    portable_layers.append((portable_name, member, expanded_size))
+                    projected_size += 512 + ((expanded_size + 511) // 512) * 512
+
+                config_hex = hashlib.sha256(config_bytes).hexdigest()
+                portable_manifest = json.dumps(
+                    [
+                        {
+                            "Config": f"{config_hex}.json",
+                            "RepoTags": None,
+                            "Layers": [name for name, _, _ in portable_layers],
+                        }
+                    ],
+                    separators=(",", ":"),
+                ).encode()
+                projected_size += 1024
+                projected_size += 512 + ((len(config_bytes) + 511) // 512) * 512
+                projected_size += 512 + ((len(portable_manifest) + 511) // 512) * 512
+                if projected_size > _MAX_SCREENED_IMAGE_BYTES:
+                    raise _ScreenedImageTooLargeError(
+                        "portable screened image archive exceeds the size cap"
+                    )
+
+                with tarfile.open(destination_path, mode="w:") as destination:
+                    destination.addfile(
+                        copy_info("manifest.json", len(portable_manifest)),
+                        io.BytesIO(portable_manifest),
+                    )
+                    destination.addfile(
+                        copy_info(f"{config_hex}.json", len(config_bytes)),
+                        io.BytesIO(config_bytes),
+                    )
+                    for portable_name, member, expanded_size in portable_layers:
+                        check_deadline()
+                        stream = layer_stream(source, member)
+                        try:
+                            destination.addfile(
+                                copy_info(portable_name, expanded_size), stream
+                            )
+                        except (gzip.BadGzipFile, EOFError, OSError) as error:
+                            raise _ScreenedImageExportError(
+                                f"Docker image layer {member.name!r} is not readable"
+                            ) from error
+                        finally:
+                            stream.close()
+        except tarfile.TarError as error:
+            raise _ScreenedImageExportError(
+                "Docker image save output is not a readable tar archive"
+            ) from error
+
+        return _PortableImageArchive(
+            path=destination_path,
+            image_id=f"sha256:{config_hex}",
+        )
+
     async def _export_image(
         self,
         image_id: str,
@@ -1000,6 +1255,7 @@ class BuildGate:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
             raise _ScreenedImageExportError("Docker returned an invalid image id")
         path: str | None = None
+        portable_path: str | None = None
         try:
             inspect_timeout = self._lease_timeout(deadline, 30.0, "image inspection")
             code, raw_size = await self._run(
@@ -1024,7 +1280,7 @@ class BuildGate:
             fd, path = tempfile.mkstemp(prefix="ditto-screened-image-", suffix=".tar")
             os.close(fd)
             free_bytes = shutil.disk_usage(Path(path).parent).free
-            required_bytes = image_size + _IMAGE_EXPORT_DISK_RESERVE_BYTES
+            required_bytes = image_size * 2 + _IMAGE_EXPORT_DISK_RESERVE_BYTES
             if free_bytes < required_bytes:
                 raise _ScreenedImageExportError(
                     "insufficient temporary disk for screened image export "
@@ -1039,6 +1295,19 @@ class BuildGate:
                 raise _ScreenedImageExportError(
                     f"docker image export failed: {_log_tail(output)}"
                 )
+            fd, portable_path = tempfile.mkstemp(
+                prefix="ditto-portable-image-", suffix=".tar"
+            )
+            os.close(fd)
+            portable = await asyncio.to_thread(
+                self._portable_image_archive,
+                path,
+                portable_path,
+                deadline=deadline,
+            )
+            os.unlink(path)
+            path = portable.path
+            portable_path = None
             size_bytes = os.path.getsize(path)
             if size_bytes > _MAX_SCREENED_IMAGE_BYTES:
                 raise _ScreenedImageTooLargeError(
@@ -1050,13 +1319,16 @@ class BuildGate:
                 path=path,
                 sha256=sha256,
                 size_bytes=size_bytes,
-                image_id=image_id,
+                image_id=portable.image_id,
                 image_ref=image_ref,
             )
         except BaseException:
             if path is not None:
                 with contextlib.suppress(OSError):
                     os.unlink(path)
+            if portable_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(portable_path)
             raise
 
     def _lease_timeout(self, deadline: float | None, cap: float, stage: str) -> float:
