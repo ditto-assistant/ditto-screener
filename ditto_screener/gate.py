@@ -1286,6 +1286,11 @@ class BuildGate:
         os.unlink(iid_path)
         args = [
             "build",
+            # The screener immediately inspects, runs, and exports this image
+            # through the local daemon. Buildx can otherwise leave a successful
+            # result only in its cache while still writing an iidfile, making
+            # the post-build image inspect fail after an expensive compile.
+            "--load",
             "--iidfile",
             iid_path,
             "--network",

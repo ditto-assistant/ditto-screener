@@ -580,6 +580,7 @@ async def test_fake_gateway_is_internal_and_resource_capped(
     assert runtime_network[-1].startswith("ditto-screen-")
     assert "--internal" in runtime_network
     build = next(call for call in calls if call[0] == "build")
+    assert "--load" in build
     assert build[build.index("--network") + 1] == "default"
     assert {"--memory", "8g", "--memory-swap", "--cpu-quota", "--shm-size"} <= set(
         build
@@ -606,6 +607,35 @@ async def test_fake_gateway_is_internal_and_resource_capped(
     assert {"--cap-drop", "ALL", "--security-opt", "no-new-privileges"} <= set(harness)
     assert harness.count("DITTOBENCH_DB=/tmp/dittobench.db") == 1
     assert "DITTOBENCH_DB=/app/attacker.db" not in harness
+
+
+async def test_unloaded_buildx_result_is_retryable_infrastructure(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    calls: list[list[str]] = []
+
+    async def unloaded(
+        args: list[str], *, stdin: Any = None, **_: Any
+    ) -> tuple[int, str]:
+        calls.append(args)
+        if args[0] == "build" and stdin is not None:
+            stdin.read()
+            _write_iidfile(args)
+            return 0, "build completed"
+        if args[:3] == ["image", "inspect", "--format"]:
+            return 1, "Error response from daemon: No such image"
+        return 0, ""
+
+    gate = _gate_with(make_config(), unloaded, tarball=tarball)
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+
+    build = next(call for call in calls if call[0] == "build")
+    assert "--load" in build
+    assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
+    assert result.evidence[-1].code == "docker-build-infrastructure"
+    assert "No such image" in result.detail
 
 
 async def test_sha_mismatch_is_deterministic_and_cleans_temp_file(
