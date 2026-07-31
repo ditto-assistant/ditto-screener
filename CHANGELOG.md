@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.10 (2026-07-31)
+
+### Bug Fixes
+
+- Restore stable screened image references
+  ([#96](https://github.com/ditto-assistant/ditto-screener/pull/96),
+  [`dd02978`](https://github.com/ditto-assistant/ditto-screener/commit/dd029783a51659defe8f3695911ae09bfb63bc01))
+
+
 ## v0.20.9 (2026-07-31)
 
 ### Bug Fixes
