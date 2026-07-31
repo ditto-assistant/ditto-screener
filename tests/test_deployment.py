@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import tomllib
@@ -263,6 +264,17 @@ def test_rootless_executor_is_separate_from_worker_and_denies_private_egress() -
     assert 'owner="$(env_value SCREENER_EXECUTOR_USER)"' in updater
     assert 'group="$(env_value SCREENER_EXECUTOR_GROUP)"' in updater
     assert "$SCREENER_ROOT/docker/daemon.json" not in updater
+
+
+def test_rootless_executor_disables_single_file_log_compression() -> None:
+    daemon_config = json.loads((ROOT / "deploy" / "rootless-daemon.json").read_text())
+
+    assert daemon_config["log-driver"] == "local"
+    assert daemon_config["log-opts"] == {
+        "compress": "false",
+        "max-file": "1",
+        "max-size": "8m",
+    }
 
 
 def test_updater_ensures_the_metadata_guard_on_every_deploy() -> None:

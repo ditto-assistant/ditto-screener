@@ -597,6 +597,7 @@ async def test_fake_gateway_is_internal_and_resource_capped(
         if call[0] == "run" and "DITTO_FAKE_GATEWAY_RESPONSE=" in " ".join(call)
     )
     assert {"--read-only", "--cap-drop", "no-new-privileges"} <= set(gateway)
+    assert {"max-size=2m", "max-file=1", "compress=false"} <= set(gateway)
     harness = next(
         call for call in calls if call[0] == "run" and call[-1] == "sha256:" + "34" * 32
     )
@@ -607,7 +608,7 @@ async def test_fake_gateway_is_internal_and_resource_capped(
     assert {"--memory", "3g", "--pids-limit", "512"} <= set(harness)
     assert {"--init", "--user", "65532:65532", "--read-only"} <= set(harness)
     assert {"--ipc", "none", "--log-driver", "local"} <= set(harness)
-    assert {"max-size=8m", "max-file=1"} <= set(harness)
+    assert {"max-size=8m", "max-file=1", "compress=false"} <= set(harness)
     assert {"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=512m"} <= set(harness)
     assert {"--cpus", "2", "--ulimit", "nofile=1024:1024"} <= set(harness)
     assert {"--cap-drop", "ALL", "--security-opt", "no-new-privileges"} <= set(harness)
