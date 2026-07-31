@@ -581,7 +581,7 @@ async def test_fake_gateway_is_internal_and_resource_capped(
     assert "--internal" in runtime_network
     build = next(call for call in calls if call[0] == "build")
     assert build[build.index("--network") + 1] == "default"
-    assert {"--memory", "2g", "--memory-swap", "--cpu-quota", "--shm-size"} <= set(
+    assert {"--memory", "8g", "--memory-swap", "--cpu-quota", "--shm-size"} <= set(
         build
     )
     gateway = next(
@@ -773,7 +773,9 @@ async def test_container_contract_is_language_neutral(
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
 
     assert result.outcome == ScreeningOutcome.PASS
-    assert any(call[0] == "build" for call in calls)
+    build = next(call for call in calls if call[0] == "build")
+    assert build[build.index("--memory") + 1] == "8g"
+    assert build[build.index("--memory-swap") + 1] == "8g"
 
 
 @pytest.mark.parametrize("alias", ["src/./main.rs", "src//main.rs"])
@@ -1009,6 +1011,9 @@ async def test_docker_daemon_build_failure_is_retryable_infrastructure(
         "TLS handshake timeout fetching registry layer",
         "secret gh_token: not found",
         "process was killed: out of memory",
+        "process didn't exit successfully: rustc (signal: 9, SIGKILL: kill)",
+        "executor failed running [/bin/sh -c build]: exit code: 137",
+        "container state: OOMKilled=true",
         # Build aborted by a deploy / `systemctl restart docker` under the
         # worker: BuildKit reports a cancellation, which must requeue, not
         # terminally reject the miner's crate.

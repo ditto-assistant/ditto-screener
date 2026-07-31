@@ -26,7 +26,7 @@ def _default_config(**overrides: Any) -> ScreenerConfig:
         "require_rootless_docker": False,
         "build_timeout_seconds": 60.0,
         "run_timeout_seconds": 3.0,
-        "build_memory": "2g",
+        "image_build_memory": "8g",
         "gh_token_file": None,
         "pids_limit": 512,
         "health_path": "/health",

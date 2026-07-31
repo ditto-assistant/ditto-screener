@@ -142,6 +142,12 @@ _DOCKER_INFRASTRUCTURE_MARKERS = (
     "docker command exited with signal",
     "signal sigterm",
     "signal sigkill",
+    # Common cgroup / compiler spellings do not include the whitespace-only
+    # form above (for example rustc reports ``signal: 9, SIGKILL: kill``).
+    "sigkill",
+    "oomkilled",
+    "memory cgroup out of memory",
+    "exit code: 137",
     # A build the daemon or worker was restarted out from under (deploy /
     # `systemctl restart docker`) aborts with BuildKit's cancellation marker.
     # That is our own interruption, never the miner's crate failing to compile,
@@ -1291,9 +1297,9 @@ class BuildGate:
             "--provenance=false",
             "--sbom=false",
             "--memory",
-            self._config.build_memory,
+            self._config.image_build_memory,
             "--memory-swap",
-            self._config.build_memory,
+            self._config.image_build_memory,
             "--cpu-period",
             "100000",
             "--cpu-quota",
