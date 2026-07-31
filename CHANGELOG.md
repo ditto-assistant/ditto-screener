@@ -2,6 +2,39 @@
 
 <!-- version list -->
 
+## v0.19.0 (2026-07-31)
+
+### Bug Fixes
+
+- **screening**: Retain starter function provenance
+  ([#81](https://github.com/ditto-assistant/ditto-screener/pull/81),
+  [`998ae5f`](https://github.com/ditto-assistant/ditto-screener/commit/998ae5f20773894db6f82eb1c5cedc4231fca297))
+
+- **screening**: Retain starter function provenance
+  ([#79](https://github.com/ditto-assistant/ditto-screener/pull/79),
+  [`cc6aa90`](https://github.com/ditto-assistant/ditto-screener/commit/cc6aa90070c75d3036c1812e0a47f4c4dead36fd))
+
+### Chores
+
+- **screening**: Allow a harness with no preflight branch
+  ([#78](https://github.com/ditto-assistant/ditto-screener/pull/78),
+  [`be13b8c`](https://github.com/ditto-assistant/ditto-screener/commit/be13b8cbb55b01da34efc786716d9bf43e35204e))
+
+- **screening**: Trust the v8 starter provenance
+  ([#81](https://github.com/ditto-assistant/ditto-screener/pull/81),
+  [`998ae5f`](https://github.com/ditto-assistant/ditto-screener/commit/998ae5f20773894db6f82eb1c5cedc4231fca297))
+
+- **screening**: Trust the v8 starter provenance
+  ([#79](https://github.com/ditto-assistant/ditto-screener/pull/79),
+  [`cc6aa90`](https://github.com/ditto-assistant/ditto-screener/commit/cc6aa90070c75d3036c1812e0a47f4c4dead36fd))
+
+### Features
+
+- Accept language-neutral harness images
+  ([#81](https://github.com/ditto-assistant/ditto-screener/pull/81),
+  [`998ae5f`](https://github.com/ditto-assistant/ditto-screener/commit/998ae5f20773894db6f82eb1c5cedc4231fca297))
+
+
 ## v0.18.0 (2026-07-26)
 
 ### Bug Fixes
