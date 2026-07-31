@@ -250,6 +250,11 @@ def test_rootless_executor_is_separate_from_worker_and_denies_private_egress() -
     assert "NotifyAccess=all" in installer
     assert "RuntimeDirectory=ditto-screener-docker" in installer
     assert "RuntimeDirectoryMode=0750" in installer
+    assert (
+        "ExecStartPost=+/bin/chgrp ${EXECUTOR_GROUP} "
+        "${runtime_dir}/docker.sock" in installer
+    )
+    assert "ExecStartPost=/bin/chmod 0660 ${runtime_dir}/docker.sock" in installer
     assert 'gpasswd -d "$SCREENER_USER" docker' in installer
     assert "SCREENER_REQUIRE_ROOTLESS_DOCKER=1" in bootstrap
     assert "DITTO-EXEC-EGRESS" in egress
