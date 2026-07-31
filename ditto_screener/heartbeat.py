@@ -224,6 +224,11 @@ def _coarse_percent(value: float) -> int:
 
 def probe_docker_health() -> DockerHealth:
     """Read aggregate running-container health without identifying metadata."""
+    docker_env = {"PATH": os.environ.get("PATH", "")}
+    if docker_host := os.environ.get("DOCKER_HOST"):
+        # The fleet uses a dedicated rootless daemon. Preserve only its socket
+        # selector; do not copy secrets from the worker environment.
+        docker_env["DOCKER_HOST"] = docker_host
     try:
         result = subprocess.run(
             [
@@ -239,7 +244,7 @@ def probe_docker_health() -> DockerHealth:
             capture_output=True,
             text=True,
             timeout=2.0,
-            env={"PATH": os.environ.get("PATH", "")},
+            env=docker_env,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return DockerHealth(
