@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.9 (2026-07-31)
+
+### Bug Fixes
+
+- Preserve rootless gateway state access
+  ([#95](https://github.com/ditto-assistant/ditto-screener/pull/95),
+  [`c2d0b37`](https://github.com/ditto-assistant/ditto-screener/commit/c2d0b374f9714db2c32e643c15311063df8defa1))
+
+
 ## v0.20.8 (2026-07-31)
 
 ### Bug Fixes
