@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.11 (2026-07-31)
+
+### Bug Fixes
+
+- Restore portable screened image archives
+  ([#97](https://github.com/ditto-assistant/ditto-screener/pull/97),
+  [`3bded7c`](https://github.com/ditto-assistant/ditto-screener/commit/3bded7cdd558a29af4b5e9294bd798d5c1cd8260))
+
+
 ## v0.20.10 (2026-07-31)
 
 ### Bug Fixes
