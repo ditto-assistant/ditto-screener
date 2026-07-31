@@ -222,6 +222,8 @@ async def test_publish_failure_demotes_pass_with_dedicated_reason(
                 stdin.read()
             _write_iidfile(args)
         elif args[:3] == ["image", "inspect", "--format"]:
+            if "Config.Volumes" in args[3]:
+                return 0, ""
             return 0, "32"
         elif args[:3] == ["image", "save", "--output"]:
             Path(args[3]).write_bytes(b"screened-image")
@@ -572,8 +574,16 @@ async def test_fake_gateway_is_internal_and_resource_capped(
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
 
     assert result.passed
-    network = next(call for call in calls if call[:2] == ["network", "create"])
-    assert "--internal" in network
+    networks = [call for call in calls if call[:2] == ["network", "create"]]
+    assert len(networks) == 1
+    runtime_network = networks[0]
+    assert runtime_network[-1].startswith("ditto-screen-")
+    assert "--internal" in runtime_network
+    build = next(call for call in calls if call[0] == "build")
+    assert build[build.index("--network") + 1] == "default"
+    assert {"--memory", "2g", "--memory-swap", "--cpu-quota", "--shm-size"} <= set(
+        build
+    )
     gateway = next(
         call
         for call in calls
@@ -589,6 +599,8 @@ async def test_fake_gateway_is_internal_and_resource_capped(
     assert "fake-gateway" not in " ".join(harness)
     assert {"--memory", "3g", "--pids-limit", "512"} <= set(harness)
     assert {"--init", "--user", "65532:65532", "--read-only"} <= set(harness)
+    assert {"--ipc", "none", "--log-driver", "local"} <= set(harness)
+    assert {"max-size=8m", "max-file=1"} <= set(harness)
     assert {"--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=512m"} <= set(harness)
     assert {"--cpus", "2", "--ulimit", "nofile=1024:1024"} <= set(harness)
     assert {"--cap-drop", "ALL", "--security-opt", "no-new-privileges"} <= set(harness)
@@ -633,6 +645,74 @@ async def test_container_contract_failure_is_terminal_reject(
     )
     assert "help:" in result.detail
     assert not any(call[0] == "build" for call in calls)
+
+
+@pytest.mark.parametrize("entitlement", ["--network=host", "--security=insecure"])
+async def test_container_contract_rejects_insecure_build_entitlements(
+    make_config: Callable[..., ScreenerConfig], entitlement: str
+) -> None:
+    tarball = _make_tar(
+        {
+            "Dockerfile": (
+                f'FROM alpine\nRUN {entitlement} echo unsafe\nCMD ["/bin/sh"]\n'
+            ).encode(),
+            "app.sh": b"#!/bin/sh\n",
+        }
+    )
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
+    assert "SCR-CONTRACT-004" in result.detail
+    assert not any(call[0] == "build" for call in calls)
+
+
+async def test_rootless_executor_policy_fails_closed_before_download(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    calls: list[list[str]] = []
+
+    async def rootful(args: list[str], **_: Any) -> tuple[int, str]:
+        calls.append(args)
+        if args[0] == "info":
+            return 0, '["name=seccomp,profile=builtin","name=cgroupns"]'
+        return 0, ""
+
+    gate = _gate_with(
+        make_config(require_rootless_docker=True), rootful, tarball=tarball
+    )
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
+    assert result.evidence[-1].code == "executor-isolation-unavailable"
+    assert calls[0] == ["info", "--format", "{{json .SecurityOptions}}"]
+    assert not any(call[0] in {"build", "run"} for call in calls)
+    assert not any(call[:2] == ["network", "create"] for call in calls)
+
+
+async def test_rootless_executor_policy_allows_build_and_caches_probe(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    calls: list[list[str]] = []
+    run = _ok_run(calls)
+
+    async def rootless(args: list[str], **kwargs: Any) -> tuple[int, str]:
+        if args[0] == "info":
+            calls.append(args)
+            return 0, '["name=seccomp,profile=builtin","name=rootless"]'
+        return await run(args, **kwargs)
+
+    gate = _gate_with(
+        make_config(require_rootless_docker=True), rootless, tarball=tarball
+    )
+    async with gate._client:
+        first = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+        second = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert first.passed and second.passed
+    assert sum(call[0] == "info" for call in calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -828,6 +908,31 @@ async def test_build_and_health_failures_are_deterministic(
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
     assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
     assert "never healthy" in result.detail
+
+
+async def test_image_declared_volume_is_rejected_before_runtime(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    calls: list[list[str]] = []
+
+    async def declared_volume(
+        args: list[str], *, stdin: Any = None, **_: Any
+    ) -> tuple[int, str]:
+        calls.append(args)
+        if args[0] == "build" and stdin is not None:
+            stdin.read()
+            _write_iidfile(args)
+        if args[:3] == ["image", "inspect", "--format"]:
+            return 0, "declared"
+        return 0, ""
+
+    gate = _gate_with(make_config(), declared_volume, tarball=tarball)
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+    assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
+    assert "declares writable volumes" in result.detail
+    assert not any(call[0] == "run" for call in calls)
 
 
 async def test_expired_lease_budget_short_circuits_before_download(

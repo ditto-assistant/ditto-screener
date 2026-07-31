@@ -51,19 +51,25 @@ class ScreenerConfig:
     docker_bin: str
     """Path/name of the docker CLI the gate shells out to."""
 
+    docker_host: str | None
+    """Explicit operator-owned Docker endpoint (normally a rootless socket)."""
+
+    require_rootless_docker: bool
+    """Fail closed before a build unless Docker advertises rootless mode."""
+
     build_timeout_seconds: float
-    """Hard cap on a single ``docker build`` (crate compile is slow).
+    """Hard cap on a single ``docker build`` (cold dependency builds are slow).
 
     Defaults to 45 minutes. Keep this at or below the platform's screening lease
     window: the worker clamps a build to the remaining lease, so a cap larger
     than the lease can never be used in full, while a cap smaller than a
-    legitimate slow crate compile false-fails it as a build timeout."""
+    legitimate slow image build false-fails it as a build timeout."""
 
     run_timeout_seconds: float
     """Hard cap on the container serve, health, and optional private audit."""
 
     build_memory: str
-    """``docker run --memory`` limit for the serve-smoke container (e.g. ``2g``)."""
+    """Memory/swap cap for both image build and serve smoke (e.g. ``2g``)."""
 
     gh_token_file: str | None
     """Deprecated / retained for config compatibility only. It was the BuildKit
@@ -169,6 +175,18 @@ def _parse_int(name: str, default: str) -> int:
         raise ScreenerConfigError(f"{name} must be an integer, got {raw!r}") from e
 
 
+def _parse_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ScreenerConfigError(f"{name} must be a boolean, got {raw!r}")
+
+
 def _parse_env_pairs(name: str, default: str) -> tuple[tuple[str, str], ...]:
     """Parse ``K=V,K2=V2`` env-var pairs (for the smoke container's ``-e``)."""
     raw = os.environ.get(name, default)
@@ -215,6 +233,15 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         screener_mnemonic=os.environ.get("SCREENER_MNEMONIC") or None,
         netuid=_parse_int("NETUID", os.environ.get("NETUID", "118")),
         docker_bin=os.environ.get("SCREENER_DOCKER_BIN", "docker"),
+        docker_host=(
+            os.environ.get("SCREENER_DOCKER_HOST")
+            or os.environ.get("DOCKER_HOST")
+            or None
+        ),
+        # Additive rollout: deployments set this true only after their dedicated
+        # rootless daemon is present. A later release can remove the compatibility
+        # default once every pet and fleet worker has converged.
+        require_rootless_docker=_parse_bool("SCREENER_REQUIRE_ROOTLESS_DOCKER", False),
         build_timeout_seconds=_parse_float("SCREENER_BUILD_TIMEOUT_SECONDS", "2700"),
         run_timeout_seconds=_parse_float("SCREENER_RUN_TIMEOUT_SECONDS", "120"),
         build_memory=os.environ.get("SCREENER_BUILD_MEMORY", "2g"),

@@ -133,6 +133,7 @@ _DOCKER_INFRASTRUCTURE_MARKERS = (
     "cannot connect to the docker daemon",
     "error during connect",
     "docker daemon is not running",
+    "docker image inspect failed",
     "connection refused",
     "no space left on device",
     "out of memory",
@@ -431,6 +432,7 @@ class BuildGate:
         self._policy = policy
         self._journal = journal
         self._review_settings_key: tuple[int, str] | None = None
+        self._executor_verified = False
         self._configure_source_reviewer(config)
 
     def _configure_source_reviewer(self, config: ScreenerConfig) -> None:
@@ -542,15 +544,29 @@ class BuildGate:
             except Exception:  # noqa: BLE001 - telemetry cannot affect screening
                 logger.warning("screener progress callback failed; screening continues")
 
-        tag = f"ditto-screen/{agent_id}:latest"
-        container = f"ditto-screen-{agent_id}"
-        gateway_container = f"ditto-gateway-{agent_id}"
-        network = f"ditto-screen-{agent_id}"
+        # Attempt identity, not only agent identity, prevents stale resources
+        # from a crashed/reissued ticket from colliding with its replacement.
+        execution_id = f"{agent_id}-{attempt_id}"
+        tag = f"ditto-screen/{execution_id}:latest"
+        container = f"ditto-screen-{execution_id}"
+        gateway_container = f"ditto-gateway-{execution_id}"
+        network = f"ditto-screen-{execution_id}"
         gateway_state_dir = tempfile.mkdtemp(prefix="ditto-gateway-state-")
-        os.chmod(gateway_state_dir, 0o755)
+        # A rootless daemon runs as a separate host identity. Let only the
+        # trusted gateway create its opaque counter file; the worker retains
+        # ownership/read access and removes the random directory at teardown.
+        os.chmod(gateway_state_dir, 0o733)
         tmp_path: str | None = None
         review_task: asyncio.Task[SourceReviewObservation] | None = None
         try:
+            executor_error = await self._verify_executor()
+            if executor_error is not None:
+                return core_decision(
+                    ScreeningOutcome.RETRYABLE_INFRA,
+                    code="executor-isolation-unavailable",
+                    summary="screener executor isolation is unavailable",
+                    detail=f"screener error: {executor_error}",
+                )
             report("downloading")
             if (exhausted := self._lease_exhausted(deadline, "download")) is not None:
                 return exhausted
@@ -1172,13 +1188,23 @@ class BuildGate:
                         "recreate the archive from readable regular files",
                     )
                 try:
-                    dockerfile_file.read().decode("utf-8")
+                    dockerfile_text = dockerfile_file.read().decode("utf-8")
                 except UnicodeDecodeError:
                     return _contract_diagnostic(
                         "SCR-CONTRACT-003",
                         "Dockerfile is not valid UTF-8 text",
                         "commit a readable UTF-8 Dockerfile that builds the harness",
                     )
+                for instruction, remainder in _dockerfile_instructions(dockerfile_text):
+                    lowered = remainder.casefold()
+                    if instruction == "RUN" and (
+                        "--security=insecure" in lowered or "--network=host" in lowered
+                    ):
+                        return _contract_diagnostic(
+                            "SCR-CONTRACT-004",
+                            "Dockerfile requests an insecure build entitlement",
+                            "remove RUN --security=insecure and RUN --network=host",
+                        )
                 # Image/source binding is a text heuristic, so it is applied as
                 # advisory quarantine evidence after policy evaluation (see
                 # _image_binding_advisory), never as a contract rejection.
@@ -1216,8 +1242,33 @@ class BuildGate:
                     paths.append(name)
         return digest.hexdigest(), tuple(paths)
 
+    async def _verify_executor(self) -> str | None:
+        """Fail closed when deployment policy requires a rootless daemon."""
+        if not self._config.require_rootless_docker or self._executor_verified:
+            return None
+        code, output = await self._run(
+            ["info", "--format", "{{json .SecurityOptions}}"], timeout=15.0
+        )
+        if code != 0:
+            return f"could not inspect Docker security options: {_log_tail(output)}"
+        try:
+            options = json.loads(output)
+        except json.JSONDecodeError:
+            return "Docker returned invalid security options"
+        if not isinstance(options, list) or not any(
+            isinstance(option, str) and "rootless" in option.casefold()
+            for option in options
+        ):
+            return "Docker endpoint is not rootless"
+        self._executor_verified = True
+        return None
+
     async def _build(
-        self, tar_path: str, tag: str, *, timeout: float | None = None
+        self,
+        tar_path: str,
+        tag: str,
+        *,
+        timeout: float | None = None,
     ) -> tuple[bool, str, str | None]:
         """``docker build`` from the tarball-on-stdin; returns (ok, log_tail).
 
@@ -1227,7 +1278,35 @@ class BuildGate:
         fd, iid_path = tempfile.mkstemp(prefix="ditto-screen-iid-")
         os.close(fd)
         os.unlink(iid_path)
-        args = ["build", "--iidfile", iid_path, "-t", tag, "-f", "Dockerfile"]
+        args = [
+            "build",
+            "--iidfile",
+            iid_path,
+            "--network",
+            # BuildKit accepts only default, none, and host here. The default
+            # sandbox keeps dependency downloads working; the dedicated
+            # rootless daemon and host egress guard provide the trust boundary.
+            "default",
+            "--pull=false",
+            "--provenance=false",
+            "--sbom=false",
+            "--memory",
+            self._config.build_memory,
+            "--memory-swap",
+            self._config.build_memory,
+            "--cpu-period",
+            "100000",
+            "--cpu-quota",
+            "200000",
+            "--shm-size",
+            "64m",
+            "--ulimit",
+            "nofile=1024:1024",
+            "-t",
+            tag,
+            "-f",
+            "Dockerfile",
+        ]
         env = dict(os.environ)
         env["DOCKER_BUILDKIT"] = "1"
         # No build-time credential is mounted. The build context (a
@@ -1254,6 +1333,31 @@ class BuildGate:
                     return False, f"Docker did not write iidfile: {error}", None
                 if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
                     return False, "Docker wrote an invalid image id", None
+                inspect_code, volumes = await self._run(
+                    [
+                        "image",
+                        "inspect",
+                        "--format",
+                        "{{if .Config.Volumes}}declared{{end}}",
+                        image_id,
+                    ],
+                    timeout=min(timeout, 30.0),
+                )
+                if inspect_code != 0:
+                    return (
+                        False,
+                        f"docker image inspect failed: {_log_tail(volumes)}",
+                        None,
+                    )
+                if volumes.strip() == "declared":
+                    return (
+                        False,
+                        "image declares writable volumes; harness images must use "
+                        "only the validator-owned bounded /tmp tmpfs",
+                        None,
+                    )
+                if volumes.strip():
+                    return False, "docker image inspect returned invalid output", None
                 return True, "", image_id
         finally:
             with contextlib.suppress(OSError):
@@ -1313,6 +1417,8 @@ class BuildGate:
             "--user",
             _VALIDATOR_SANDBOX_USER,
             "--read-only",
+            "--ipc",
+            "none",
             "--tmpfs",
             _VALIDATOR_SANDBOX_TMPFS,
             "--network",
@@ -1331,6 +1437,12 @@ class BuildGate:
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            "--log-driver",
+            "local",
+            "--log-opt",
+            "max-size=8m",
+            "--log-opt",
+            "max-file=1",
         ]
         for key, value in self._config.smoke_env:
             if key == "DITTOBENCH_DB":
@@ -1420,16 +1532,26 @@ class BuildGate:
                 "--name",
                 gateway_container,
                 "--user",
-                f"{os.getuid()}:{os.getgid()}",
+                # Root only inside the rootless daemon's user namespace; on the
+                # host this maps to the empty ditto-builder identity.
+                "0:0",
                 "--network",
                 network,
                 "--network-alias",
                 _GATEWAY_ALIAS,
                 "--read-only",
+                "--ipc",
+                "none",
                 "--cap-drop",
                 "ALL",
                 "--security-opt",
                 "no-new-privileges",
+                "--log-driver",
+                "local",
+                "--log-opt",
+                "max-size=2m",
+                "--log-opt",
+                "max-file=1",
                 "--memory",
                 "64m",
                 "--pids-limit",
@@ -1708,13 +1830,16 @@ sys.stdout.buffer.write(output)
         stdout+stderr are merged. On timeout the process is killed and a
         non-zero code with a ``[timeout]`` marker is returned.
         """
+        process_env = dict(os.environ) if env is None else dict(env)
+        if self._config.docker_host is not None:
+            process_env["DOCKER_HOST"] = self._config.docker_host
         proc = await asyncio.create_subprocess_exec(
             self._config.docker_bin,
             *args,
             stdin=stdin,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=env,
+            env=process_env,
         )
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)

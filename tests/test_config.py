@@ -35,6 +35,8 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.api_token == "test-screener-token-at-least-32-characters"
     assert cfg.netuid == 118
     assert cfg.docker_bin == "docker"
+    assert cfg.docker_host is None
+    assert not cfg.require_rootless_docker
     assert cfg.container_port == 8080
     assert cfg.gh_token_file is None
     # Must default to (at least) the platform's 20 MiB upload cap, else the gate
@@ -93,6 +95,15 @@ def test_smoke_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCREENER_SMOKE_ENV", "OPENROUTER_API_KEY=k, FOO=bar")
     cfg = parse_screener_config_from_env()
     assert cfg.smoke_env == (("OPENROUTER_API_KEY", "k"), ("FOO", "bar"))
+
+
+def test_rootless_executor_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    _base_env(monkeypatch)
+    monkeypatch.setenv("SCREENER_DOCKER_HOST", "unix:///run/user/1001/docker.sock")
+    monkeypatch.setenv("SCREENER_REQUIRE_ROOTLESS_DOCKER", "true")
+    cfg = parse_screener_config_from_env()
+    assert cfg.docker_host == "unix:///run/user/1001/docker.sock"
+    assert cfg.require_rootless_docker
 
 
 def test_smoke_env_bad_pair_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

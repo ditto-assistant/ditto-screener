@@ -25,8 +25,17 @@ manifest never calls `POST /run`. It never reads or writes the platform database
 
 The health smoke mirrors the validator runtime contract: UID/GID 65532, a
 read-only root filesystem, a bounded noexec `/tmp` tmpfs, dropped capabilities,
-and a locked `DITTOBENCH_DB=/tmp/dittobench.db`. An image is never exported if
+private IPC, bounded local logs, and a locked
+`DITTOBENCH_DB=/tmp/dittobench.db`. Images declaring implicit writable volumes
+are rejected. An image is never exported if
 it only boots as root or depends on writing elsewhere in its root filesystem.
+
+Production builds use a dedicated rootless Docker daemon. The worker verifies
+Docker's advertised `rootless` security option before accepting work when
+`SCREENER_REQUIRE_ROOTLESS_DOCKER=1`; a missing or rootful endpoint becomes a
+retryable infrastructure result, never a miner failure. The build receives no
+credentials, cannot request host networking or insecure BuildKit entitlements,
+and non-root host traffic is denied access to cloud metadata except DNS.
 
 On a pass, the worker exports the exact verified image with `docker image save`,
 hashes the archive, and uploads it sequentially in bounded multipart chunks.
