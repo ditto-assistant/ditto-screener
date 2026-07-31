@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.0 (2026-07-31)
+
+### Features
+
+- Isolate untrusted screener execution
+  ([#82](https://github.com/ditto-assistant/ditto-screener/pull/82),
+  [`fe8f031`](https://github.com/ditto-assistant/ditto-screener/commit/fe8f03169ef9f74df6cde0eafbc5688d9da6351c))
+
+
 ## v0.19.0 (2026-07-31)
 
 ### Bug Fixes
