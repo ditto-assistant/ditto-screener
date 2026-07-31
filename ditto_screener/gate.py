@@ -369,6 +369,27 @@ def _gateway_call_count(path: str) -> int:
     return data.count(b"1\n")
 
 
+def _prepare_gateway_state() -> tuple[str, str]:
+    """Create a host-readable, rootless-gateway-writable call counter.
+
+    Root in a rootless Docker user namespace maps to a different host uid.  The
+    worker therefore owns the pre-created file and grants that mapped uid only
+    append access.  The containing directory is searchable but not writable, so
+    the gateway cannot replace the counter with a file the worker cannot read.
+    """
+    state_dir = tempfile.mkdtemp(prefix="ditto-gateway-state-")
+    state_file = str(Path(state_dir) / "model-called")
+    try:
+        os.chmod(state_dir, 0o711)
+        fd = os.open(state_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        os.chmod(state_file, 0o622)
+    except Exception:
+        shutil.rmtree(state_dir, ignore_errors=True)
+        raise
+    return state_dir, state_file
+
+
 def _contains_string(value: object, needle: str) -> bool:
     """Whether a JSON value contains the exact ephemeral gateway token."""
     if isinstance(value, str):
@@ -557,11 +578,7 @@ class BuildGate:
         container = f"ditto-screen-{execution_id}"
         gateway_container = f"ditto-gateway-{execution_id}"
         network = f"ditto-screen-{execution_id}"
-        gateway_state_dir = tempfile.mkdtemp(prefix="ditto-gateway-state-")
-        # A rootless daemon runs as a separate host identity. Let only the
-        # trusted gateway create its opaque counter file; the worker retains
-        # ownership/read access and removes the random directory at teardown.
-        os.chmod(gateway_state_dir, 0o733)
+        gateway_state_dir, _ = _prepare_gateway_state()
         tmp_path: str | None = None
         review_task: asyncio.Task[SourceReviewObservation] | None = None
         try:

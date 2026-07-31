@@ -87,7 +87,6 @@ class FakeModelGateway:
             path = Path(self._state_file)
             fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
             try:
-                os.fchmod(fd, 0o600)
                 os.write(fd, b"1\n")
             finally:
                 os.close(fd)
