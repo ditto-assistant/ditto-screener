@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.4 (2026-07-31)
+
+### Bug Fixes
+
+- Disable compression for single-file Docker logs
+  ([#89](https://github.com/ditto-assistant/ditto-screener/pull/89),
+  [`01e9b3e`](https://github.com/ditto-assistant/ditto-screener/commit/01e9b3e918b581875bf8e739d20ed8b8fc4ae578))
+
+
 ## v0.20.3 (2026-07-31)
 
 ### Bug Fixes
