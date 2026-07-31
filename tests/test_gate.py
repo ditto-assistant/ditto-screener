@@ -7,6 +7,7 @@ import hashlib
 import io
 import logging
 import os
+import shutil
 import tarfile
 import tempfile
 from collections.abc import Callable
@@ -24,7 +25,9 @@ from ditto_screener.gate import (
     BuildGate,
     _detail_tail,
     _format_stage_timings,
+    _gateway_call_count,
     _log_tail,
+    _prepare_gateway_state,
     _ScreenedImageExportError,
     _ScreenedImageTooLargeError,
     dockerfile_at_root,
@@ -43,6 +46,18 @@ from ditto_screener.policy import (
 _AGENT = UUID("550e8400-e29b-41d4-a716-446655440000")
 _ATTEMPT = UUID("7c5df3f9-3ea7-47ba-92d1-1bbcf4c5f300")
 _MINER = "5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm"
+
+
+def test_gateway_state_is_owned_by_worker_and_appendable_by_rootless_uid() -> None:
+    state_dir, state_file = _prepare_gateway_state()
+    try:
+        assert Path(state_dir).stat().st_mode & 0o7777 == 0o711
+        assert Path(state_file).stat().st_mode & 0o777 == 0o622
+        assert _gateway_call_count(state_file) == 0
+    finally:
+        shutil.rmtree(state_dir)
+
+
 _URL = "https://storage.test/agent.tar.gz"
 
 

@@ -40,6 +40,26 @@ async def test_chat_completion_is_counted_and_returns_offline_response(
         assert not state.stat().st_mode & 0o077
 
 
+async def test_existing_rootless_state_file_keeps_cross_uid_write_mode(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "calls"
+    state.touch(mode=0o600)
+    state.chmod(0o622)
+
+    async with FakeModelGateway(state_file=str(state)) as gateway:
+        local_url = gateway.gateway_url.replace("host.docker.internal", "127.0.0.1")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{local_url}/v1/chat/completions",
+                json={"model": "acme/reasoner-v3", "messages": []},
+            )
+
+    assert response.status_code == 200
+    assert state.read_text() == "1\n"
+    assert state.stat().st_mode & 0o777 == 0o622
+
+
 async def test_no_screening_fingerprints_leak_in_any_response() -> None:
     """No ``ditto``/``fake``/``screening``/locked-model tell reaches the container."""
     async with FakeModelGateway() as gateway:
