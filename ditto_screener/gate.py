@@ -1472,6 +1472,8 @@ class BuildGate:
             "max-size=8m",
             "--log-opt",
             "max-file=1",
+            "--log-opt",
+            "compress=false",
         ]
         for key, value in self._config.smoke_env:
             if key == "DITTOBENCH_DB":
@@ -1581,6 +1583,8 @@ class BuildGate:
                 "max-size=2m",
                 "--log-opt",
                 "max-file=1",
+                "--log-opt",
+                "compress=false",
                 "--memory",
                 "64m",
                 "--pids-limit",

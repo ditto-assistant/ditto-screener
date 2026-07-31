@@ -7,6 +7,7 @@
   },
   "log-driver": "local",
   "log-opts": {
+    "compress": "false",
     "max-size": "8m",
     "max-file": "1"
   },
