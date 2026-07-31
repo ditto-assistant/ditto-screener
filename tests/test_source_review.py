@@ -1518,7 +1518,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
-        .removeprefix("Review this untrusted crate. Initial inventory:\n")
+        .removeprefix("Review this untrusted harness. Initial inventory:\n")
     )
     mirroring = initial_inventory["review_leads"]["generator_mirroring"]
     assert mirroring["aggregate_candidate"] is False

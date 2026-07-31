@@ -253,13 +253,13 @@ def test_image_binding_flags_prebuilt_entrypoint_without_build() -> None:
     )
     advisory = image_binding_advisory(prebuilt)
     assert advisory is not None
-    # Advisory wording, not a rustc-style rejection: the heuristic routes to
+    # Advisory wording, not a contract rejection: the heuristic routes to
     # operator review because text matching cannot prove provenance.
     assert "error[" not in advisory
     assert "may not be the reviewed source" in advisory
 
 
-def test_image_binding_allows_multistage_cargo_build() -> None:
+def test_image_binding_allows_multistage_compiled_build() -> None:
     multistage = (
         "FROM rust:1.79 AS builder\n"
         "COPY . .\n"
@@ -269,6 +269,11 @@ def test_image_binding_allows_multistage_cargo_build() -> None:
         'ENTRYPOINT ["/agent"]\n'
     )
     assert image_binding_advisory(multistage) is None
+
+
+def test_image_binding_allows_interpreted_source_without_compile_step() -> None:
+    python = 'FROM python:3.12-alpine\nCOPY app.py /app.py\nCMD ["python", "/app.py"]\n'
+    assert image_binding_advisory(python) is None
 
 
 def test_image_binding_ignores_scratch_and_continuations() -> None:
@@ -614,24 +619,85 @@ async def test_sha_mismatch_is_deterministic_and_cleans_temp_file(
     assert not artifact_path.exists()
 
 
-async def test_rust_contract_failure_is_terminal_reject(
+async def test_container_contract_failure_is_terminal_reject(
     make_config: Callable[..., ScreenerConfig],
 ) -> None:
-    tarball = _make_tar({"Dockerfile": b"FROM scratch\n", "solver.py": b"pass\n"})
+    tarball = _make_tar({"solver.py": b"pass\n"})
     calls: list[list[str]] = []
     gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
     async with gate._client:
         result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
     assert result.outcome == ScreeningOutcome.DETERMINISTIC_REJECT
     assert result.detail.startswith(
-        "error[SCR-RUST-006]: Cargo.toml is missing from the archive root"
+        "error[SCR-CONTRACT-001]: Dockerfile is missing from the archive root"
     )
     assert "help:" in result.detail
     assert not any(call[0] == "build" for call in calls)
 
 
+@pytest.mark.parametrize(
+    "files",
+    [
+        {
+            "Dockerfile": (
+                b"FROM python:3.12-alpine\nCOPY app.py /app.py\n"
+                b'CMD ["python","/app.py"]\n'
+            ),
+            "app.py": b"print('python harness')\n",
+            "requirements.txt": b"\n",
+        },
+        {
+            "Dockerfile": (
+                b'FROM node:22-alpine\nCOPY . /app\nCMD ["node","/app/server.js"]\n'
+            ),
+            "package.json": b'{"scripts":{"start":"node server.js"}}\n',
+            "server.ts": b"console.log('typescript harness')\n",
+            "server.js": b"console.log('javascript runtime')\n",
+        },
+        {
+            "Dockerfile": (
+                b"FROM golang:1.24-alpine\nCOPY . /src\n"
+                b"RUN cd /src && go build -o /agent .\n"
+                b'CMD ["/agent"]\n'
+            ),
+            "go.mod": b"module example/harness\n\ngo 1.24\n",
+            "main.go": b"package main\nfunc main() {}\n",
+        },
+        {
+            "Dockerfile": (
+                b"FROM rust:1.88-alpine\nCOPY . /src\n"
+                b"RUN cd /src && cargo build --release\n"
+                b'CMD ["/src/target/release/agent"]\n'
+            ),
+            "Cargo.toml": b'[package]\nname="agent"\nversion="0.1.0"\n',
+            "src/main.rs": b"fn main() {}\n",
+        },
+        {
+            "Dockerfile": (
+                b"FROM eclipse-temurin:21-jre\nCOPY agent.jar /agent.jar\n"
+                b'CMD ["java","-jar","/agent.jar"]\n'
+            ),
+            "agent.jar": b"opaque fixture",
+        },
+    ],
+    ids=["python", "typescript", "go", "rust", "other-language"],
+)
+async def test_container_contract_is_language_neutral(
+    make_config: Callable[..., ScreenerConfig], files: dict[str, bytes]
+) -> None:
+    tarball = _make_tar(files)
+    calls: list[list[str]] = []
+    gate = _gate_with(make_config(), _ok_run(calls), tarball=tarball)
+
+    async with gate._client:
+        result = await _screen(gate, hashlib.sha256(tarball).hexdigest())
+
+    assert result.outcome == ScreeningOutcome.PASS
+    assert any(call[0] == "build" for call in calls)
+
+
 @pytest.mark.parametrize("alias", ["src/./main.rs", "src//main.rs"])
-async def test_rust_contract_rejects_noncanonical_member_alias(
+async def test_container_contract_rejects_noncanonical_member_alias(
     make_config: Callable[..., ScreenerConfig], alias: str
 ) -> None:
     tarball = _valid_tar(**{alias: b"fn replacement() {}\n"})
@@ -646,7 +712,7 @@ async def test_rust_contract_rejects_noncanonical_member_alias(
     assert not any(call[0] == "build" for call in calls)
 
 
-async def test_rust_contract_rejects_member_flood_before_build(
+async def test_container_contract_rejects_member_flood_before_build(
     make_config: Callable[..., ScreenerConfig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("ditto_screener.gate._MAX_ARCHIVE_MEMBERS", 3)

@@ -8,9 +8,9 @@ Flow for one agent:
 1. **Download + verify.** Stream the presigned tarball to a temp file, bounded by
    ``max_tarball_bytes``, and re-check its SHA-256 against the queue value (the
    URL is presigned but the bytes are still attacker-controlled).
-2. **Contract check.** Reject unsafe archive entries and require a root Rust
-   crate before any build is attempted. The crate may use, fork, or replace
-   ``ditto-harness``.
+2. **Contract check.** Reject unsafe archive entries and require a root
+   ``Dockerfile`` before any build is attempted. The implementation language is
+   deliberately unconstrained; the image must satisfy the HTTP harness contract.
 3. **Build.** ``docker build`` reads the *tarball itself* as the build context on
    stdin: Docker unpacks it inside its own build sandbox, so the screener never
    re-implements safe tar extraction. BuildKit is used with an optional
@@ -34,9 +34,9 @@ Every stage is best-effort and never raises into the worker loop: an
 infrastructure error (Docker down) is reported as a non-pass with detail, so a
 flaky host does not silently promote or wrongly reject.
 
-Trust posture: the build runs on the host Docker daemon, same as dittobench's;
-wall-time is bounded by the timeout. Deeper isolation (rootless/gVisor) and an
-egress allowlist are out of scope for this gate.
+Trust posture: the Docker endpoint is operator-owned and may be required to be
+rootless by deployment policy. Build and runtime wall-time and resources are
+bounded; no submission-controlled credential is mounted into either boundary.
 """
 
 from __future__ import annotations
@@ -55,7 +55,6 @@ import shutil
 import signal
 import tarfile
 import tempfile
-import tomllib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -248,14 +247,9 @@ def dockerfile_at_root(member_names: list[str]) -> bool:
     return any(name in ("Dockerfile", "./Dockerfile") for name in member_names)
 
 
-def _rust_diagnostic(code: str, message: str, help_text: str) -> str:
-    """Return a rustc-style contract diagnostic without source excerpts."""
+def _contract_diagnostic(code: str, message: str, help_text: str) -> str:
+    """Return a stable contract diagnostic without source excerpts."""
     return f"error[{code}]: {message}\n\nhelp: {help_text}"
-
-
-# Rust/native build indicators. If none appear, the image cannot be compiling
-# the committed crate, so whatever it runs is not the reviewed source.
-_BUILD_STEP_RE = re.compile(r"\b(cargo|rustc|make|cmake)\b", re.IGNORECASE)
 
 
 def _dockerfile_instructions(text: str) -> list[tuple[str, str]]:
@@ -287,32 +281,44 @@ def _dockerfile_instructions(text: str) -> list[tuple[str, str]]:
 
 
 def image_binding_advisory(dockerfile_text: str) -> str | None:
-    """Flag a Dockerfile that LOOKS like it ships a prebuilt binary.
+    """Flag an entrypoint image with no visible build-context provenance.
 
     This is a bounded static text heuristic, so it is ADVISORY ONLY and routes
     to operator-reviewed quarantine, never to a deterministic rejection: a
-    legitimate wrapper (``RUN ./build.sh`` that calls cargo) would otherwise
-    be falsely rejected, while ``RUN echo cargo`` would falsely pass — text
-    matching can neither prove nor disprove provenance. Fully binding
-    provenance needs the build to emit, and the gate to verify, a hash of the
-    entrypoint's origin against the reviewed crate.
+    legitimate image can construct its runtime in a helper or package-manager
+    step that a text parser cannot understand. Conversely, merely naming a
+    compiler proves nothing. The language-neutral signal is whether the image
+    declares a runnable entrypoint but never copies any reviewed build-context
+    bytes into any stage.
     """
-    has_build_step = False
     has_context_copy = False
-    has_entrypoint = False
+    has_build_step = False
+    entrypoints: list[str] = []
     for keyword, rest in _dockerfile_instructions(dockerfile_text):
-        if keyword == "RUN" and _BUILD_STEP_RE.search(rest):
-            has_build_step = True
-        elif keyword in {"COPY", "ADD"} and "--from=" not in rest.casefold():
+        if keyword in {"COPY", "ADD"} and "--from=" not in rest.casefold():
             has_context_copy = True
+        elif keyword == "RUN":
+            has_build_step = True
         elif keyword in {"ENTRYPOINT", "CMD"}:
-            has_entrypoint = True
-    if has_entrypoint and has_context_copy and not has_build_step:
+            entrypoints.append(rest)
+    if entrypoints and not has_context_copy:
         return (
-            "Dockerfile copies build-context files and sets an entrypoint "
-            "without a recognizable crate build step; the running image may "
-            "not be the reviewed source"
+            "Dockerfile sets an entrypoint without copying reviewed build-context "
+            "files; the running image may not be the reviewed source"
         )
+    if entrypoints and has_context_copy and not has_build_step:
+        joined = " ".join(entrypoints).casefold()
+        transparent_runtime = re.search(
+            r"\b(?:python\d*|node|deno|bun|ruby|php|java|dotnet|elixir|erl|lua|"
+            r"swift|bash|sh|npm|pnpm|yarn)\b|"
+            r"\.(?:py|js|mjs|cjs|ts|tsx|rb|php|jar|war|dll|exs?|erl|lua|sh)\b",
+            joined,
+        )
+        if transparent_runtime is None:
+            return (
+                "Dockerfile copies an opaque entrypoint without a visible build "
+                "step; the running image may not be the reviewed source"
+            )
     return None
 
 
@@ -322,7 +328,7 @@ def _with_image_binding_advisory(
     """Escalate a passing decision to operator review on a provenance warning.
 
     The heuristic is text matching, so it can neither prove nor disprove that
-    the image runs the reviewed crate. It therefore never rejects: a PASS
+    the image runs the reviewed source. It therefore never rejects: a PASS
     becomes an operator-reviewed QUARANTINE and an existing QUARANTINE gains
     the evidence item; terminal rejections and retryable failures are
     untouched.
@@ -575,8 +581,8 @@ class BuildGate:
             if contract_error is not None:
                 return core_decision(
                     ScreeningOutcome.DETERMINISTIC_REJECT,
-                    code="rust-harness-contract",
-                    summary="artifact does not satisfy the Rust harness contract",
+                    code="container-harness-contract",
+                    summary="artifact does not satisfy the container harness contract",
                     detail=contract_error,
                 )
             source_digest, source_paths = self._source_metadata(tmp_path)
@@ -1095,17 +1101,17 @@ class BuildGate:
         return None
 
     def _contract_error(self, tar_path: str) -> str | None:
-        """Validate the archive and Rust harness contract without extracting it."""
+        """Validate the archive and container contract without extracting it."""
         try:
             with tarfile.open(tar_path, mode="r:gz") as tar:
                 members: dict[str, tarfile.TarInfo] = {}
                 unpacked = 0
                 for member_count, member in enumerate(tar, start=1):
                     if member_count > _MAX_ARCHIVE_MEMBERS:
-                        return _rust_diagnostic(
-                            "SCR-RUST-013",
+                        return _contract_diagnostic(
+                            "SCR-ARCHIVE-005",
                             "archive contains too many members",
-                            "remove generated directories and package only the crate",
+                            "remove generated directories and package only the harness",
                         )
                     name = member.name.removeprefix("./")
                     if not name and member.isdir():
@@ -1118,104 +1124,69 @@ class BuildGate:
                         or (path.parts and path.parts[0].endswith(":"))
                         or ".." in path.parts
                     ):
-                        return _rust_diagnostic(
-                            "SCR-RUST-001",
+                        return _contract_diagnostic(
+                            "SCR-ARCHIVE-001",
                             "archive contains an unsafe path",
                             "remove absolute paths, parent traversals, backslashes, "
                             "and drive-prefixed entries",
                         )
                     if str(path) != name:
-                        return _rust_diagnostic(
-                            "SCR-RUST-001",
+                        return _contract_diagnostic(
+                            "SCR-ARCHIVE-001",
                             "archive contains a non-canonical path",
                             "remove redundant path separators and dot components",
                         )
                     if name in members:
-                        return _rust_diagnostic(
-                            "SCR-RUST-002",
+                        return _contract_diagnostic(
+                            "SCR-ARCHIVE-002",
                             "archive contains a duplicate path",
                             "package each path exactly once",
                         )
                     if not (member.isfile() or member.isdir()):
-                        return _rust_diagnostic(
-                            "SCR-RUST-003",
+                        return _contract_diagnostic(
+                            "SCR-ARCHIVE-003",
                             "archive contains a link or special file",
                             "package only regular files and directories",
                         )
                     unpacked += member.size
                     if unpacked > _MAX_UNPACKED_BYTES:
-                        return _rust_diagnostic(
-                            "SCR-RUST-004",
+                        return _contract_diagnostic(
+                            "SCR-ARCHIVE-004",
                             "archive expands beyond the safety limit",
                             "remove generated assets and build output before packaging",
                         )
                     members[name] = member
 
                 if "Dockerfile" not in members or not members["Dockerfile"].isfile():
-                    return _rust_diagnostic(
-                        "SCR-RUST-005",
+                    return _contract_diagnostic(
+                        "SCR-CONTRACT-001",
                         "Dockerfile is missing from the archive root",
-                        "package the crate contents so Dockerfile is at the top level",
+                        "package the harness contents so Dockerfile is at the "
+                        "top level",
                     )
-                manifest_member = members.get("Cargo.toml")
-                if manifest_member is None or not manifest_member.isfile():
-                    return _rust_diagnostic(
-                        "SCR-RUST-006",
-                        "Cargo.toml is missing from the archive root",
-                        "package the crate contents, not the directory containing "
-                        "the crate",
-                    )
-                if not any(
-                    name.startswith("src/") and name.endswith(".rs") and member.isfile()
-                    for name, member in members.items()
-                ):
-                    return _rust_diagnostic(
-                        "SCR-RUST-007",
-                        "no Rust source file was found under src/",
-                        "include at least one .rs source file below src/",
-                    )
-
-                manifest_file = tar.extractfile(manifest_member)
-                if manifest_file is None:
-                    return _rust_diagnostic(
-                        "SCR-RUST-008",
-                        "Cargo.toml could not be read",
-                        "recreate the archive from a readable UTF-8 crate manifest",
+                dockerfile_file = tar.extractfile(members["Dockerfile"])
+                if dockerfile_file is None:
+                    return _contract_diagnostic(
+                        "SCR-CONTRACT-002",
+                        "Dockerfile could not be read",
+                        "recreate the archive from readable regular files",
                     )
                 try:
-                    manifest = tomllib.loads(manifest_file.read().decode("utf-8"))
-                except (UnicodeDecodeError, tomllib.TOMLDecodeError):
-                    return _rust_diagnostic(
-                        "SCR-RUST-009",
-                        "Cargo.toml is not valid UTF-8 TOML",
-                        "run cargo metadata locally and fix the first manifest error",
+                    dockerfile_file.read().decode("utf-8")
+                except UnicodeDecodeError:
+                    return _contract_diagnostic(
+                        "SCR-CONTRACT-003",
+                        "Dockerfile is not valid UTF-8 text",
+                        "commit a readable UTF-8 Dockerfile that builds the harness",
                     )
-                if not isinstance(manifest.get("package"), dict):
-                    return _rust_diagnostic(
-                        "SCR-RUST-010",
-                        "Cargo.toml has no [package] table",
-                        "submit a runnable Rust package rather than a virtual "
-                        "workspace",
-                    )
-
-                dockerfile_file = tar.extractfile(members["Dockerfile"])
-                if dockerfile_file is not None:
-                    try:
-                        dockerfile_file.read().decode("utf-8")
-                    except UnicodeDecodeError:
-                        return _rust_diagnostic(
-                            "SCR-RUST-012",
-                            "Dockerfile is not valid UTF-8 text",
-                            "commit a readable UTF-8 Dockerfile that builds the crate",
-                        )
-                # Image/crate binding is a text heuristic, so it is applied as
+                # Image/source binding is a text heuristic, so it is applied as
                 # advisory quarantine evidence after policy evaluation (see
                 # _image_binding_advisory), never as a contract rejection.
                 return None
         except (tarfile.TarError, OSError) as e:
             logger.warning("could not read tar %s: %s", tar_path, e)
-            return _rust_diagnostic(
-                "SCR-RUST-011",
+            return _contract_diagnostic(
+                "SCR-ARCHIVE-006",
                 "archive is not a readable gzip-compressed tar",
                 "recreate it as a .tar.gz archive and retry",
             )
