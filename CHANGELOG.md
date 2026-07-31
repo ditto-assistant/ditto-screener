@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.20.8 (2026-07-31)
+
+### Bug Fixes
+
+- Report rootless Docker health ([#94](https://github.com/ditto-assistant/ditto-screener/pull/94),
+  [`37a289a`](https://github.com/ditto-assistant/ditto-screener/commit/37a289a648e063b8c947a2b085b8536fdafbf10e))
+
+
 ## v0.20.7 (2026-07-31)
 
 ### Bug Fixes
