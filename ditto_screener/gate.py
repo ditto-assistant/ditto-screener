@@ -1339,11 +1339,29 @@ class BuildGate:
                 )
             if code == 0:
                 try:
-                    image_id = Path(iid_path).read_text().strip()
+                    build_result_id = Path(iid_path).read_text().strip()
                 except OSError as error:
                     return False, f"Docker did not write iidfile: {error}", None
-                if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", build_result_id):
                     return False, "Docker wrote an invalid image id", None
+                # Buildx's iidfile identifies the immutable build result, but
+                # that digest is not guaranteed to be an image ID accepted by
+                # the local daemon even when ``--load`` succeeds. Resolve the
+                # daemon-owned ID from this attempt's unique tag, then pin all
+                # runtime and export operations to that immutable local ID.
+                inspect_code, image_id = await self._run(
+                    ["image", "inspect", "--format", "{{.Id}}", tag],
+                    timeout=min(timeout, 30.0),
+                )
+                image_id = image_id.strip()
+                if inspect_code != 0:
+                    return (
+                        False,
+                        f"docker image inspect failed: {_log_tail(image_id)}",
+                        None,
+                    )
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                    return False, "docker image inspect returned invalid image id", None
                 inspect_code, volumes = await self._run(
                     [
                         "image",

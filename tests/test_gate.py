@@ -94,6 +94,8 @@ def _ok_run(calls: list[list[str]] | None = None) -> Callable[..., Any]:
         if args[0] == "build" and stdin is not None:
             stdin.read()
             _write_iidfile(args)
+        if args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            return 0, "sha256:" + "34" * 32
         return 0, ""
 
     return run
@@ -221,6 +223,8 @@ async def test_publish_failure_demotes_pass_with_dedicated_reason(
             if stdin is not None:
                 stdin.read()
             _write_iidfile(args)
+        elif args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            return 0, "sha256:" + "34" * 32
         elif args[:3] == ["image", "inspect", "--format"]:
             if "Config.Volumes" in args[3]:
                 return 0, ""
@@ -462,6 +466,8 @@ async def test_source_review_overlaps_the_build(
             events.append("build_finished")
             review_may_finish.set()
             _write_iidfile(args)
+        if args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            return 0, "sha256:" + "34" * 32
         return 0, ""
 
     tarball = _valid_tar()
@@ -623,7 +629,7 @@ async def test_unloaded_buildx_result_is_retryable_infrastructure(
             stdin.read()
             _write_iidfile(args)
             return 0, "build completed"
-        if args[:3] == ["image", "inspect", "--format"]:
+        if args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
             return 1, "Error response from daemon: No such image"
         return 0, ""
 
@@ -636,6 +642,42 @@ async def test_unloaded_buildx_result_is_retryable_infrastructure(
     assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
     assert result.evidence[-1].code == "docker-build-infrastructure"
     assert "No such image" in result.detail
+
+
+async def test_build_uses_daemon_image_id_resolved_from_unique_tag(
+    make_config: Callable[..., ScreenerConfig],
+    tmp_path: Path,
+) -> None:
+    tarball = _valid_tar()
+    tar_path = tmp_path / "agent.tar.gz"
+    tar_path.write_bytes(tarball)
+    calls: list[list[str]] = []
+    build_result_id = "sha256:" + "12" * 32
+    daemon_image_id = "sha256:" + "34" * 32
+
+    async def run(args: list[str], *, stdin: Any = None, **_: Any) -> tuple[int, str]:
+        calls.append(args)
+        if args[0] == "build" and stdin is not None:
+            stdin.read()
+            Path(args[args.index("--iidfile") + 1]).write_text(build_result_id)
+            return 0, "build completed"
+        if args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            assert args[-1].startswith(f"ditto-screen/{_AGENT}-")
+            return 0, daemon_image_id
+        if args[:3] == ["image", "inspect", "--format"]:
+            assert args[-1] == daemon_image_id
+            return 0, ""
+        return 0, ""
+
+    gate = _gate_with(make_config(), run, tarball=tarball)
+    ok, detail, image_id = await gate._build(
+        tar_path=str(tar_path),
+        tag=f"ditto-screen/{_AGENT}-{_ATTEMPT}:latest",
+    )
+
+    assert ok
+    assert detail == ""
+    assert image_id == daemon_image_id
 
 
 async def test_sha_mismatch_is_deterministic_and_cleans_temp_file(
@@ -931,6 +973,8 @@ async def test_build_and_health_failures_are_deterministic(
         if args[0] == "build" and stdin is not None:
             stdin.read()
             _write_iidfile(args)
+        if args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            return 0, "sha256:" + "34" * 32
         if args[0] == "exec" and any("http://harness:" in arg for arg in args):
             return 1, "HTTP 503"
         return 0, ""
@@ -955,6 +999,8 @@ async def test_image_declared_volume_is_rejected_before_runtime(
         if args[0] == "build" and stdin is not None:
             stdin.read()
             _write_iidfile(args)
+        if args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            return 0, "sha256:" + "34" * 32
         if args[:3] == ["image", "inspect", "--format"]:
             return 0, "declared"
         return 0, ""
@@ -1001,6 +1047,8 @@ async def test_gateway_start_failure_is_retryable_infrastructure(
         if args[0] == "build" and stdin is not None:
             stdin.read()
             _write_iidfile(args)
+        if args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            return 0, "sha256:" + "34" * 32
         if args[:2] == ["network", "create"]:
             return 1, "Cannot connect to the Docker daemon"
         return 0, ""
