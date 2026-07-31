@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.3 (2026-07-31)
+
+### Bug Fixes
+
+- Resolve loaded image id from daemon tag
+  ([#88](https://github.com/ditto-assistant/ditto-screener/pull/88),
+  [`53a95ba`](https://github.com/ditto-assistant/ditto-screener/commit/53a95ba781fc120178a98a4b6b48085a79639a59))
+
+
 ## v0.20.2 (2026-07-31)
 
 ### Bug Fixes
