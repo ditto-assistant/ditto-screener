@@ -481,7 +481,7 @@ wheels = [
 
 [[package]]
 name = "ditto-screener"
-version = "0.18.0"
+version = "0.20.0"
 source = { editable = "." }
 dependencies = [
     { name = "bittensor" },

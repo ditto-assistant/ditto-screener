@@ -68,8 +68,13 @@ class ScreenerConfig:
     run_timeout_seconds: float
     """Hard cap on the container serve, health, and optional private audit."""
 
-    build_memory: str
-    """Memory/swap cap for both image build and serve smoke (e.g. ``2g``)."""
+    image_build_memory: str
+    """Memory/swap cap for the untrusted Docker image build (e.g. ``8g``).
+
+    Compilers and linkers can need substantially more memory than the finished
+    harness.  This separate, bounded envelope keeps the container contract
+    language-neutral without granting the built image a larger runtime budget.
+    """
 
     gh_token_file: str | None
     """Deprecated / retained for config compatibility only. It was the BuildKit
@@ -244,7 +249,12 @@ def parse_screener_config_from_env() -> ScreenerConfig:
         require_rootless_docker=_parse_bool("SCREENER_REQUIRE_ROOTLESS_DOCKER", False),
         build_timeout_seconds=_parse_float("SCREENER_BUILD_TIMEOUT_SECONDS", "2700"),
         run_timeout_seconds=_parse_float("SCREENER_RUN_TIMEOUT_SECONDS", "120"),
-        build_memory=os.environ.get("SCREENER_BUILD_MEMORY", "2g"),
+        image_build_memory=os.environ.get(
+            "SCREENER_IMAGE_BUILD_MEMORY",
+            # Additive rollout fallback for deployments that have not rendered
+            # the more precise variable name yet.
+            os.environ.get("SCREENER_BUILD_MEMORY", "8g"),
+        ),
         gh_token_file=os.environ.get("SCREENER_GH_TOKEN_FILE") or None,
         pids_limit=_parse_int("SCREENER_PIDS_LIMIT", "512"),
         health_path=os.environ.get("SCREENER_HEALTH_PATH", "/health"),

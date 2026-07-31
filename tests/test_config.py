@@ -23,6 +23,8 @@ def _base_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "SCREENER_WALLET_HOTKEY",
         "SCREENER_GH_TOKEN_FILE",
         "SCREENER_BUILD_TIMEOUT_SECONDS",
+        "SCREENER_BUILD_MEMORY",
+        "SCREENER_IMAGE_BUILD_MEMORY",
         "NETUID",
     ):
         monkeypatch.delenv(k, raising=False)
@@ -38,6 +40,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.docker_host is None
     assert not cfg.require_rootless_docker
     assert cfg.container_port == 8080
+    assert cfg.image_build_memory == "8g"
     assert cfg.gh_token_file is None
     # Must default to (at least) the platform's 20 MiB upload cap, else the gate
     # false-fails legitimately-uploaded tarballs.
@@ -60,6 +63,17 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.l2_max_cost_usd == 2.0
     assert cfg.l2_analyst_reasoning_effort == "model_default"
     assert cfg.l2_critic_reasoning_effort == "medium"
+
+
+def test_image_build_memory_additively_replaces_legacy_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_env(monkeypatch)
+    monkeypatch.setenv("SCREENER_BUILD_MEMORY", "4g")
+    assert parse_screener_config_from_env().image_build_memory == "4g"
+
+    monkeypatch.setenv("SCREENER_IMAGE_BUILD_MEMORY", "8g")
+    assert parse_screener_config_from_env().image_build_memory == "8g"
 
 
 @pytest.mark.parametrize(
