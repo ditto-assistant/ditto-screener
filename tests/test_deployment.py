@@ -244,14 +244,22 @@ def test_rootless_executor_is_separate_from_worker_and_denies_private_egress() -
     ).read_text()
 
     assert 'EXECUTOR_USER="${SCREENER_EXECUTOR_USER:-ditto-builder}"' in installer
-    assert "User=${EXECUTOR_USER}" in installer
+    assert 'user_unit_dir="$EXECUTOR_HOME/.config/systemd/user"' in installer
+    assert "systemctl --user" in installer
+    assert 'systemctl start "user@${uid}.service"' in installer
+    assert "User=${EXECUTOR_USER}" not in installer
     assert "User=${SCREENER_USER}" not in installer
     assert "Type=notify\n# dockerd runs inside RootlessKit" in installer
     assert "NotifyAccess=all" in installer
-    assert "RuntimeDirectory=ditto-screener-docker" in installer
-    assert "RuntimeDirectoryMode=0750" in installer
+    assert "Environment=XDG_RUNTIME_DIR=${user_runtime_dir}" in installer
     assert (
-        "ExecStartPost=+/bin/chgrp ${EXECUTOR_GROUP} "
+        "Environment=DBUS_SESSION_BUS_ADDRESS="
+        "unix:path=${user_runtime_dir}/bus" in installer
+    )
+    assert "ExecStartPre=/usr/bin/systemctl is-active --quiet " in installer
+    assert "RuntimeDirectory=ditto-screener-docker" not in installer
+    assert (
+        "ExecStartPost=/bin/chgrp ${EXECUTOR_GROUP} "
         "${runtime_dir}/docker.sock" in installer
     )
     assert "ExecStartPost=/bin/chmod 0660 ${runtime_dir}/docker.sock" in installer
@@ -262,8 +270,14 @@ def test_rootless_executor_is_separate_from_worker_and_denies_private_egress() -
     assert "127.0.0.0/8" in egress
     assert "169.254.0.0/16" in egress
     assert "192.168.0.0/16" in egress
-    assert "Before=ditto-screener-docker.service" in executor_unit
-    assert "Requires=ditto-screener-egress-guard.service" in installer
+    assert "Before=ditto-screener-docker.service" not in executor_unit
+    guard_start = installer.index(
+        "systemctl enable --now ditto-screener-egress-guard.service"
+    )
+    user_daemon_start = installer.index(
+        '"${user_systemctl[@]}" enable --now "$SCREENER_ROOTLESS_UNIT"'
+    )
+    assert guard_start < user_daemon_start
     assert 'daemon_root="$EXECUTOR_HOME/docker"' in installer
     assert "SCREENER_EXECUTOR_HOME=/var/lib/ditto-screener-docker" in bootstrap
     assert 'executor_home="$(env_value SCREENER_EXECUTOR_HOME)"' in updater
