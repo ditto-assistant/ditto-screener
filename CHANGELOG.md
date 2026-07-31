@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.7 (2026-07-31)
+
+### Bug Fixes
+
+- Run rootless Docker as a user service
+  ([#93](https://github.com/ditto-assistant/ditto-screener/pull/93),
+  [`7d776e1`](https://github.com/ditto-assistant/ditto-screener/commit/7d776e1c9bb01897cf0b78237455ac47569ffcb1))
+
+
 ## v0.20.6 (2026-07-31)
 
 ### Bug Fixes
