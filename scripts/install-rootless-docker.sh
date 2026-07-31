@@ -52,8 +52,10 @@ usermod -aG "$EXECUTOR_GROUP" "$SCREENER_USER"
 
 uid="$(id -u "$EXECUTOR_USER")"
 runtime_dir="/run/ditto-screener-docker"
+user_runtime_dir="/run/user/$uid"
 docker_host="unix://$runtime_dir/docker.sock"
 daemon_root="$EXECUTOR_HOME/docker"
+daemon_exec_root="$user_runtime_dir/ditto-screener-docker-exec"
 
 # RootlessKit maps subordinate ids into the daemon's user namespace. Allocate
 # one range only when provisioning did not already assign one.
@@ -65,7 +67,7 @@ if ! grep -q "^${EXECUTOR_USER}:" /etc/subgid; then
 fi
 
 loginctl enable-linger "$EXECUTOR_USER"
-install -d -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0750 "$runtime_dir"
+systemctl start "user@${uid}.service"
 install -d -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0700 \
   "$EXECUTOR_HOME"
 install -d -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0750 \
@@ -73,7 +75,10 @@ install -d -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0750 \
 install -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0640 \
   "$(dirname "$0")/../deploy/rootless-daemon.json" "$daemon_root/daemon.json"
 
-unit_file="/etc/systemd/system/${SCREENER_ROOTLESS_UNIT}.service"
+user_unit_dir="$EXECUTOR_HOME/.config/systemd/user"
+unit_file="$user_unit_dir/${SCREENER_ROOTLESS_UNIT}.service"
+install -d -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0700 \
+  "$EXECUTOR_HOME/.config" "$EXECUTOR_HOME/.config/systemd" "$user_unit_dir"
 install -o root -g root -m 0755 \
   "$(dirname "$0")/../deploy/executor-egress-guard.sh" \
   /usr/local/sbin/ditto-screener-egress-guard
@@ -86,28 +91,22 @@ cat >"$tmp_unit" <<EOF
 [Unit]
 Description=Rootless Docker daemon for Ditto screener submissions
 Documentation=https://docs.docker.com/engine/security/rootless/
-After=network-online.target user@${uid}.service
-Wants=network-online.target
-Requires=ditto-screener-egress-guard.service
-After=ditto-screener-egress-guard.service
 
 [Service]
 Type=notify
 # dockerd runs inside RootlessKit, so the readiness notification is emitted by
 # a child process rather than the systemd-tracked wrapper process.
 NotifyAccess=all
-User=${EXECUTOR_USER}
-Group=${EXECUTOR_GROUP}
 Environment=HOME=${EXECUTOR_HOME}
-Environment=XDG_RUNTIME_DIR=${runtime_dir}
+Environment=XDG_RUNTIME_DIR=${user_runtime_dir}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=${user_runtime_dir}/bus
 Environment=DOCKER_HOST=${docker_host}
-RuntimeDirectory=ditto-screener-docker
-RuntimeDirectoryMode=0750
-ExecStart=/usr/bin/dockerd-rootless.sh --host=${docker_host} --group=${EXECUTOR_GROUP} --data-root=${daemon_root}/data --exec-root=${runtime_dir}/exec --pidfile=${runtime_dir}/docker.pid --config-file=${daemon_root}/daemon.json
+ExecStartPre=/usr/bin/systemctl is-active --quiet ditto-screener-egress-guard.service
+ExecStart=/usr/bin/dockerd-rootless.sh --host=${docker_host} --group=${EXECUTOR_GROUP} --data-root=${daemon_root}/data --exec-root=${daemon_exec_root} --pidfile=${user_runtime_dir}/ditto-screener-docker.pid --config-file=${daemon_root}/daemon.json
 # RootlessKit maps the daemon's supplementary group into the subordinate GID
 # range. Reset only the control socket to the real host group so the screener
 # worker can reach it without granting access to the rootful Docker daemon.
-ExecStartPost=+/bin/chgrp ${EXECUTOR_GROUP} ${runtime_dir}/docker.sock
+ExecStartPost=/bin/chgrp ${EXECUTOR_GROUP} ${runtime_dir}/docker.sock
 ExecStartPost=/bin/chmod 0660 ${runtime_dir}/docker.sock
 Restart=always
 RestartSec=5
@@ -118,22 +117,39 @@ Delegate=yes
 TasksMax=8192
 MemoryMax=14G
 LimitNOFILE=1048576
-NoNewPrivileges=false
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=${daemon_root} ${runtime_dir}
+# Do not add mount-namespace or no-new-privileges hardening here: RootlessKit
+# needs the setuid newuidmap/newgidmap helpers and its own mount namespace. The
+# daemon remains confined to the dedicated host identity, egress policy, and
+# rootless user namespace; untrusted containers retain their separate limits.
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 EOF
-install -o root -g root -m 0644 "$tmp_unit" "$unit_file"
+install -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0644 \
+  "$tmp_unit" "$unit_file"
 rm -f "$tmp_unit"
 trap - EXIT
 
-systemctl daemon-reload
 systemctl enable --now ditto-screener-egress-guard.service
-systemctl enable --now "$SCREENER_ROOTLESS_UNIT"
+
+# Docker documents that rootless daemons must run under the executor's user
+# systemd manager, not a system-wide unit with User=. Remove the legacy unit
+# before starting the supported user service.
+systemctl disable --now "$SCREENER_ROOTLESS_UNIT" >/dev/null 2>&1 || true
+rm -f "/etc/systemd/system/${SCREENER_ROOTLESS_UNIT}.service"
+systemctl daemon-reload
+# Stopping the legacy system unit removes its RuntimeDirectory. Recreate the
+# shared socket directory only after that teardown has completed.
+install -d -o "$EXECUTOR_USER" -g "$EXECUTOR_GROUP" -m 0750 "$runtime_dir"
+user_systemctl=(
+  runuser -u "$EXECUTOR_USER" -- env
+  "HOME=$EXECUTOR_HOME"
+  "XDG_RUNTIME_DIR=$user_runtime_dir"
+  "DBUS_SESSION_BUS_ADDRESS=unix:path=$user_runtime_dir/bus"
+  systemctl --user
+)
+"${user_systemctl[@]}" daemon-reload
+"${user_systemctl[@]}" enable --now "$SCREENER_ROOTLESS_UNIT"
 
 for _attempt in $(seq 1 30); do
   if runuser -u "$SCREENER_USER" -- env DOCKER_HOST="$docker_host" \
