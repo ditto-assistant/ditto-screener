@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.2 (2026-07-31)
+
+### Bug Fixes
+
+- Load Buildx output before image inspection
+  ([#87](https://github.com/ditto-assistant/ditto-screener/pull/87),
+  [`15ed97c`](https://github.com/ditto-assistant/ditto-screener/commit/15ed97c105c0e43a4d754439beb18c013cf2a24a))
+
+
 ## v0.20.1 (2026-07-31)
 
 ### Bug Fixes
