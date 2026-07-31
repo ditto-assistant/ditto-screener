@@ -23,6 +23,7 @@ from ditto_screener.gate import (
     _MAX_ARCHIVE_MEMBERS,
     _MAX_SCREENED_IMAGE_BYTES,
     BuildGate,
+    BuiltImageArtifact,
     _detail_tail,
     _format_stage_timings,
     _gateway_call_count,
@@ -264,6 +265,50 @@ async def test_publish_failure_demotes_pass_with_dedicated_reason(
     assert result.outcome == ScreeningOutcome.RETRYABLE_INFRA
     assert result.evidence[-1].code == "image-upload-failed"
     assert "object storage unavailable" in result.detail
+
+
+async def test_publish_uses_stable_agent_ref_with_attempt_scoped_build(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    tarball = _valid_tar()
+    calls: list[list[str]] = []
+    published: list[BuiltImageArtifact] = []
+
+    async def run(args: list[str], *, stdin: Any = None, **_: Any) -> tuple[int, str]:
+        calls.append(args)
+        if args[0] == "build":
+            if stdin is not None:
+                stdin.read()
+            _write_iidfile(args)
+        elif args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
+            return 0, "sha256:" + "34" * 32
+        elif args[:3] == ["image", "inspect", "--format"]:
+            if "Config.Volumes" in args[3]:
+                return 0, ""
+            return 0, "32"
+        elif args[:3] == ["image", "save", "--output"]:
+            Path(args[3]).write_bytes(b"screened-image")
+        return 0, ""
+
+    async def publish(image: BuiltImageArtifact) -> None:
+        published.append(image)
+
+    gate = _gate_with(make_config(), run, tarball=tarball)
+    async with gate._client:
+        result = await gate.screen(
+            agent_id=_AGENT,
+            attempt_id=_ATTEMPT,
+            miner_hotkey=_MINER,
+            sha256=hashlib.sha256(tarball).hexdigest(),
+            download_url=_URL,
+            publish_image=publish,
+        )
+
+    attempt_ref = f"ditto-screen/{_AGENT}-{_ATTEMPT}:latest"
+    assert result.outcome == ScreeningOutcome.PASS
+    assert [image.image_ref for image in published] == [f"ditto-screen/{_AGENT}:latest"]
+    assert any(call[0] == "build" and attempt_ref in call for call in calls)
+    assert ["rmi", "-f", attempt_ref] in calls
 
 
 def test_image_binding_flags_prebuilt_entrypoint_without_build() -> None:

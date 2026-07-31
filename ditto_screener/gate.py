@@ -571,10 +571,13 @@ class BuildGate:
             except Exception:  # noqa: BLE001 - telemetry cannot affect screening
                 logger.warning("screener progress callback failed; screening continues")
 
-        # Attempt identity, not only agent identity, prevents stale resources
-        # from a crashed/reissued ticket from colliding with its replacement.
+        # Attempt identity prevents stale runtime/build resources from a
+        # crashed or reissued ticket from colliding with its replacement.  The
+        # published image reference remains stable for the immutable agent
+        # submission; downstream consumers and rescreens share that identity.
         execution_id = f"{agent_id}-{attempt_id}"
-        tag = f"ditto-screen/{execution_id}:latest"
+        build_tag = f"ditto-screen/{execution_id}:latest"
+        image_ref = f"ditto-screen/{agent_id}:latest"
         container = f"ditto-screen-{execution_id}"
         gateway_container = f"ditto-gateway-{execution_id}"
         network = f"ditto-screen-{execution_id}"
@@ -735,7 +738,7 @@ class BuildGate:
                 build_timeout = min(build_timeout, remaining)
             started = asyncio.get_running_loop().time()
             built, build_detail, built_image_id = await self._build(
-                tmp_path, tag, timeout=build_timeout
+                tmp_path, build_tag, timeout=build_timeout
             )
             build_elapsed_ms = round(
                 (asyncio.get_running_loop().time() - started) * 1000
@@ -861,7 +864,7 @@ class BuildGate:
                 try:
                     image = await self._export_image(
                         built_image_id,
-                        image_ref=tag,
+                        image_ref=image_ref,
                         deadline=deadline,
                     )
                 except _ScreenedImageTooLargeError as error:
@@ -939,7 +942,7 @@ class BuildGate:
             teardown_started = loop.time()
             await self._teardown(
                 container,
-                tag,
+                build_tag,
                 gateway_container=gateway_container,
                 network=network,
             )
