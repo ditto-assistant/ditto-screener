@@ -2932,6 +2932,33 @@ def test_failure_codes_name_the_cause(error: Exception, expected: str) -> None:
     assert source_review_module._source_review_failure_code(error) == expected
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "source reviewer exceeded read budget",
+        "source reviewer exceeded step budget",
+    ],
+)
+async def test_local_review_budget_exhaustion_is_inconclusive(
+    tmp_path: Path, message: str
+) -> None:
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review-key")
+    key.chmod(0o600)
+    agent = _agent(key, _transport({}, []))
+
+    async def exhaust(*_args: object, **_kwargs: object) -> tuple[object, bool]:
+        raise ValueError(message)
+
+    agent._run = exhaust  # type: ignore[method-assign]
+    observation = await agent.review(
+        str(_archive(tmp_path, "fn main() {}")), artifact_sha256=_SHA
+    )
+
+    assert observation.ok is False
+    assert observation.failure_disposition == "inconclusive"
+
+
 # --- inadmissible-citation filter -------------------------------------------
 
 

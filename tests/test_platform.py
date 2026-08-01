@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
+from ditto_screener import platform as platform_module
 from ditto_screener.config import ScreenerConfig
 from ditto_screener.errors import PlatformError
 from ditto_screener.heartbeat import ScreenerHeartbeatRequest
@@ -183,6 +184,63 @@ async def test_submit_result_posts_signed_verdict(
     assert captured["detail"] == "ok"
     assert captured["policy_version"] == SCREENING_POLICY_VERSION
     assert captured["attempt_id"] == "550e8400-e29b-41d4-a716-446655440001"
+
+
+async def test_submit_result_retries_transient_server_failure(
+    make_config: Callable[..., ScreenerConfig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(502, text="temporary gateway failure")
+        return httpx.Response(
+            200,
+            json={"agent_id": str(_AGENT), "status": "evaluating", "accepted": True},
+        )
+
+    monkeypatch.setattr(platform_module, "_VERDICT_RETRY_DELAYS_SECONDS", (0, 0))
+    client, http = _make_client(make_config(), handler)
+    async with http:
+        response = await client.submit_result(
+            _AGENT,
+            signature="ab" * 64,
+            passed=False,
+            policy_version=SCREENING_POLICY_VERSION,
+            attempt_id=UUID("550e8400-e29b-41d4-a716-446655440001"),
+            outcome=ScreenResultOutcome.RETRYABLE_INFRA,
+        )
+
+    assert calls == 3
+    assert response.accepted is True
+
+
+async def test_submit_result_does_not_retry_conflict(
+    make_config: Callable[..., ScreenerConfig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(409, text="attempt already closed")
+
+    monkeypatch.setattr(platform_module, "_VERDICT_RETRY_DELAYS_SECONDS", (0, 0))
+    client, http = _make_client(make_config(), handler)
+    async with http:
+        with pytest.raises(PlatformError, match="409"):
+            await client.submit_result(
+                _AGENT,
+                signature="ab" * 64,
+                passed=False,
+                policy_version=SCREENING_POLICY_VERSION,
+                attempt_id=UUID("550e8400-e29b-41d4-a716-446655440001"),
+                outcome=ScreenResultOutcome.RETRYABLE_INFRA,
+            )
+
+    assert calls == 1
 
 
 async def test_upload_screened_image_streams_exact_metadata_and_bytes(
