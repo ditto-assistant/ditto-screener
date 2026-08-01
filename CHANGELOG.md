@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.12 (2026-08-01)
+
+### Bug Fixes
+
+- Normalize Docker build context ownership
+  ([#98](https://github.com/ditto-assistant/ditto-screener/pull/98),
+  [`a08a18c`](https://github.com/ditto-assistant/ditto-screener/commit/a08a18c13ec37634ca950b6ff6ef7c17ce675e80))
+
+
 ## v0.20.11 (2026-07-31)
 
 ### Bug Fixes
