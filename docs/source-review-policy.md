@@ -4,6 +4,10 @@ The source reviewer identifies submissions that replace a general agent with
 benchmark-, scorer-, or audit-specific behavior. Its findings select operator
 quarantine; they never create an automatic terminal rejection.
 
+These source-review refinements run within screening policy v9. They do not
+change the policy version, wire contracts, benchmark activation, or operator
+decision authority.
+
 ## Allowed optimization
 
 Miners may tune candidate profiles, prompts, model settings, retrieval and
@@ -80,6 +84,34 @@ abstain fields outside the genuine agent result.
 
 Public source code or documentation for a benchmark does not make these runtime
 shortcuts acceptable.
+
+### Answer, checker, and tool-call provenance
+
+Review the complete request -> retrieval/routing -> model -> tool execution ->
+response path. A completed model reply is not authoritative when later harness
+code replaces a missing or disagreeing scorer-visible answer with an
+engine-composed value. The value may be correct and grounded in a real tool;
+the violation is the post-model replacement rather than its correctness.
+
+Tool-call fidelity uses the same causal standard. A reported or observed call
+must correspond to the call selected by the real planner/model and executed by
+the live endpoint or a genuine harness-owned Tool. Planning a call is not
+execution. Conversely, reporting the real completed transcript, request-local
+deduplication after a genuine first execution, and ordinary alias/argument
+validation are not fabricated trajectories.
+
+A locally derived expected-value checker is a manual-review lead, not automatic
+answer-replacement proof. When a fixed case/template/definition registry, world
+parser, finite answer-family compiler, or grader-mirroring rule repeatedly
+rejects model drafts until they match a derived value, quarantine may preserve
+the evidence for operator review. The finding must state that the model still
+authors the final response when that is true; it must not allege direct field
+replacement without a traced assignment.
+
+Live schema-driven routing, genuine retrieval/reranking, prompt specialization,
+runtime-described semantics, generic state reconstruction, and bounded
+model-authored correction passes remain allowed when the current request and
+actual model/tool result remain authoritative.
 
 ### Legacy DittoBench v3 reachability preflight
 

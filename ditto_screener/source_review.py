@@ -37,7 +37,7 @@ from ditto_screener.source_signals import (
 )
 from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
 
-_PROMPT_REVISION = "source-review-v15"
+_PROMPT_REVISION = "source-review-v16"
 _MAX_INVENTORY_FILES = 512
 _MAX_OPAQUE_BLOBS = 128
 _MAX_OPAQUE_SCAN_FILES = 2048
@@ -329,8 +329,9 @@ Determine whether the harness is source-safe and implements its behavior using
 submission-visible inputs, or whether it uses hidden/private challenge values,
 cross-user data, credentials, exfiltration, malicious build behavior, or
 deterministic benchmark emulation that bypasses the claimed agent path. Inspect
-the actual request path, user scoping, seed/memory ingestion, model/provider
-calls, tool-call construction, early returns, static dispatch tables, embedded
+the complete request -> retrieval/routing -> model -> tool execution -> response
+path, including user scoping, seed/memory ingestion, model/provider calls,
+tool-call construction, early returns, static dispatch tables, embedded
 evaluator logic, build scripts, network/process use, and generated fixtures.
 
 Ordinary optimization is allowed: tuned candidate profiles, model-backed prompt
@@ -451,6 +452,10 @@ through the served request path. Look for a coordinated constellation: a
 benchmark-like scalar/list ontology, finite question classifiers, finite
 fact/update frame extractors, event-label parsing, vocabulary bridges between
 questions and facts, and a deterministic answer return before model inference.
+A stable case/template/definition registry, fixed world-schema parser, or finite
+answer-family compiler can be the same mechanism without literal answer tables.
+Trace whether its semantics are hard-coded to known benchmark families or are
+described at runtime from the current request, live schemas, and retrieved data.
 A grounded answer is still benchmark_emulation when that coordinated
 public-generator mirror deterministically replaces the claimed general agent
 path across scored families; literal expected answers or hidden values are not
@@ -556,6 +561,33 @@ and the two-location evidence bar before citing anything:
   injected value's provenance and the forced verbatim lift, not the presence of
   an answer slot. Lifting the model's OWN trailing answer line, or letting a
   genuine model override the supplied context, is allowed.
+- post-model-answer-replacement: trace the completed model result, the
+  omission/disagreement branch, the engine-composed replacement value, and the
+  exact returned field. If harness code writes an answer, final_text, or response
+  text after the model omitted or contradicted it, this is answer replacement
+  even when the value came from genuine retrieval or a real tool. A fresh model
+  correction pass whose output is forwarded unchanged is not replacement.
+- expected-value-model-retry-loop: this is a manual-review lead, not direct
+  answer-replacement proof. Determine whether the checker comes from a stable
+  benchmark case/template/world registry or grader-mirroring logic and whether
+  repeated checks force model drafts toward that locally derived value. That
+  benchmark-specific causal path may support benchmark_emulation quarantine,
+  but do not claim engine-authored output or scorer-field manipulation when a
+  fresh model call still authors the served response. Clear bounded retries
+  that validate live runtime schemas, genuine tool results, or generic
+  request-user state without a fixed benchmark-family compiler.
+- planned-tool-call-self-report: compare the planner/model selection, the live
+  endpoint or harness Tool execution, and the response's reported trajectory.
+  Report fabricated_tool_trajectory only when a call is emitted as observed
+  without corresponding execution, or when its name/arguments are materially
+  rewritten after execution. Planning plus faithful execution and reporting is
+  allowed; the location-only lead cannot prove missing execution by itself.
+- finite-family-world-compiler: inspect the registry/parser and every served
+  caller. A fixed family ontology, template registry, finite answer compiler,
+  or grader-derived checker that controls the served result is suspicious even
+  without literal answers. Live schema-driven routing, runtime-described
+  semantics, generic state reconstruction, and prompt specialization remain
+  allowed when retrieval/model/tool execution stays authoritative.
 - authority-envelope-answer-shotgun: an injection-robust resister that emits
   exactly one value (the request-user's stored value) and declines the injected
   update is allowed. Only quarantine (scorer_contract_manipulation +

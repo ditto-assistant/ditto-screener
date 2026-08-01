@@ -278,6 +278,140 @@ _RULES = (
         ),
     ),
     _Rule(
+        # The model has already produced a substantive reply, but harness code
+        # treats an omission or disagreement as permission to write an
+        # engine-composed value into the served answer/text field. This remains
+        # a location-only lead: the reviewer must prove that the assignment is
+        # on the returned path and is not a fresh model generation.
+        "post-model-answer-replacement",
+        (
+            _Role(
+                "completed-model-result",
+                _words(
+                    r"\b(?:call model|invoke model|chat completion|model reply|"
+                    r"model response|model result|completion result|draft reply)\b"
+                ),
+            ),
+            _Role(
+                "omission-or-disagreement-gate",
+                _words(
+                    r"\b(?:contains|missing|omit|wrong|invalid|disagree|"
+                    r"does not contain|is empty|none)\b"
+                ),
+            ),
+            _Role(
+                "engine-authored-response-write",
+                _words(
+                    r"(?:\.\s*(?:answer|final text|text)|"
+                    r"\[[\"'](?:answer|final text|text)[\"']\])\s*=(?!=)"
+                    r".{0,100}\b(?:bind|compose|format|render|synthesi[sz]e|"
+                    r"deriv(?:e|ed)|expected|check value)\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
+        # A benchmark-shaped checker can remain hidden behind genuine model
+        # calls by repeatedly rejecting drafts until they contain a locally
+        # derived value. This is a manual-review lead, not answer-replacement
+        # proof: a fresh model may still author the final served response.
+        "expected-value-model-retry-loop",
+        (
+            _Role(
+                "locally-derived-expected-value",
+                _words(
+                    r"\b(?:check value|expected value|reference answer|"
+                    r"derived value|derive expected|resolve expected|"
+                    r"computed answer)\b"
+                ),
+            ),
+            _Role(
+                "model-draft",
+                _words(
+                    r"\b(?:call model|invoke model|chat completion|model draft|"
+                    r"candidate reply|candidate response|llm)\b"
+                ),
+            ),
+            _Role(
+                "draft-correctness-check",
+                _words(
+                    r"\b(?:contains|equals|matches|validate|verif(?:y|ied|ication)|"
+                    r"wrong|missing|disagree)\b"
+                ),
+            ),
+            _Role(
+                "corrective-model-retry",
+                _words(
+                    r"\b(?:retry|attempt again|try again|corrective|"
+                    r"re prompt|feedback pass|second pass)\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
+        # A planned/predicted call is converted into a reported/observed call.
+        # The static lead cannot prove the negative fact that execution was
+        # skipped, so the reviewer must compare planner selection, endpoint or
+        # Tool execution, and response reporting before finding fabrication.
+        "planned-tool-call-self-report",
+        (
+            _Role(
+                "planned-or-synthetic-call",
+                _words(
+                    r"\b(?:planned tool|predicted tool|candidate call|"
+                    r"selected tool|synthetic call|expected tool)\b"
+                ),
+            ),
+            _Role(
+                "reported-or-observed-call",
+                _words(
+                    r"\b(?:observed tool call|reported tool call|"
+                    r"observed calls|reported calls|tool calls push)\b"
+                ),
+            ),
+            _Role(
+                "reported-trajectory-sink",
+                _words(r"\b(?:response|return|emit|report|audit log|trajectory)\b"),
+            ),
+        ),
+    ),
+    _Rule(
+        # Stable benchmark-family registries and world parsers can act as a
+        # compiler even without literal answers. Live/runtime-described schema
+        # and tool catalogs are explicit suppressors because they are the
+        # legitimate generic-routing near-neighbor.
+        "finite-family-world-compiler",
+        (
+            _Role(
+                "stable-family-or-world-registry",
+                _words(
+                    r"\b(?:case registry|template registry|definition registry|"
+                    r"family registry|ontology registry|world schema|world parser)\b"
+                ),
+            ),
+            _Role(
+                "finite-family-dispatch",
+                _words(r"\b(?:match|classify|recognize|case|template|family|lookup)\b"),
+            ),
+            _Role(
+                "derived-answer-or-checker",
+                _words(
+                    r"\b(?:check value|expected value|derive answer|derive expected|"
+                    r"resolve answer|computed answer|answer family)\b"
+                ),
+            ),
+        ),
+        suppressors=(
+            _Role(
+                "runtime-described-or-live-schema",
+                _words(
+                    r"\b(?:runtime described|live schema|request schema|"
+                    r"tool schema|capability catalog|live catalog|schema driven)\b"
+                ),
+            ),
+        ),
+    ),
+    _Rule(
         # Hand-written character-class table mirroring the private generator's
         # CoinShaped alphabet used to SELECT the served answer token.
         # (screen: "Coined-token shape extractor")

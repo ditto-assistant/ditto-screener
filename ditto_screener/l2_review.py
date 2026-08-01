@@ -38,7 +38,7 @@ L2_MODEL = "moonshotai/kimi-k3"
 L2_FALLBACK_MODELS = ("z-ai/glm-5.2", "openai/gpt-5.6-sol")
 L3_MODEL = "openai/gpt-5.6-sol"
 L3_PROVIDER = "openrouter"
-L2_PROMPT_REVISION = "l2-kimi-source-review-v27"
+L2_PROMPT_REVISION = "l2-kimi-source-review-v28"
 L2_CRITIC_PROMPT_REVISION = "l3-sol-adversarial-critic-v16"
 L2_CAUSE_PROMPT_REVISION = "l3-sol-violation-cause-v22"
 L2_CAUSE_TIEBREAKER_PROMPT_REVISION = "l3-sol-cause-disagreement-v5"
@@ -440,6 +440,18 @@ scorer_field_flow contains any score controls together with field populations
 or clears, inspect the relevant changed functions even if L1 alleges scope,
 credentials, tools, benchmark emulation, or another mechanism. Clearing L1's
 named lead does not clear an independent response-authority path.
+Also separate a locally derived expected-value checker from direct replacement.
+If harness code assigns the check value into a served answer/text slot after a
+model omission or disagreement, model authority is bypassed. If each rejected
+draft instead causes a fresh model generation and that model output is forwarded
+unchanged, do not label it answer replacement or scorer-field manipulation.
+Still inspect whether a stable case/template/definition registry, fixed world
+parser, finite answer-family compiler, or grader-mirroring rule repeatedly
+constrains those drafts; that is a manual-review benchmark-emulation lead when
+the fixed benchmark mechanism is reachable. Clear live schema-driven routing,
+genuine retrieval/reranking, prompt specialization, runtime-described semantics,
+generic state reconstruction, and bounded model-authored correction passes when
+the current request and actual model/tool path remain authoritative.
 2. Tool fidelity: every reported tool call must be selected through the genuine
 planner/model path and correspond to a call actually executed by either a
 request-supplied tool endpoint or a genuine harness-owned Tool implementation.
