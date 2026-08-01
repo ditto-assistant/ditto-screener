@@ -27,9 +27,11 @@ from ditto_screener.gate import (
     BuildGate,
     BuiltImageArtifact,
     _detail_tail,
+    _docker_infrastructure_failure,
     _format_stage_timings,
     _gateway_call_count,
     _log_tail,
+    _normalized_build_context,
     _prepare_gateway_state,
     _ScreenedImageExportError,
     _ScreenedImageTooLargeError,
@@ -181,6 +183,48 @@ def test_root_and_log_helpers() -> None:
     assert not dockerfile_at_root(["sub/Dockerfile"])
     assert _log_tail("  hi  ") == "hi"
     assert len(_detail_tail("x" * 5000)) == 3900
+
+
+def test_build_context_normalizes_unportable_archive_owners(tmp_path: Path) -> None:
+    source_path = tmp_path / "agent.tar.gz"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, payload in (
+            ("Dockerfile", b"FROM scratch\n"),
+            ("src/main.py", b"print('ready')\n"),
+        ):
+            member = tarfile.TarInfo(name)
+            member.uid = 197108
+            member.gid = 197121
+            member.uname = "subordinate-user"
+            member.gname = "subordinate-group"
+            member.mode = 0o640
+            member.mtime = 123456789
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+    source_path.write_bytes(buffer.getvalue())
+
+    with (
+        _normalized_build_context(str(source_path)) as normalized,
+        tarfile.open(fileobj=normalized, mode="r:gz") as archive,
+    ):
+        members = archive.getmembers()
+        assert [member.name for member in members] == [
+            "Dockerfile",
+            "src/main.py",
+        ]
+        assert all(member.uid == 0 and member.gid == 0 for member in members)
+        assert all(not member.uname and not member.gname for member in members)
+        assert members[0].mode == 0o640
+        assert members[0].mtime == 123456789
+        assert archive.extractfile("src/main.py").read() == b"print('ready')\n"
+
+
+def test_unportable_build_context_owner_is_infrastructure_failure() -> None:
+    assert _docker_infrastructure_failure(
+        'failed to Lchown "Dockerfile" for UID 197108, GID 197121: '
+        "lchownat Dockerfile: invalid argument"
+    )
 
 
 async def test_export_image_hashes_exact_docker_archive(
