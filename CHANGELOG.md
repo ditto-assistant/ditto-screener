@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.20.13 (2026-08-01)
+
+### Bug Fixes
+
+- Make screening review recovery bounded
+  ([#100](https://github.com/ditto-assistant/ditto-screener/pull/100),
+  [`5284e0e`](https://github.com/ditto-assistant/ditto-screener/commit/5284e0e6c6a847be68af3e09ebde55bc0d13bb75))
+
+
 ## v0.20.12 (2026-08-01)
 
 ### Bug Fixes
