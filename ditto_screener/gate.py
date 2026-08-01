@@ -11,10 +11,11 @@ Flow for one agent:
 2. **Contract check.** Reject unsafe archive entries and require a root
    ``Dockerfile`` before any build is attempted. The implementation language is
    deliberately unconstrained; the image must satisfy the HTTP harness contract.
-3. **Build.** ``docker build`` reads the *tarball itself* as the build context on
-   stdin: Docker unpacks it inside its own build sandbox, so the screener never
-   re-implements safe tar extraction. BuildKit is used with an optional
-   ``gh_token`` secret for a private build dependency, when configured. Bounded by
+3. **Build.** ``docker build`` reads a metadata-normalized copy of the validated
+   tarball on stdin. File bytes, paths, modes, and timestamps are preserved, but
+   archive-owner IDs are reset before BuildKit sees them so a tarball created in
+   a user namespace cannot fail on a different screener host. The screener never
+   extracts submission files onto its host filesystem. Bounded by
    ``build_timeout_seconds``.
 4. **Serve smoke.** Run the image detached with a memory + pids cap and poll
    ``GET /health`` until it returns 2xx.
@@ -57,7 +58,7 @@ import signal
 import tarfile
 import tempfile
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, BinaryIO, cast
@@ -159,6 +160,8 @@ _DOCKER_INFRASTRUCTURE_MARKERS = (
     "buildkit",
     "snapshotter",
     "failed to mount",
+    "failed to lchown",
+    "lchownat",
     "secret gh_token",
     "secret id=gh_token",
     "temporary failure in name resolution",
@@ -430,6 +433,54 @@ def _detail_tail(text: str) -> str:
 def _docker_infrastructure_failure(text: str) -> bool:
     normalized = text.casefold()
     return any(marker in normalized for marker in _DOCKER_INFRASTRUCTURE_MARKERS)
+
+
+@contextlib.contextmanager
+def _normalized_build_context(tar_path: str) -> Iterator[io.BufferedReader]:
+    """Yield the validated archive with portable ownership metadata.
+
+    Miner archives can legitimately originate inside a user namespace and carry
+    UID/GID values that the screener host cannot represent. BuildKit attempts to
+    apply those IDs while loading stdin and fails before reading the Dockerfile.
+    Re-streaming regular files and directories keeps the submitted bytes intact
+    while making the transport metadata portable. ``_contract_error`` has
+    already rejected links, devices, aliases, duplicates, and unsafe paths.
+    """
+    fd, normalized_path = tempfile.mkstemp(prefix="ditto-build-context-", suffix=".tgz")
+    try:
+        with (
+            os.fdopen(fd, "wb") as normalized,
+            tarfile.open(tar_path, mode="r:gz") as source,
+            tarfile.open(fileobj=normalized, mode="w:gz") as destination,
+        ):
+            for member in source:
+                name = member.name.removeprefix("./")
+                if not name and member.isdir():
+                    continue
+                portable = tarfile.TarInfo(name=name)
+                portable.type = member.type
+                portable.mode = member.mode & 0o7777
+                portable.mtime = member.mtime
+                portable.uid = 0
+                portable.gid = 0
+                portable.uname = ""
+                portable.gname = ""
+                if member.isfile():
+                    portable.size = member.size
+                    payload = source.extractfile(member)
+                    if payload is None:
+                        raise tarfile.ReadError(
+                            f"validated regular file could not be read: {name}"
+                        )
+                    destination.addfile(portable, payload)
+                else:
+                    portable.size = 0
+                    destination.addfile(portable)
+        with open(normalized_path, "rb") as normalized_input:
+            yield normalized_input
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(normalized_path)
 
 
 def _format_stage_timings(history: Sequence[tuple[str, float]], *, end: float) -> str:
@@ -1625,7 +1676,7 @@ class BuildGate:
         if timeout is None:
             timeout = self._config.build_timeout_seconds
         try:
-            with open(tar_path, "rb") as stdin_f:
+            with _normalized_build_context(tar_path) as stdin_f:
                 code, out = await self._run(
                     args, stdin=stdin_f, timeout=timeout, env=env
                 )
