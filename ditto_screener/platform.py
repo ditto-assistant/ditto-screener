@@ -57,6 +57,8 @@ logger = logging.getLogger(__name__)
 _PREFIX = "/api/v1/screener"
 _IMAGE_REQUEST_TIMEOUT = httpx.Timeout(300.0, connect=30.0, pool=30.0)
 _IMAGE_UPLOAD_ATTEMPTS = 3
+_VERDICT_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0)
+_TRANSIENT_VERDICT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class PlatformClient:
@@ -274,17 +276,36 @@ class PlatformClient:
             image_upload_id=image_upload_id,
             build_only=build_only,
         )
-        try:
-            resp = await self._client.post(
-                url, json=payload.model_dump(mode="json"), headers=self._headers
-            )
-        except httpx.HTTPError as e:
-            raise PlatformError(f"verdict submit failed: {e}") from e
-        if resp.status_code != 200:
-            raise PlatformError(
-                f"verdict rejected ({resp.status_code}): {resp.text[:200]}"
-            )
-        return ScreenResultResponse.model_validate(resp.json())
+        body = payload.model_dump(mode="json")
+        for attempt in range(len(_VERDICT_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                resp = await self._client.post(url, json=body, headers=self._headers)
+            except httpx.HTTPError as error:
+                if attempt >= len(_VERDICT_RETRY_DELAYS_SECONDS):
+                    raise PlatformError(f"verdict submit failed: {error}") from error
+                logger.warning(
+                    "verdict submit transport failure; retrying attempt=%d: %s",
+                    attempt + 2,
+                    error,
+                )
+            else:
+                if resp.status_code == 200:
+                    return ScreenResultResponse.model_validate(resp.json())
+                if (
+                    resp.status_code not in _TRANSIENT_VERDICT_STATUSES
+                    or attempt >= len(_VERDICT_RETRY_DELAYS_SECONDS)
+                ):
+                    raise PlatformError(
+                        f"verdict rejected ({resp.status_code}): {resp.text[:200]}"
+                    )
+                logger.warning(
+                    "verdict submit transiently rejected status=%d; retrying "
+                    "attempt=%d",
+                    resp.status_code,
+                    attempt + 2,
+                )
+            await asyncio.sleep(_VERDICT_RETRY_DELAYS_SECONDS[attempt])
+        raise RuntimeError("unreachable")
 
     async def upload_screened_image(
         self,

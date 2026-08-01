@@ -1849,6 +1849,19 @@ class OpenRouterSourceReviewAgent:
                 finding_digest=None,
                 categories=(),
                 error_code=code,
+                # A submission that needs more bounded inspection than this
+                # reviewer allows is an operator-review outcome, not an outage.
+                # Marking it retryable re-runs the same deterministic budget
+                # forever and never advances the platform's inconclusive cap.
+                failure_disposition=(
+                    "inconclusive"
+                    if code
+                    in {
+                        "source-review-read-budget-exhausted",
+                        "source-review-step-budget-exhausted",
+                    }
+                    else "retryable_infra"
+                ),
             )
 
     def _read_api_key(self) -> str:
