@@ -19,6 +19,7 @@ from ditto_screening_protocol.models import (
     ScreenResultOutcome,
     ScreenResultRequest,
     ScreenResultResponse,
+    ScreenReviewAudit,
     SourceReviewEvidenceItem,
     SourceReviewFinding,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "ScreenedImageUploadRequest",
     "ScreenedImageUploadResponse",
     "ScreenResultRequest",
+    "ScreenReviewAudit",
     "ScreenResultResponse",
     "ScreenResultOutcome",
     "SourceReviewEvidenceItem",

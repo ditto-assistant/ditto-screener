@@ -28,6 +28,7 @@ from ditto_screening_protocol import (
     ScreenerQueueItem,
     ScreenerQueueResponse,
     ScreenResultOutcome,
+    ScreenReviewAudit,
     SourceReviewFinding,
 )
 
@@ -68,6 +69,7 @@ class _FakeGate:
         self.calls: list[UUID] = []
         self.deadlines: list[float | None] = []
         self.build_only_calls: list[bool] = []
+        self.deferred_source_review_calls: list[bool] = []
         self.shadow_result: Any = None
 
     def apply_review_settings(self, _settings: Any) -> bool:
@@ -84,12 +86,21 @@ class _FakeGate:
         deadline: float | None = None,
         publish_image: Any = None,
         build_only: bool = False,
+        deferred_source_review: bool = False,
         **_: Any,
     ) -> ScreeningDecision:
         self.calls.append(agent_id)
         self.deadlines.append(deadline)
         self.build_only_calls.append(build_only)
-        if self.result.outcome == ScreeningOutcome.PASS and publish_image is not None:
+        self.deferred_source_review_calls.append(deferred_source_review)
+        if (
+            self.result.outcome
+            in {
+                ScreeningOutcome.PASS,
+                ScreeningOutcome.PASS_INCONCLUSIVE,
+            }
+            and publish_image is not None
+        ):
             await publish_image(
                 BuiltImageArtifact(
                     path="/tmp/fake-screened-image.tar",
@@ -318,6 +329,63 @@ async def test_build_only_quarantine_is_rejected_and_posts_no_verdict(
         _item(uuid4(), build_only=True), policy_version=SCREENING_POLICY_VERSION
     )
     assert platform.verdicts == []
+
+
+async def test_deferred_mechanical_oracle_quarantine_is_submitted(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    platform = _FakePlatform([])
+    gate = _FakeGate(_decision(ScreeningOutcome.QUARANTINE))
+    worker = _worker(make_config(), platform, gate)
+    await worker._screen_one(
+        _item(uuid4(), build_only=True, deferred_source_review=True),
+        policy_version=SCREENING_POLICY_VERSION,
+    )
+    assert gate.build_only_calls == [True]
+    assert gate.deferred_source_review_calls == [True]
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    assert verdict["outcome"] == ScreenResultOutcome.QUARANTINE
+    assert verdict["build_only"] is True
+    assert verdict["deferred_source_review"] is True
+
+
+async def test_terminal_source_budget_exhaustion_is_signed_and_submitted_once(
+    make_config: Callable[..., ScreenerConfig],
+) -> None:
+    audit = ScreenReviewAudit(
+        stage="l1",
+        reason_code="source-review-step-budget-exhausted",
+        prompt_revision="source-review-v16",
+        max_steps=20,
+        steps_used=20,
+        max_read_bytes=2_000_000,
+        read_bytes_used=123_456,
+    )
+    result = ScreeningDecision(
+        outcome=ScreeningOutcome.PASS_INCONCLUSIVE,
+        detail="bounded source review inconclusive; admitted for scoring",
+        manifest_digest="ab" * 32,
+        evidence=(
+            PolicyEvidence(
+                module_id="luna-source-review",
+                code="source-review-inconclusive",
+                summary="bounded source review exhausted without a decisive finding",
+            ),
+        ),
+        review_audit=audit.model_dump(mode="json"),
+    )
+    platform = _FakePlatform([])
+    worker = _worker(make_config(), platform, _FakeGate(result))
+
+    await worker._screen_one(_item(uuid4()), policy_version=SCREENING_POLICY_VERSION)
+
+    assert len(platform.verdicts) == 1
+    verdict = platform.verdicts[0]
+    assert verdict["passed"] is True
+    assert verdict["outcome"] == ScreenResultOutcome.PASS_INCONCLUSIVE
+    assert verdict["review_audit_digest"] == audit.canonical_digest()
+    assert verdict["reason_code"] == "source-review-inconclusive"
 
 
 async def test_passing_gate_without_verified_image_posts_no_verdict(

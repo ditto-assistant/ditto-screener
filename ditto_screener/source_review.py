@@ -35,7 +35,11 @@ from ditto_screener.source_signals import (
     mask_comments,
     source_path_priority,
 )
-from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
+from ditto_screening_protocol import (
+    ScreenReviewAudit,
+    SourceReviewEvidenceItem,
+    SourceReviewFinding,
+)
 
 _PROMPT_REVISION = "source-review-v16"
 _MAX_INVENTORY_FILES = 512
@@ -141,6 +145,38 @@ _OPENROUTER_ATTRIBUTION_HEADERS = {
     "HTTP-Referer": "https://heyditto.ai",
     "X-OpenRouter-Title": "Ditto",
 }
+
+
+class SourceReviewBudgetExhausted(ValueError):
+    """A deterministic L1 inspection bound was reached, with exact accounting."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        max_steps: int,
+        steps_used: int,
+        read_bytes_used: int,
+        read_files_used: int,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.max_steps = max_steps
+        self.steps_used = steps_used
+        self.read_bytes_used = read_bytes_used
+        self.read_files_used = read_files_used
+
+    def audit(self) -> ScreenReviewAudit:
+        return ScreenReviewAudit(
+            stage="l1",
+            reason_code=self.code,
+            prompt_revision=_PROMPT_REVISION,
+            max_steps=self.max_steps,
+            steps_used=self.steps_used,
+            max_read_bytes=_MAX_TOTAL_TOOL_CHARS,
+            read_bytes_used=self.read_bytes_used,
+        )
+
 
 # Public-generator vocabulary is weak evidence in isolation.  These families
 # intentionally use broad semantic stems rather than one magic phrase, and the
@@ -1862,7 +1898,11 @@ class OpenRouterSourceReviewAgent:
                 ),
             )
         except (OSError, ValueError, tarfile.TarError, httpx.HTTPError) as error:
-            code = _source_review_failure_code(error)
+            code = (
+                error.code
+                if isinstance(error, SourceReviewBudgetExhausted)
+                else _source_review_failure_code(error)
+            )
             # The cause used to be discarded entirely, so a screening attempt
             # that failed here was undiagnosable after the fact: the operator
             # saw only "valueerror" and the miner saw "Screening infrastructure
@@ -1875,6 +1915,11 @@ class OpenRouterSourceReviewAgent:
                 type(error).__name__,
                 error,
             )
+            budget = error if isinstance(error, SourceReviewBudgetExhausted) else None
+            legacy_inconclusive = code in {
+                "source-review-read-budget-exhausted",
+                "source-review-step-budget-exhausted",
+            }
             return SourceReviewObservation(
                 ok=False,
                 risk_level=None,
@@ -1886,13 +1931,16 @@ class OpenRouterSourceReviewAgent:
                 # Marking it retryable re-runs the same deterministic budget
                 # forever and never advances the platform's inconclusive cap.
                 failure_disposition=(
-                    "inconclusive"
-                    if code
-                    in {
-                        "source-review-read-budget-exhausted",
-                        "source-review-step-budget-exhausted",
-                    }
+                    "pass_inconclusive"
+                    if budget is not None
+                    else "inconclusive"
+                    if legacy_inconclusive
                     else "retryable_infra"
+                ),
+                review_audit=(
+                    budget.audit().model_dump(mode="json")
+                    if budget is not None
+                    else None
                 ),
             )
 
@@ -1929,6 +1977,7 @@ class OpenRouterSourceReviewAgent:
         ]
         delivered = 0
         inspection_calls = 0
+        read_files: set[str] = set()
         runtime_source_read = False
         if progress is not None:
             progress(0, self._max_steps)
@@ -1967,18 +2016,32 @@ class OpenRouterSourceReviewAgent:
                     inspection_calls += 1
                     if name == "read_file":
                         path = arguments.get("path")
+                        if isinstance(path, str):
+                            read_files.add(path)
                         runtime_source_read = runtime_source_read or (
                             isinstance(path, str) and _is_generator_runtime_source(path)
                         )
-                    delivered += len(output)
+                    delivered += len(output.encode("utf-8"))
                     if delivered > _MAX_TOTAL_TOOL_CHARS:
-                        raise ValueError("source reviewer exceeded read budget")
+                        raise SourceReviewBudgetExhausted(
+                            "source-review-read-budget-exhausted",
+                            max_steps=self._max_steps,
+                            steps_used=_step + 1,
+                            read_bytes_used=delivered,
+                            read_files_used=len(read_files),
+                        )
                     messages.append(
                         {"role": "tool", "tool_call_id": call_id, "content": output}
                     )
                 if progress is not None:
                     progress(_step + 1, self._max_steps)
-        raise ValueError("source reviewer exceeded step budget")
+        raise SourceReviewBudgetExhausted(
+            "source-review-step-budget-exhausted",
+            max_steps=self._max_steps,
+            steps_used=self._max_steps,
+            read_bytes_used=delivered,
+            read_files_used=len(read_files),
+        )
 
     async def _post_completion(
         self,

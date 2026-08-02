@@ -2079,7 +2079,9 @@ async def test_parallel_model_tool_calls_cannot_exceed_trajectory_cap(
 
     assert not result.observation.ok
     assert result.observation.error_code == "l2-model-tool-budget"
-    assert result.observation.failure_disposition == "retryable_infra"
+    assert result.observation.failure_disposition == "pass_inconclusive"
+    assert result.observation.review_audit is not None
+    assert result.observation.review_audit["reason_code"] == "l2-model-tool-budget"
     assert result.response_models == ("moonshotai/kimi-k3-20260715",)
 
 

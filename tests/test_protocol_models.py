@@ -192,3 +192,14 @@ def test_build_only_result_cannot_quarantine() -> None:
         ValidationError, match="build-only result cannot carry a quarantine"
     ):
         _request(build_only=True)
+
+
+def test_deferred_mechanical_result_can_preserve_oracle_quarantine() -> None:
+    request = _request(build_only=True, deferred_source_review=True)
+    assert request.deferred_source_review is True
+    assert request.outcome == ScreenResultOutcome.QUARANTINE
+
+
+def test_deferred_source_review_requires_mechanical_lane() -> None:
+    with pytest.raises(ValidationError, match="requires the mechanical lane"):
+        _pass_request(deferred_source_review=True)
