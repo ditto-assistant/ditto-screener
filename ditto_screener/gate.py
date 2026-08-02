@@ -614,15 +614,14 @@ class BuildGate:
         ``build_only`` selects the mechanical lane. It is used for both an
         already-adjudicated prerequisite rebuild and score-first admission
         whose deep source review is deferred. It skips source review but still
-        performs archive/contract validation, build, serve, isolation,
-        behavioral-oracle, and image-export work. A mechanical screen can only
-        pass, report a genuine deterministic or infrastructure failure, or run
-        out of lease budget; it cannot quarantine on source evidence it did not
-        collect.
+        performs archive/contract validation, build, serve, isolation, and
+        image-export work. A mechanical screen can only pass, report a genuine
+        deterministic or infrastructure failure in those stages, or run out of
+        lease budget; private-policy checks run in the later full review.
 
         ``deferred_source_review`` distinguishes a fresh score-first admission
-        from an already-adjudicated rebuild. Both skip deep source review; only
-        the fresh admission keeps concrete cheap behavioral findings fail-closed.
+        from an already-adjudicated rebuild for the signed platform contract.
+        Both mechanical paths skip private-policy work here.
         """
 
         loop = asyncio.get_running_loop()
@@ -716,8 +715,8 @@ class BuildGate:
             # The mechanical lane deliberately skips source / pre-execution
             # review (the static lead and agentic reviewer): no lead is
             # resolved, no reviewer is launched, and the policy receives no
-            # source-review callback below. Mechanical and behavioral gates
-            # remain authoritative.
+            # source-review callback below. Archive, build, runtime-health,
+            # isolation, and export gates remain authoritative.
             if not build_only:
                 # Static rules run before any submission-controlled Dockerfile or
                 # image, but they are routing leads rather than proof. Resolve an
