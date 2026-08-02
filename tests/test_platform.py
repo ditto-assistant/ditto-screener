@@ -22,6 +22,11 @@ _MINER = "5DhaT8U7LVwnnJNUU8VL1XEipicatoaDVVq7cHo227gogVZm"
 _TOKEN = "test-screener-token-at-least-32-characters"
 
 
+def test_verdict_retry_window_spans_a_normal_platform_rollout() -> None:
+    assert sum(platform_module._VERDICT_RETRY_DELAYS_SECONDS) == 61.5
+    assert len(platform_module._VERDICT_RETRY_DELAYS_SECONDS) + 1 == 8
+
+
 def _assert_auth(request: httpx.Request) -> None:
     assert request.headers["Authorization"] == f"Bearer {_TOKEN}"
     assert request.headers["X-Screener-Hotkey"]

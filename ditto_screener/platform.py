@@ -58,7 +58,12 @@ logger = logging.getLogger(__name__)
 _PREFIX = "/api/v1/screener"
 _IMAGE_REQUEST_TIMEOUT = httpx.Timeout(300.0, connect=30.0, pool=30.0)
 _IMAGE_UPLOAD_ATTEMPTS = 3
-_VERDICT_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0)
+# A screened image can take many minutes to build, while a Platform rollout is
+# normally a sub-minute interruption. Keep the already-computed signed verdict
+# in memory across that window instead of abandoning the 70-minute lease after
+# 3.5 seconds. These sleeps spend no model-call budget and do not rerun the
+# build; they only replay the same idempotent attempt-bound payload.
+_VERDICT_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 _TRANSIENT_VERDICT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
