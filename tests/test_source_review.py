@@ -629,7 +629,7 @@ fn run() -> String {
     assert observation.risk_level == "high"
     assert observation.categories == ("benchmark_emulation",)
     assert observation.finding is not None
-    assert observation.finding["prompt_revision"] == "source-review-v15"
+    assert observation.finding["prompt_revision"] == "source-review-v16"
     assert observation.finding["evidence"] == [
         {
             "path": "src/memory_solver.rs",
@@ -1514,7 +1514,7 @@ async def test_benign_control_clears_with_zdr_and_read_only_tools(
     assert observation.finding is not None
     assert "use\nanalyze_binary only when" in prompt
     assert 'compact, precomputed\n"binary_analysis"' in prompt
-    assert observation.finding["prompt_revision"] == "source-review-v15"
+    assert observation.finding["prompt_revision"] == "source-review-v16"
     initial_inventory = json.loads(
         seen[0]["messages"][1]["content"]
         .split("\nExact-file trusted provenance:\n", 1)[0]
@@ -2066,6 +2066,50 @@ async def test_synthetic_advisory_patterns_are_classified_separately(
         assert observation.categories == (case["category"],), case["name"]
 
 
+async def test_synthetic_manual_review_patterns_remain_quarantine_leads(
+    tmp_path: Path,
+) -> None:
+    cases = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )["manual_review"]
+    key = tmp_path / "key"
+    key.write_text("sk-test-private-review")
+    os.chmod(key, 0o600)
+
+    for index, case in enumerate(cases):
+        final = {
+            "risk_level": "medium",
+            "confidence": 0.85,
+            "categories": [case["category"]],
+            "evidence": [
+                {
+                    "path": "src/main.rs",
+                    "line": 1,
+                    "category": case["category"],
+                },
+                {
+                    "path": "src/main.rs",
+                    "line": 2,
+                    "category": case["category"],
+                },
+            ],
+            "summary": "Reachable fixed-family checker requires operator review.",
+        }
+        observation = await _agent(key, _transport(final, [])).review(
+            str(
+                _archive(
+                    tmp_path, f"fn serve() {{ route(); }} // {index}\n{case['source']}"
+                )
+            ),
+            artifact_sha256=_SHA,
+        )
+
+        assert observation.ok and observation.risk_level == "medium", case["name"]
+        assert observation.categories == (case["category"],), case["name"]
+
+
 def test_regression_fixture_quantifies_the_tradeoff() -> None:
     replay = json.loads(
         (
@@ -2090,6 +2134,7 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
     )
 
     legitimate = {case["name"] for case in fixture["legitimate"]}
+    manual_review = {case["name"] for case in fixture["manual_review"]}
     prohibited = {case["name"] for case in fixture["prohibited"]}
 
     assert {
@@ -2103,12 +2148,23 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "dittobench-v3-required-reachability-preflight",
         "dittobench-v3-best-effort-reachability-preflight",
         "preflight-reports-call-only-after-successful-post",
+        "live-schema-driven-tool-routing-and-execution",
+        "generic-runtime-described-state-induction",
+        "model-authored-bounded-retry-over-live-schema",
+        "prompt-specialized-retrieval-and-reranking",
     } <= legitimate
+    assert {
+        "fixed-world-checker-retries-model-drafts",
+        "finite-template-checker-with-model-final-author",
+    } <= manual_review
     assert {
         "case-or-private-challenge-dispatch",
         "deterministic-benchmark-answer-table",
         "expected-answer-trained-runtime",
         "model-output-replacement",
+        "post-model-authoritative-answer-replacement",
+        "planned-tool-call-reported-without-execution",
+        "finite-family-world-compiler-direct-answer",
         "audit-environment-fingerprint",
         "credential-or-private-challenge-embedding",
         "cross-user-content-access-and-exfiltration",
@@ -2128,7 +2184,45 @@ def test_regression_fixture_covers_allowed_and_prohibited_boundary() -> None:
         "preflight-fabricated-observed-call",
         "preflight-branch-leaks-into-scored-requests",
     } <= prohibited
-    assert legitimate.isdisjoint(prohibited)
+    assert legitimate.isdisjoint(manual_review | prohibited)
+    assert manual_review.isdisjoint(prohibited)
+
+
+def test_regression_fixture_routes_new_policy_v9_review_leads() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "source-review-regressions.json"
+        ).read_text()
+    )
+    cases = {
+        case["name"]: case["source"]
+        for group in ("manual_review", "prohibited")
+        for case in fixture[group]
+    }
+    expected = {
+        "fixed-world-checker-retries-model-drafts": {
+            "expected-value-model-retry-loop",
+            "finite-family-world-compiler",
+        },
+        "finite-template-checker-with-model-final-author": {
+            "expected-value-model-retry-loop",
+            "finite-family-world-compiler",
+        },
+        "post-model-authoritative-answer-replacement": {
+            "post-model-answer-replacement"
+        },
+        "planned-tool-call-reported-without-execution": {
+            "planned-tool-call-self-report"
+        },
+        "finite-family-world-compiler-direct-answer": {"finite-family-world-compiler"},
+    }
+
+    for name, expected_leads in expected.items():
+        actual = {
+            lead["kind"]
+            for lead in find_source_review_leads([("src/main.rs", cases[name])])
+        }
+        assert expected_leads <= actual, name
 
 
 def test_dittobench_preflight_prompt_keeps_the_false_positive_boundary_narrow() -> None:
@@ -2159,6 +2253,25 @@ def test_dittobench_preflight_prompt_keeps_the_false_positive_boundary_narrow() 
     }
 
     assert all(marker in _SYSTEM_PROMPT for marker in required)
+
+
+def test_policy_v9_prompt_separates_replacement_retry_and_legitimate_controls() -> None:
+    from ditto_screener.source_review import _SYSTEM_PROMPT
+
+    required = {
+        "complete request -> retrieval/routing -> model -> tool execution -> response",
+        "post-model-answer-replacement",
+        "expected-value-model-retry-loop",
+        "manual-review lead, not direct",
+        "planned-tool-call-self-report",
+        "finite-family-world-compiler",
+        "fresh model call still authors",
+        "Live schema-driven routing",
+        "runtime-described",
+        "generic state reconstruction",
+    }
+
+    assert all(fragment in _SYSTEM_PROMPT for fragment in required)
 
 
 def test_latest_backroom_safe_batch_is_fully_represented() -> None:
@@ -2620,6 +2733,123 @@ fn answer(req: Request) {
     leads = find_source_review_leads([("src/agent.rs", source)])
 
     assert "precomputed-answer-slot-injection" not in {lead["kind"] for lead in leads}
+
+
+def test_post_model_answer_replacement_fires_on_engine_authored_slot() -> None:
+    source = """\
+fn finish(req: Request) -> Response {
+    let model_reply = call_model(req.question);
+    if !model_reply.text.contains(&req.required_fact) {
+        model_reply.text = compose_answer(req.required_fact);
+    }
+    Response::from(model_reply)
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "post-model-answer-replacement" in {lead["kind"] for lead in leads}
+
+
+def test_post_model_answer_replacement_spares_fresh_model_retry() -> None:
+    source = """\
+fn finish(req: Request) -> Response {
+    let check_value = derive_expected(req.memories);
+    let mut model_reply = call_model(req.question);
+    if !model_reply.text.contains(&check_value) {
+        model_reply = call_model(corrective_prompt(req.question, check_value));
+    }
+    Response::from_model(model_reply)
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "post-model-answer-replacement" not in {lead["kind"] for lead in leads}
+
+
+def test_expected_value_model_retry_loop_is_manual_review_lead() -> None:
+    source = """\
+fn answer(req: Request) -> Response {
+    let check_value = resolve_expected(req.memories);
+    let mut candidate_reply = call_model(req.question);
+    for retry in 0..2 {
+        if !candidate_reply.text.contains(&check_value) {
+            candidate_reply = call_model(corrective_feedback_pass(check_value, retry));
+        }
+    }
+    Response::from_model(candidate_reply)
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "expected-value-model-retry-loop" in {lead["kind"] for lead in leads}
+    assert "post-model-answer-replacement" not in {lead["kind"] for lead in leads}
+
+
+def test_generic_schema_validation_retry_is_not_expected_value_lead() -> None:
+    source = """\
+fn answer(req: Request, catalog: LiveCatalog) -> Response {
+    let route = route_from_live_schema(req, catalog.tool_schema());
+    let mut candidate_reply = call_model(route.prompt);
+    for retry in 0..2 {
+        if !catalog.validate(candidate_reply.tool_call()) {
+            candidate_reply = call_model(schema_feedback_pass(catalog, retry));
+        }
+    }
+    Response::from_model(candidate_reply)
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "expected-value-model-retry-loop" not in {lead["kind"] for lead in leads}
+
+
+def test_planned_tool_call_self_report_routes_execution_provenance_review() -> None:
+    source = """\
+fn respond(plan: Plan) -> Response {
+    let selected_tool = plan.predicted_tool();
+    let reported_tool_call = ObservedToolCall::from(selected_tool);
+    let trajectory = vec![reported_tool_call];
+    return Response::with_observed_calls(trajectory);
+}
+"""
+
+    leads = find_source_review_leads([("src/agent.rs", source)])
+
+    assert "planned-tool-call-self-report" in {lead["kind"] for lead in leads}
+
+
+def test_finite_family_world_compiler_routes_manual_review() -> None:
+    source = """\
+fn solve(req: Request) -> Value {
+    let world_schema = WORLD_DEFINITION_REGISTRY.lookup(req.family);
+    let family = classify_template(req.question, world_schema);
+    let check_value = derive_answer(family, req.memories);
+    check_value
+}
+"""
+
+    leads = find_source_review_leads([("src/compiler.rs", source)])
+
+    assert "finite-family-world-compiler" in {lead["kind"] for lead in leads}
+
+
+def test_runtime_described_world_interpreter_spares_compiler_lead() -> None:
+    source = """\
+fn solve(req: Request, live_schema: Schema) -> Value {
+    let world_schema = live_schema.runtime_described(req.ontology);
+    let family = classify_template(req.question, world_schema);
+    let check_value = derive_answer(family, req.memories);
+    call_model_with_tool_schema(req, live_schema, check_value)
+}
+"""
+
+    leads = find_source_review_leads([("src/interpreter.rs", source)])
+
+    assert "finite-family-world-compiler" not in {lead["kind"] for lead in leads}
 
 
 def test_authority_envelope_answer_shotgun_fires_on_emit_both() -> None:
