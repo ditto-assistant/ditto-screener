@@ -353,10 +353,10 @@ class ScreenerWorker:
                         publish_image=publish_image,
                         # A build-only item requests the mechanical lane. That
                         # lane is used both for an already-adjudicated rebuild
-                        # and for score-first admission when deep source review
-                        # is intentionally deferred. It still builds, serves,
-                        # runs the behavioral oracle, and cannot quarantine on
-                        # source-review evidence it did not collect.
+                        # and for score-first admission when the complete source
+                        # and behavioral review is intentionally deferred. It
+                        # builds, serves, isolates, and exports the image without
+                        # spending private-policy/model budget.
                         build_only=item.build_only,
                         deferred_source_review=item.deferred_source_review,
                     )

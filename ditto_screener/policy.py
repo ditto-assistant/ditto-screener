@@ -949,8 +949,8 @@ class PolicyEngine:
         pass_inconclusive = False
         # The mechanical lane does not collect source-review evidence. The
         # selector phase owns that work (source review, fingerprint, and timing
-        # tripwires), so skip it entirely. Mechanical and behavioral challenge
-        # failures remain authoritative below.
+        # tripwires), so skip it entirely. Mechanical failures from the gate's
+        # download/build/serve/export stages remain authoritative.
         if not build_only:
             for module in (m for m in self.modules if m.phase == "selector"):
                 result = await module.evaluate(context)
@@ -967,13 +967,21 @@ class PolicyEngine:
                     )
                 selected = selected or result.disposition == ModuleDisposition.TRIPWIRE
 
-        # Challenge-phase modules run on EVERY submission, decoupled from the
+        # Mechanical admission proves that the submitted artifact can be
+        # validated, built, started, isolated, and exported. It deliberately
+        # spends no private-policy/model budget: a fresh submission receives
+        # the complete selector + behavioral review after it qualifies, while
+        # a rebuild already passed that review. Running the behavioral oracle
+        # here made an otherwise successful image build "inconclusive" and put
+        # it into the full lease backoff before validators could ever score it.
+        if build_only:
+            return self._decision(ScreeningOutcome.PASS, evidence, finding)
+
+        # Challenge-phase modules run on every full review, decoupled from the
         # selector tripwire. The always-on behavioral oracle lives here so a
         # harness cannot behave only during a ~5% audit. It still runs for a
-        # mechanical pass (it exercises the freshly built image), but because
-        # this lane collects no source-review evidence, its verdict can never
-        # quarantine on that basis: a genuine retryable-infra failure still
-        # bubbles up and every other review-only disposition is downgraded.
+        # qualifying submission's deferred review; mechanical admission above
+        # only establishes that an image is ready for validator scoring.
         challenges = tuple(m for m in self.modules if m.phase == "challenge")
         cleared = False
         for module in challenges:
@@ -983,11 +991,6 @@ class PolicyEngine:
             review_audit = result.review_audit or review_audit
             terminal = _module_terminal(result.disposition)
             if terminal is not None:
-                if build_only and not deferred_source_review:
-                    if terminal == ScreeningOutcome.RETRYABLE_INFRA:
-                        return self._decision(terminal, evidence, finding)
-                    # QUARANTINE / INCONCLUSIVE cannot fail a build-only pass.
-                    continue
                 return self._decision(
                     terminal, evidence, finding, review_audit=review_audit
                 )

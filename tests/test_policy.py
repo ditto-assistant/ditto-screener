@@ -615,46 +615,27 @@ async def test_build_only_skips_source_review_selector_and_passes() -> None:
     assert reviewed is False
 
 
-async def test_build_only_runs_oracle_but_never_quarantines() -> None:
-    """The oracle still runs on a build-only pass, but cannot quarantine it."""
-    seen: list[str] = []
+async def test_build_only_skips_behavioral_oracle_and_passes() -> None:
+    """Mechanical admission does not spend private-policy/model budget."""
 
-    async def observe(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
-        seen.append(challenge_id)
-        # Missing gateway token => wrong-answer QUARANTINE in the full pipeline
-        # (test_wrong_nonce_table_harness_fails_the_oracle).
-        return ChallengeObservation(
-            challenge_id=challenge_id,
-            ok=True,
-            response_digest="ef" * 32,
-            elapsed_ms=900,
-            gateway_calls=2,
-            oracle_answer_correct=False,
-        )
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("build-only admission must not run the oracle")
 
     decision = await _oracle_engine().evaluate(_context(observe), build_only=True)
-    assert seen == ["v8-behavioral-oracle"]  # the oracle DID run
     assert decision.outcome == ScreeningOutcome.PASS
     assert decision.submits_verdict and decision.passed
 
 
-async def test_deferred_source_review_keeps_oracle_quarantine_authoritative() -> None:
-    async def observe(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
-        return ChallengeObservation(
-            challenge_id=challenge_id,
-            ok=True,
-            response_digest="ef" * 32,
-            elapsed_ms=900,
-            gateway_calls=2,
-            oracle_answer_correct=False,
-        )
+async def test_deferred_source_review_mechanical_lane_skips_oracle() -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("deferred mechanical admission must not run the oracle")
 
     decision = await _oracle_engine().evaluate(
         _context(observe),
         build_only=True,
         deferred_source_review=True,
     )
-    assert decision.outcome == ScreeningOutcome.QUARANTINE
+    assert decision.outcome == ScreeningOutcome.PASS
 
 
 async def test_deferred_source_review_requires_mechanical_lane() -> None:
@@ -665,8 +646,8 @@ async def test_deferred_source_review_requires_mechanical_lane() -> None:
         await _oracle_engine().evaluate(_context(observe), deferred_source_review=True)
 
 
-async def test_build_only_still_reports_genuine_infra_failure() -> None:
-    """Build-only downgrades review verdicts but not real infra failures."""
+async def test_full_review_still_reports_private_policy_infra_failure() -> None:
+    """Deferral does not weaken the later full source and behavioral review."""
 
     async def challenge(*_):  # type: ignore[no-untyped-def]
         raise AssertionError("unavailable pack never reaches the runner")
@@ -682,7 +663,7 @@ async def test_build_only_still_reports_genuine_infra_failure() -> None:
             ),
         ),
     )
-    decision = await engine.evaluate(_context(challenge), build_only=True)
+    decision = await engine.evaluate(_context(challenge))
     assert decision.outcome == ScreeningOutcome.RETRYABLE_INFRA
 
 
