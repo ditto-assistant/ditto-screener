@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.21.1 (2026-08-02)
+
+### Bug Fixes
+
+- Retain verdicts through platform rollouts
+  ([#107](https://github.com/ditto-assistant/ditto-screener/pull/107),
+  [`ebe2c51`](https://github.com/ditto-assistant/ditto-screener/commit/ebe2c51a4411cae51138a04423bed0717246b441))
+
+### Continuous Integration
+
+- Enable NumPy for IAP deploy transport
+  ([#106](https://github.com/ditto-assistant/ditto-screener/pull/106),
+  [`86021e4`](https://github.com/ditto-assistant/ditto-screener/commit/86021e470b2ec6c241a4b8a64d75f8115736c021))
+
+
 ## v0.21.0 (2026-08-02)
 
 ### Bug Fixes
