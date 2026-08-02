@@ -68,6 +68,20 @@ def test_deploy_workflow_fans_out_over_the_fleet_in_parallel() -> None:
     assert '"$name" "$zone" \'${{ github.sha }}\'' in workflow
 
 
+def test_deploy_workflow_enables_numpy_before_iap_transport() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    deploy_job = workflow.split("\n  deploy:\n", 1)[1]
+
+    # IAP checks for NumPy in gcloud's own interpreter and automatically uses
+    # the accelerated websocket path when the import succeeds.
+    setup = deploy_job.index("google-github-actions/setup-gcloud@v2")
+    python = deploy_job.index("gcloud info --format='value(basic.python_location)'")
+    install = deploy_job.index('"$gcloud_python" -m pip install')
+    verify = deploy_job.index('import numpy; print(f"NumPy {numpy.__version__}')
+    transport = deploy_job.index("deploy-screener-via-ssh.sh")
+    assert setup < python < install < verify < transport
+
+
 def test_deploy_streams_updater_over_one_ssh_session() -> None:
     workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
     transport = (ROOT / "scripts" / "deploy-screener-via-ssh.sh").read_text()
