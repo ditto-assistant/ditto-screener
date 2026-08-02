@@ -90,6 +90,12 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Enable NumPy-accelerated IAP transport
+        run: |
+          gcloud_python="$(gcloud info --format='value(basic.python_location)')"
+          "$gcloud_python" -m pip install --disable-pip-version-check numpy
+          "$gcloud_python" -c 'import numpy; print(f"NumPy {numpy.__version__} enabled for gcloud IAP")'
+
       - name: Deploy exact commit to ${{ matrix.name }} (${{ matrix.zone }})
         run: |
           name='${{ matrix.name }}'
