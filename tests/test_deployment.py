@@ -44,7 +44,7 @@ def test_deploy_reinstalls_and_probes_embedded_protocol() -> None:
 
 
 def test_deploy_workflow_discovers_screeners_by_label_not_a_fixed_vm() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    workflow = (ROOT / ".depot" / "workflows" / "deploy.yml").read_text()
 
     # The pet VM name/zone are no longer hardcoded: discovery is label-driven.
     assert "SCREENER_VM: ditto-screener-prod" not in workflow
@@ -57,7 +57,7 @@ def test_deploy_workflow_discovers_screeners_by_label_not_a_fixed_vm() -> None:
 
 
 def test_deploy_workflow_fans_out_over_the_fleet_in_parallel() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    workflow = (ROOT / ".depot" / "workflows" / "deploy.yml").read_text()
 
     # Discovery feeds a matrix so hosts deploy concurrently (bounded), instead of
     # a sequential loop that could exceed the job timeout on a growing fleet.
@@ -69,7 +69,7 @@ def test_deploy_workflow_fans_out_over_the_fleet_in_parallel() -> None:
 
 
 def test_deploy_streams_updater_over_one_ssh_session() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    workflow = (ROOT / ".depot" / "workflows" / "deploy.yml").read_text()
     transport = (ROOT / "scripts" / "deploy-screener-via-ssh.sh").read_text()
 
     assert "gcloud compute scp" not in workflow
@@ -127,7 +127,7 @@ def test_single_ssh_transport_preserves_bytes_and_exit_status(tmp_path: Path) ->
 
 
 def test_pull_request_ci_keeps_fast_safety_gates() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    workflow = (ROOT / ".depot" / "workflows" / "ci.yml").read_text()
 
     assert "pull_request:" in workflow
     assert 'uv run pytest -m "not integration"' in workflow
@@ -140,7 +140,7 @@ def test_pull_request_ci_keeps_fast_safety_gates() -> None:
 
 
 def test_core_e2e_is_daily_and_manually_dispatchable() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "core-e2e.yml").read_text()
+    workflow = (ROOT / ".depot" / "workflows" / "core-e2e.yml").read_text()
 
     assert "schedule:" in workflow
     assert 'cron: "17 8 * * *"' in workflow
@@ -155,8 +155,8 @@ def test_core_e2e_is_daily_and_manually_dispatchable() -> None:
 
 def test_release_commit_triggers_deploy_without_recursive_release() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text()
-    deploy_workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-    release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+    deploy_workflow = (ROOT / ".depot" / "workflows" / "deploy.yml").read_text()
+    release_workflow = (ROOT / ".depot" / "workflows" / "release.yml").read_text()
 
     # Semantic Release writes the version bump after the feature commit has
     # already triggered deployment. That release commit must run the push-based
@@ -389,7 +389,7 @@ def test_bootstrap_bake_mode_provisions_before_any_secret() -> None:
 
 def test_golden_image_bake_pipeline_exists() -> None:
     packer = (ROOT / "packer" / "screener-fleet.pkr.hcl").read_text()
-    workflow = (ROOT / ".github" / "workflows" / "bake-image.yml").read_text()
+    workflow = (ROOT / ".depot" / "workflows" / "bake-image.yml").read_text()
 
     assert "image_family      = var.image_family" in packer
     assert "ditto-screener-fleet" in packer
