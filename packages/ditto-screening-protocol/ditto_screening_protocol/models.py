@@ -37,6 +37,7 @@ class ScreenResultOutcome(StrEnum):
     """Typed screener result; non-verdict outcomes never become rejection."""
 
     PASS = "pass"
+    PASS_INCONCLUSIVE = "pass_inconclusive"
     DETERMINISTIC_REJECT = "deterministic_reject"
     RETRYABLE_INFRA = "retryable_infra"
     QUARANTINE = "quarantine"
@@ -211,16 +212,21 @@ class ScreenerQueueItem(BaseModel):
         bool,
         Field(
             description=(
-                "When true, the submission has ALREADY cleared anti-cheat review "
-                "under the current policy and is merely missing its built "
-                "prerequisites (screened image and/or versioned benchmark "
-                "dataset). The screener must SKIP the source / pre-execution "
-                "anti-cheat review entirely and only do the mechanical build "
-                "work: build, upload and verify the screened image, run the "
-                "behavioral oracle, and report a pass/build result. A build-only "
-                "run must never quarantine. Defaults to false; an un-migrated "
-                "platform omits it and gets the full pipeline as before."
+                "Selects the mechanical build/runtime lane. The platform uses it "
+                "both for already-reviewed prerequisite rebuilds and for "
+                "score-first admission. The screener skips deep source review but "
+                "still performs every cheap fail-closed gate."
             ),
+        ),
+    ] = False
+    deferred_source_review: Annotated[
+        bool,
+        Field(
+            description=(
+                "True only for a fresh score-first admission whose deep source "
+                "review is deferred. Unlike an already-reviewed rebuild, concrete "
+                "mechanical or behavioral-oracle findings remain authoritative."
+            )
         ),
     ] = False
 
@@ -228,6 +234,8 @@ class ScreenerQueueItem(BaseModel):
     def validate_precheck(self) -> ScreenerQueueItem:
         if (self.precheck_reason_code is None) != (self.duplicate_of is None):
             raise ValueError("precheck reason and duplicate reference must be paired")
+        if self.deferred_source_review and not self.build_only:
+            raise ValueError("deferred source review requires the mechanical lane")
         return self
 
 
@@ -361,6 +369,47 @@ class SourceReviewFinding(BaseModel):
         return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+class ScreenReviewAudit(BaseModel):
+    """Public-safe accounting for a bounded review that could not conclude."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: Literal["l1", "l2"]
+    reason_code: Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]
+    prompt_revision: Annotated[str, Field(min_length=1, max_length=64)]
+    harness_revision: Annotated[str | None, Field(min_length=1, max_length=64)] = None
+    max_steps: Annotated[int, Field(ge=1, le=100)]
+    steps_used: Annotated[int, Field(ge=0, le=100)]
+    max_read_bytes: Annotated[int | None, Field(ge=1, le=256 * 1024**2)] = None
+    read_bytes_used: Annotated[int | None, Field(ge=0, le=256 * 1024**2)] = None
+    max_input_tokens: Annotated[int | None, Field(ge=1, le=2_000_000)] = None
+    input_tokens_used: Annotated[int | None, Field(ge=0, le=2_000_000)] = None
+    max_output_tokens: Annotated[int | None, Field(ge=1, le=256_000)] = None
+    output_tokens_used: Annotated[int | None, Field(ge=0, le=256_000)] = None
+    max_cost_usd: Annotated[float | None, Field(gt=0, le=100)] = None
+    cost_usd_used: Annotated[float | None, Field(ge=0, le=100)] = None
+
+    @model_validator(mode="after")
+    def validate_pairs_and_usage(self) -> ScreenReviewAudit:
+        for maximum, used, label in (
+            (self.max_read_bytes, self.read_bytes_used, "read bytes"),
+            (self.max_input_tokens, self.input_tokens_used, "input tokens"),
+            (self.max_output_tokens, self.output_tokens_used, "output tokens"),
+            (self.max_cost_usd, self.cost_usd_used, "cost"),
+        ):
+            if (maximum is None) != (used is None):
+                raise ValueError(f"{label} maximum and usage must be paired")
+        if self.steps_used > self.max_steps:
+            raise ValueError("review steps used exceed configured maximum")
+        return self
+
+    def canonical_digest(self) -> str:
+        canonical = json.dumps(
+            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class ScreenResultRequest(BaseModel):
     """Signed result posted to ``/screener/agent/{agent_id}/result``."""
 
@@ -391,6 +440,7 @@ class ScreenResultRequest(BaseModel):
     outcome: ScreenResultOutcome | None = None
     manifest_digest: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
     finding_digest: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
+    review_audit_digest: Annotated[str | None, Field(pattern=r"^[0-9a-f]{64}$")] = None
     review_settings_revision: Annotated[int | None, Field(ge=1)] = None
     review_settings_instance_id: Annotated[
         str | None, Field(pattern=r"^[a-zA-Z0-9._-]{1,63}$")
@@ -431,6 +481,15 @@ class ScreenResultRequest(BaseModel):
             ),
         ),
     ] = None
+    review_audit: Annotated[
+        ScreenReviewAudit | None,
+        Field(
+            description=(
+                "Public-safe, digest-bound budget accounting for a terminal "
+                "pass-inconclusive review."
+            )
+        ),
+    ] = None
     policy_version: Annotated[
         int,
         Field(
@@ -463,6 +522,16 @@ class ScreenResultRequest(BaseModel):
             ),
         ),
     ]
+    deferred_source_review: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Signed echo of a platform-issued score-first mechanical claim. "
+                "The platform must verify it against the immutable attempt marker."
+            ),
+        ),
+    ] = False
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -493,21 +562,26 @@ class ScreenResultRequest(BaseModel):
             ):
                 raise ValueError("legacy result cannot carry screened image metadata")
             return self
-        if self.passed != (self.outcome == ScreenResultOutcome.PASS):
+        if self.passed != (
+            self.outcome
+            in {ScreenResultOutcome.PASS, ScreenResultOutcome.PASS_INCONCLUSIVE}
+        ):
             raise ValueError("passed must agree with outcome")
         if (
             self.outcome
             in {
                 ScreenResultOutcome.QUARANTINE,
                 ScreenResultOutcome.INCONCLUSIVE,
+                ScreenResultOutcome.PASS_INCONCLUSIVE,
             }
             and self.attempt_id is None
         ):
-            raise ValueError("non-verdict outcome requires attempt_id")
-        if self.outcome == ScreenResultOutcome.QUARANTINE and (
-            self.manifest_digest is None or self.reason_code is None
-        ):
-            raise ValueError("quarantine requires manifest_digest and reason_code")
+            raise ValueError("review outcome requires attempt_id")
+        if self.outcome in {
+            ScreenResultOutcome.QUARANTINE,
+            ScreenResultOutcome.PASS_INCONCLUSIVE,
+        } and (self.manifest_digest is None or self.reason_code is None):
+            raise ValueError("review result requires manifest_digest and reason_code")
         image_fields = (
             self.image_sha256,
             self.image_size_bytes,
@@ -515,7 +589,10 @@ class ScreenResultRequest(BaseModel):
             self.image_ref,
             self.image_upload_id,
         )
-        if self.outcome == ScreenResultOutcome.PASS:
+        if self.outcome in {
+            ScreenResultOutcome.PASS,
+            ScreenResultOutcome.PASS_INCONCLUSIVE,
+        }:
             if any(value is None for value in image_fields):
                 raise ValueError("passing policy-v9 result requires screened image")
         elif any(value is not None for value in image_fields):
@@ -536,7 +613,11 @@ class ScreenResultRequest(BaseModel):
             raise ValueError("review settings binding must be complete")
         if (self.evidence is not None or self.finding is not None) and (
             self.outcome
-            not in {ScreenResultOutcome.QUARANTINE, ScreenResultOutcome.INCONCLUSIVE}
+            not in {
+                ScreenResultOutcome.QUARANTINE,
+                ScreenResultOutcome.INCONCLUSIVE,
+                ScreenResultOutcome.PASS_INCONCLUSIVE,
+            }
         ):
             raise ValueError("evidence and finding require a review outcome")
         if self.finding is not None:
@@ -544,15 +625,27 @@ class ScreenResultRequest(BaseModel):
                 raise ValueError("finding requires finding_digest")
             if self.finding.canonical_digest() != self.finding_digest:
                 raise ValueError("finding does not match finding_digest")
+        if self.outcome == ScreenResultOutcome.PASS_INCONCLUSIVE:
+            if self.review_audit is None or self.review_audit_digest is None:
+                raise ValueError("pass-inconclusive requires review audit")
+            if self.review_audit.canonical_digest() != self.review_audit_digest:
+                raise ValueError("review audit does not match review_audit_digest")
+        elif self.review_audit is not None or self.review_audit_digest is not None:
+            raise ValueError("review audit requires pass-inconclusive outcome")
         return self
 
     @model_validator(mode="after")
     def validate_build_only(self) -> ScreenResultRequest:
-        # A build-only pass skips the anti-cheat review, so there is no review
-        # to fail: a build-only verdict can never quarantine. This is a
-        # defence-in-depth invariant on top of the worker never constructing a
-        # quarantine for a build-only item.
-        if self.build_only and self.outcome == ScreenResultOutcome.QUARANTINE:
+        if self.deferred_source_review and not self.build_only:
+            raise ValueError("deferred source review requires the mechanical lane")
+        # A historical prerequisite rebuild has already been adjudicated and
+        # cannot create a new quarantine. A fresh deferred admission, however,
+        # must keep concrete cheap behavioral/oracle findings fail-closed.
+        if (
+            self.build_only
+            and not self.deferred_source_review
+            and self.outcome == ScreenResultOutcome.QUARANTINE
+        ):
             raise ValueError("build-only result cannot carry a quarantine outcome")
         return self
 

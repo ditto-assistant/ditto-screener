@@ -5,8 +5,15 @@ benchmark-, scorer-, or audit-specific behavior. Its findings select operator
 quarantine; they never create an automatic terminal rejection.
 
 These source-review refinements run within screening policy v9. They do not
-change the policy version, wire contracts, benchmark activation, or operator
-decision authority.
+change the policy version, benchmark activation, or operator decision authority.
+
+A deterministic source-review step, read, token, or cost budget exhaustion is
+not infrastructure failure and must not retry forever. After archive, build,
+runtime, isolation, duplicate/oracle, and other cheap fail-closed gates pass, the
+screener may emit a signed `pass_inconclusive` with bounded accounting. The
+platform admits the artifact for scoring and can claim a separate deep review
+when its score or rank warrants one. Concrete cheap-gate violations remain
+authoritative; only the exhausted deep review is deferred.
 
 ## Allowed optimization
 

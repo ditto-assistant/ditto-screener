@@ -42,6 +42,7 @@ from ditto_screening_protocol import (
     ScreenerQueueItem,
     ScreenEvidenceItem,
     ScreenResultOutcome,
+    ScreenReviewAudit,
     SourceReviewFinding,
 )
 
@@ -350,10 +351,14 @@ class ScreenerWorker:
                         progress=self._set_progress,
                         deadline=screen_deadline,
                         publish_image=publish_image,
-                        # A build-only item already cleared anti-cheat review;
-                        # the gate skips source review and only builds + serves +
-                        # runs the behavioral oracle, and can never quarantine.
+                        # A build-only item requests the mechanical lane. That
+                        # lane is used both for an already-adjudicated rebuild
+                        # and for score-first admission when deep source review
+                        # is intentionally deferred. It still builds, serves,
+                        # runs the behavioral oracle, and cannot quarantine on
+                        # source-review evidence it did not collect.
                         build_only=item.build_only,
+                        deferred_source_review=item.deferred_source_review,
                     )
             shadow_review = self._gate.pop_shadow_review(attempt_id)
             if shadow_review is not None:
@@ -372,6 +377,7 @@ class ScreenerWorker:
             submits_result = result.submits_verdict or result.outcome in {
                 ScreeningOutcome.QUARANTINE,
                 ScreeningOutcome.INCONCLUSIVE,
+                ScreeningOutcome.PASS_INCONCLUSIVE,
             }
             if not submits_result:
                 logger.warning(
@@ -384,27 +390,39 @@ class ScreenerWorker:
                 return
             self._set_progress("submitting")
             typed_outcome = ScreenResultOutcome(result.outcome.value)
-            passed = typed_outcome == ScreenResultOutcome.PASS
+            passed = typed_outcome in {
+                ScreenResultOutcome.PASS,
+                ScreenResultOutcome.PASS_INCONCLUSIVE,
+            }
             if passed and (screened_image is None or screened_image_upload_id is None):
                 raise PlatformError("passing screen did not publish a prebuilt image")
             is_quarantine = typed_outcome == ScreenResultOutcome.QUARANTINE
-            # There is no review to fail on a build-only pass, so it must never
-            # quarantine. The gate already guarantees this; guard here too so a
-            # regression fails loud instead of silently quarantining an
-            # already-approved agent.
-            if item.build_only and is_quarantine:
+            is_audited_result = typed_outcome in {
+                ScreenResultOutcome.QUARANTINE,
+                ScreenResultOutcome.PASS_INCONCLUSIVE,
+            }
+            # The mechanical lane did not collect source-review evidence, so it
+            # must never quarantine on that basis. The gate already guarantees
+            # this; guard here too so a regression fails loudly.
+            if item.build_only and not item.deferred_source_review and is_quarantine:
                 raise PlatformError(
                     "build-only screen produced a quarantine outcome for "
                     f"agent_id={agent_id}"
                 )
-            reason_code = result.evidence[-1].code if result.evidence else None
+            reason_code = (
+                "source-review-inconclusive"
+                if typed_outcome == ScreenResultOutcome.PASS_INCONCLUSIVE
+                else result.evidence[-1].code
+                if result.evidence
+                else None
+            )
             # The bounded review payloads ride along on quarantine so the
             # operator sees WHY, not just a digest. When a source-review
             # finding exists, the signed finding_digest binds that finding;
             # otherwise it anchors the last module evidence digest as before.
             finding = (
                 SourceReviewFinding.model_validate(result.finding)
-                if is_quarantine and result.finding is not None
+                if is_audited_result and result.finding is not None
                 else None
             )
             evidence = (
@@ -417,8 +435,17 @@ class ScreenerWorker:
                     )
                     for item in result.evidence
                 ]
-                if is_quarantine and result.evidence
+                if is_audited_result and result.evidence
                 else None
+            )
+            review_audit = (
+                ScreenReviewAudit.model_validate(result.review_audit)
+                if typed_outcome == ScreenResultOutcome.PASS_INCONCLUSIVE
+                and result.review_audit is not None
+                else None
+            )
+            review_audit_digest = (
+                review_audit.canonical_digest() if review_audit is not None else None
             )
             finding_digest = (
                 finding.canonical_digest()
@@ -427,7 +454,7 @@ class ScreenerWorker:
                     (item.digest for item in reversed(result.evidence) if item.digest),
                     None,
                 )
-                if is_quarantine
+                if is_audited_result
                 else None
             )
             signature = sign_verdict(
@@ -438,8 +465,10 @@ class ScreenerWorker:
                 policy_version=policy_version,
                 attempt_id=attempt_id,
                 outcome=typed_outcome,
-                manifest_digest=result.manifest_digest if is_quarantine else None,
+                manifest_digest=result.manifest_digest if is_audited_result else None,
                 finding_digest=finding_digest,
+                review_audit_digest=review_audit_digest,
+                deferred_source_review=item.deferred_source_review,
                 review_settings_revision=(
                     self._review_settings_status.revision
                     if self._review_settings_status.revision >= 1
@@ -475,8 +504,9 @@ class ScreenerWorker:
                 detail=result.detail,
                 attempt_id=attempt_id,
                 outcome=typed_outcome,
-                manifest_digest=result.manifest_digest if is_quarantine else None,
+                manifest_digest=result.manifest_digest if is_audited_result else None,
                 finding_digest=finding_digest,
+                review_audit_digest=review_audit_digest,
                 review_settings_revision=(
                     self._review_settings_status.revision
                     if self._review_settings_status.revision >= 1
@@ -500,12 +530,14 @@ class ScreenerWorker:
                 reason_code=reason_code,
                 evidence=evidence,
                 finding=finding,
+                review_audit=review_audit,
                 image_sha256=screened_image.sha256 if screened_image else None,
                 image_size_bytes=screened_image.size_bytes if screened_image else None,
                 image_id=screened_image.image_id if screened_image else None,
                 image_ref=screened_image.image_ref if screened_image else None,
                 image_upload_id=screened_image_upload_id,
                 build_only=item.build_only,
+                deferred_source_review=item.deferred_source_review,
             )
             logger.info(
                 "screened agent_id=%s miner=%s outcome=%s passed=%s "

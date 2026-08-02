@@ -355,6 +355,7 @@ def _with_image_binding_advisory(
     """
     if advisory is None or decision.outcome not in {
         ScreeningOutcome.PASS,
+        ScreeningOutcome.PASS_INCONCLUSIVE,
         ScreeningOutcome.QUARANTINE,
     }:
         return decision
@@ -368,6 +369,7 @@ def _with_image_binding_advisory(
         manifest_digest=decision.manifest_digest,
         evidence=evidence,
         finding=decision.finding,
+        review_audit=decision.review_audit,
     )
 
 
@@ -599,6 +601,7 @@ class BuildGate:
         deadline: float | None = None,
         publish_image: Callable[[BuiltImageArtifact], Awaitable[None]] | None = None,
         build_only: bool = False,
+        deferred_source_review: bool = False,
     ) -> ScreeningDecision:
         """Screen one agent end-to-end; never raises.
 
@@ -608,13 +611,18 @@ class BuildGate:
         start once the budget is spent, so a slow build or source review can no
         longer run past the lease and have its verdict rejected as expired.
 
-        ``build_only`` marks a submission that has already cleared anti-cheat
-        review under the current policy and is missing only its built
-        prerequisites. It skips the entire source / pre-execution anti-cheat
-        review and runs only the mechanical build, serve, behavioral-oracle,
-        and image-export work. A build-only screen can only pass, report a
-        genuine build/serve/infra failure, or run out of lease budget; it can
-        never quarantine.
+        ``build_only`` selects the mechanical lane. It is used for both an
+        already-adjudicated prerequisite rebuild and score-first admission
+        whose deep source review is deferred. It skips source review but still
+        performs archive/contract validation, build, serve, isolation,
+        behavioral-oracle, and image-export work. A mechanical screen can only
+        pass, report a genuine deterministic or infrastructure failure, or run
+        out of lease budget; it cannot quarantine on source evidence it did not
+        collect.
+
+        ``deferred_source_review`` distinguishes a fresh score-first admission
+        from an already-adjudicated rebuild. Both skip deep source review; only
+        the fresh admission keeps concrete cheap behavioral findings fail-closed.
         """
 
         loop = asyncio.get_running_loop()
@@ -703,14 +711,13 @@ class BuildGate:
                 if in_policy_phase:
                     report(source_review_progress_stage(completed, total))
 
-            # A build-only submission has ALREADY cleared anti-cheat review
-            # under the current policy and is here only to have its screened
-            # image built. Skip the entire source / pre-execution anti-cheat
-            # review (the static malicious-preflight lead AND the agentic
-            # reviewer): no lead is resolved, no reviewer is launched, and the
-            # policy is given no source-review source below, so only the
-            # mechanical build + serve + behavioral-oracle stages run and the
-            # run can never quarantine on review.
+            preflight_clearance: SourceReviewObservation | None = None
+
+            # The mechanical lane deliberately skips source / pre-execution
+            # review (the static lead and agentic reviewer): no lead is
+            # resolved, no reviewer is launched, and the policy receives no
+            # source-review callback below. Mechanical and behavioral gates
+            # remain authoritative.
             if not build_only:
                 # Static rules run before any submission-controlled Dockerfile or
                 # image, but they are routing leads rather than proof. Resolve an
@@ -719,7 +726,6 @@ class BuildGate:
                 preflight = TarSourceRepository(tmp_path).malicious_preflight(
                     artifact_sha256=sha256.lower()
                 )
-                preflight_clearance: SourceReviewObservation | None = None
                 if preflight is not None:
                     logger.warning(
                         "static-source review lead agent_id=%s attempt_id=%s "
@@ -741,6 +747,10 @@ class BuildGate:
                         deadline=deadline,
                     )
                     if resolved_preflight.ok and resolved_preflight.risk_level == "low":
+                        preflight_clearance = resolved_preflight
+                    elif resolved_preflight.failure_disposition == "pass_inconclusive":
+                        # Continue through cheap mechanical/runtime gates exactly
+                        # once and retain this observation for terminal defer.
                         preflight_clearance = resolved_preflight
                     else:
                         decision = self._policy.preexecution_source_decision(
@@ -904,19 +914,44 @@ class BuildGate:
             exhausted = self._lease_exhausted(deadline, "policy review")
             if exhausted is not None:
                 return exhausted
-            decision = await self._policy.evaluate(context, build_only=build_only)
+            decision = await self._policy.evaluate(
+                context,
+                build_only=build_only,
+                deferred_source_review=deferred_source_review,
+            )
+            if (
+                decision.outcome == ScreeningOutcome.PASS
+                and preflight_clearance is not None
+                and preflight_clearance.failure_disposition == "pass_inconclusive"
+            ):
+                deferred = self._policy.preexecution_source_decision(
+                    preflight_clearance
+                )
+                decision = ScreeningDecision(
+                    outcome=ScreeningOutcome.PASS_INCONCLUSIVE,
+                    detail=deferred.detail,
+                    manifest_digest=decision.manifest_digest,
+                    evidence=(*deferred.evidence, *decision.evidence),
+                    finding=deferred.finding,
+                    review_audit=deferred.review_audit,
+                )
             # The image-binding advisory can only escalate a PASS to an
-            # operator-reviewed QUARANTINE. A build-only screen must never
-            # quarantine — the worker rejects that outcome, so it would fail
-            # submission and loop with no verdict — and its anti-cheat review is
-            # already adjudicated. Keep the policy decision as-is; apply the
-            # advisory only on a full screen.
+            # operator-reviewed QUARANTINE. The mechanical lane collected no
+            # source-review evidence, so keep its policy decision as-is and
+            # apply the advisory only on a full screen.
             if not build_only:
                 decision = _with_image_binding_advisory(
                     decision, self._image_binding_advisory(tmp_path)
                 )
             self._journal.record(context=context, decision=decision)
-            if decision.outcome == ScreeningOutcome.PASS and publish_image is not None:
+            if (
+                decision.outcome
+                in {
+                    ScreeningOutcome.PASS,
+                    ScreeningOutcome.PASS_INCONCLUSIVE,
+                }
+                and publish_image is not None
+            ):
                 report("submitting")
                 if (
                     exhausted := self._lease_exhausted(deadline, "image export")

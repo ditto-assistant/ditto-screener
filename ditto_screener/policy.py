@@ -73,6 +73,7 @@ class ScreeningOutcome(StrEnum):
     """Final typed result at the private policy boundary."""
 
     PASS = "pass"
+    PASS_INCONCLUSIVE = "pass_inconclusive"
     DETERMINISTIC_REJECT = "deterministic_reject"
     RETRYABLE_INFRA = "retryable_infra"
     QUARANTINE = "quarantine"
@@ -87,6 +88,7 @@ class ModuleDisposition(StrEnum):
     RETRYABLE_INFRA = "retryable_infra"
     QUARANTINE = "quarantine"
     INCONCLUSIVE = "inconclusive"
+    PASS_INCONCLUSIVE = "pass_inconclusive"
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,7 @@ class ScreeningDecision:
     evidence: tuple[PolicyEvidence, ...] = ()
     policy_version: int = SCREENING_POLICY_VERSION
     finding: Mapping[str, object] | None = None
+    review_audit: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.policy_version != SCREENING_POLICY_VERSION:
@@ -139,12 +142,26 @@ class ScreeningDecision:
             > _MAX_FINDING_BYTES
         ):
             raise ValueError("finding exceeds bounded size")
+        if (
+            self.review_audit is not None
+            and len(
+                json.dumps(self.review_audit, sort_keys=True, separators=(",", ":"))
+            )
+            > _MAX_FINDING_BYTES
+        ):
+            raise ValueError("review audit exceeds bounded size")
+        if (
+            self.outcome == ScreeningOutcome.PASS_INCONCLUSIVE
+            and self.review_audit is None
+        ):
+            raise ValueError("pass-inconclusive decision requires review audit")
 
     @property
     def submits_verdict(self) -> bool:
         """Whether this result maps to the unchanged v6 boolean verdict."""
         return self.outcome in {
             ScreeningOutcome.PASS,
+            ScreeningOutcome.PASS_INCONCLUSIVE,
             ScreeningOutcome.DETERMINISTIC_REJECT,
             ScreeningOutcome.RETRYABLE_INFRA,
         }
@@ -154,7 +171,10 @@ class ScreeningDecision:
         """Boolean bound by the unchanged canonical verdict signature."""
         if not self.submits_verdict:
             raise ValueError(f"{self.outcome} is not a verdict")
-        return self.outcome == ScreeningOutcome.PASS
+        return self.outcome in {
+            ScreeningOutcome.PASS,
+            ScreeningOutcome.PASS_INCONCLUSIVE,
+        }
 
 
 @dataclass(frozen=True)
@@ -191,6 +211,7 @@ class SourceReviewObservation:
     finding: Mapping[str, object] | None = None
     failure_disposition: str = "retryable_infra"
     clearance_certified: bool = False
+    review_audit: Mapping[str, object] | None = None
 
 
 ChallengeRunner = Callable[
@@ -220,6 +241,7 @@ class ModuleResult:
     disposition: ModuleDisposition
     evidence: tuple[PolicyEvidence, ...] = ()
     finding: Mapping[str, object] | None = None
+    review_audit: Mapping[str, object] | None = None
 
 
 class PolicyModule(Protocol):
@@ -491,6 +513,21 @@ class AgenticSourceReviewModule(_BaseModule):
             )
         observation = await context.review_source()
         if not observation.ok:
+            if observation.failure_disposition == "pass_inconclusive":
+                return ModuleResult(
+                    ModuleDisposition.PASS_INCONCLUSIVE,
+                    (
+                        PolicyEvidence(
+                            self.module_id,
+                            "source-review-inconclusive",
+                            "bounded source review exhausted without a "
+                            "decisive finding",
+                            observation.finding_digest,
+                        ),
+                    ),
+                    finding=observation.finding,
+                    review_audit=observation.review_audit,
+                )
             disposition = (
                 ModuleDisposition.INCONCLUSIVE
                 if observation.failure_disposition == "inconclusive"
@@ -897,47 +934,63 @@ class PolicyEngine:
             raise ValueError("too many modules")
 
     async def evaluate(
-        self, context: PolicyContext, *, build_only: bool = False
+        self,
+        context: PolicyContext,
+        *,
+        build_only: bool = False,
+        deferred_source_review: bool = False,
     ) -> ScreeningDecision:
+        if deferred_source_review and not build_only:
+            raise ValueError("deferred source review requires the mechanical lane")
         evidence: list[PolicyEvidence] = []
         finding: Mapping[str, object] | None = None
+        review_audit: Mapping[str, object] | None = None
         selected = False
-        # A build-only submission has ALREADY cleared anti-cheat review under
-        # the current policy; it is here only to have its screened image built.
-        # The selector phase IS the source / anti-cheat review (source-review,
-        # fingerprint, and timing-relay tripwires), so it is skipped entirely
-        # and can never select a quarantine for a build-only run.
+        pass_inconclusive = False
+        # The mechanical lane does not collect source-review evidence. The
+        # selector phase owns that work (source review, fingerprint, and timing
+        # tripwires), so skip it entirely. Mechanical and behavioral challenge
+        # failures remain authoritative below.
         if not build_only:
             for module in (m for m in self.modules if m.phase == "selector"):
                 result = await module.evaluate(context)
                 evidence.extend(result.evidence)
                 finding = result.finding or finding
+                review_audit = result.review_audit or review_audit
                 terminal = _module_terminal(result.disposition)
                 if terminal is not None:
-                    return self._decision(terminal, evidence, finding)
+                    if terminal == ScreeningOutcome.PASS_INCONCLUSIVE:
+                        pass_inconclusive = True
+                        continue
+                    return self._decision(
+                        terminal, evidence, finding, review_audit=review_audit
+                    )
                 selected = selected or result.disposition == ModuleDisposition.TRIPWIRE
 
         # Challenge-phase modules run on EVERY submission, decoupled from the
         # selector tripwire. The always-on behavioral oracle lives here so a
         # harness cannot behave only during a ~5% audit. It still runs for a
-        # build-only pass (it exercises the freshly built image), but because
-        # the submission already cleared review, its verdict can never
-        # quarantine: only a genuine retryable-infra failure still bubbles up,
-        # and every other terminal disposition is downgraded to a pass.
+        # mechanical pass (it exercises the freshly built image), but because
+        # this lane collects no source-review evidence, its verdict can never
+        # quarantine on that basis: a genuine retryable-infra failure still
+        # bubbles up and every other review-only disposition is downgraded.
         challenges = tuple(m for m in self.modules if m.phase == "challenge")
         cleared = False
         for module in challenges:
             result = await module.evaluate(context)
             evidence.extend(result.evidence)
             finding = result.finding or finding
+            review_audit = result.review_audit or review_audit
             terminal = _module_terminal(result.disposition)
             if terminal is not None:
-                if build_only:
+                if build_only and not deferred_source_review:
                     if terminal == ScreeningOutcome.RETRYABLE_INFRA:
                         return self._decision(terminal, evidence, finding)
                     # QUARANTINE / INCONCLUSIVE cannot fail a build-only pass.
                     continue
-                return self._decision(terminal, evidence, finding)
+                return self._decision(
+                    terminal, evidence, finding, review_audit=review_audit
+                )
             cleared = cleared or (
                 module.clears_selection
                 and result.disposition == ModuleDisposition.CLEAR
@@ -959,15 +1012,35 @@ class PolicyEngine:
                         "is available",
                     )
                 )
-            return self._decision(ScreeningOutcome.QUARANTINE, evidence, finding)
+            return self._decision(
+                ScreeningOutcome.QUARANTINE,
+                evidence,
+                finding,
+                review_audit=review_audit,
+            )
 
-        return self._decision(ScreeningOutcome.PASS, evidence, finding)
+        if pass_inconclusive:
+            return self._decision(
+                ScreeningOutcome.PASS_INCONCLUSIVE,
+                evidence,
+                finding,
+                review_audit=review_audit,
+            )
+
+        return self._decision(
+            ScreeningOutcome.PASS,
+            evidence,
+            finding,
+            review_audit=review_audit,
+        )
 
     def _decision(
         self,
         outcome: ScreeningOutcome,
         evidence: Sequence[PolicyEvidence],
         finding: Mapping[str, object] | None = None,
+        *,
+        review_audit: Mapping[str, object] | None = None,
     ) -> ScreeningDecision:
         bounded = tuple(evidence[:_MAX_EVIDENCE])
         detail = ""
@@ -977,12 +1050,15 @@ class PolicyEngine:
             detail = "private policy quarantine pending operator review"
         elif outcome == ScreeningOutcome.INCONCLUSIVE:
             detail = "private policy audit inconclusive"
+        elif outcome == ScreeningOutcome.PASS_INCONCLUSIVE:
+            detail = "bounded source review inconclusive; admitted for scoring"
         return ScreeningDecision(
             outcome=outcome,
             detail=detail,
             manifest_digest=self.manifest.digest,
             evidence=bounded,
             finding=finding,
+            review_audit=review_audit,
         )
 
     def malicious_preflight_decision(
@@ -999,10 +1075,13 @@ class PolicyEngine:
         """Fail closed on an unresolved pre-execution lead without rejecting it."""
         if not observation.ok:
             retryable = observation.failure_disposition == "retryable_infra"
+            pass_inconclusive = observation.failure_disposition == "pass_inconclusive"
             return self._decision(
                 (
                     ScreeningOutcome.RETRYABLE_INFRA
                     if retryable
+                    else ScreeningOutcome.PASS_INCONCLUSIVE
+                    if pass_inconclusive
                     else ScreeningOutcome.INCONCLUSIVE
                 ),
                 (
@@ -1017,6 +1096,7 @@ class PolicyEngine:
                     ),
                 ),
                 observation.finding,
+                review_audit=observation.review_audit,
             )
         if observation.risk_level not in {"medium", "high"}:
             raise ValueError("pre-execution source decision requires elevated risk")
@@ -1083,7 +1163,7 @@ def load_policy_engine(
 
 
 class ReviewJournal:
-    """Append-only, mode-0600 private journal for non-verdict outcomes."""
+    """Append-only, mode-0600 private journal for bounded review outcomes."""
 
     def __init__(self, path: str | None) -> None:
         self._path = Path(path) if path else None
@@ -1099,6 +1179,7 @@ class ReviewJournal:
         if decision.outcome not in {
             ScreeningOutcome.QUARANTINE,
             ScreeningOutcome.INCONCLUSIVE,
+            ScreeningOutcome.PASS_INCONCLUSIVE,
         }:
             return
         self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1119,6 +1200,7 @@ class ReviewJournal:
                 for item in decision.evidence
             ],
             "finding": decision.finding,
+            "review_audit": decision.review_audit,
         }
         encoded = (
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
@@ -1138,6 +1220,7 @@ def _module_terminal(disposition: ModuleDisposition) -> ScreeningOutcome | None:
         ModuleDisposition.RETRYABLE_INFRA: ScreeningOutcome.RETRYABLE_INFRA,
         ModuleDisposition.QUARANTINE: ScreeningOutcome.QUARANTINE,
         ModuleDisposition.INCONCLUSIVE: ScreeningOutcome.INCONCLUSIVE,
+        ModuleDisposition.PASS_INCONCLUSIVE: ScreeningOutcome.PASS_INCONCLUSIVE,
     }.get(disposition)
 
 

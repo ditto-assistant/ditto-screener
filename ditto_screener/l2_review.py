@@ -30,7 +30,11 @@ from ditto_screener.source_review import (
     OpenRouterSourceReviewAgent,
     TarSourceRepository,
 )
-from ditto_screening_protocol import SourceReviewEvidenceItem, SourceReviewFinding
+from ditto_screening_protocol import (
+    ScreenReviewAudit,
+    SourceReviewEvidenceItem,
+    SourceReviewFinding,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +215,9 @@ class L2TrajectoryError(ValueError):
         response_models: tuple[str, ...],
         response_providers: tuple[str, ...],
         dossier_complete: bool,
+        steps_used: int,
+        read_bytes_used: int,
+        read_files_used: int,
     ) -> None:
         super().__init__(code)
         self.code = code
@@ -219,6 +226,9 @@ class L2TrajectoryError(ValueError):
         self.response_models = response_models
         self.response_providers = response_providers
         self.dossier_complete = dossier_complete
+        self.steps_used = steps_used
+        self.read_bytes_used = read_bytes_used
+        self.read_files_used = read_files_used
 
 
 def _bounded_tail_lines(path: Path, *, max_bytes: int) -> list[bytes]:
@@ -1445,8 +1455,45 @@ class KimiSolSourceReviewAgent:
             )
         except L2TrajectoryError as error:
             logger.warning("L2 model trajectory failed safely: %s", error.code)
+            budget_exhausted = error.code in {
+                "model-total-budget",
+                "model-tool-budget",
+                "model-step-budget",
+            }
+            audit = (
+                ScreenReviewAudit(
+                    stage="l2",
+                    reason_code=f"l2-{error.code}",
+                    prompt_revision=L2_PROMPT_REVISION,
+                    harness_revision=L2_HARNESS_REVISION,
+                    max_steps=self._max_steps,
+                    steps_used=min(error.steps_used, self._max_steps),
+                    max_read_bytes=self._max_steps * 2 * _MAX_TOOL_BYTES,
+                    read_bytes_used=error.read_bytes_used,
+                    max_input_tokens=self._max_input_tokens,
+                    input_tokens_used=error.usage.input_tokens,
+                    max_output_tokens=self._max_output_tokens,
+                    output_tokens_used=error.usage.output_tokens,
+                    max_cost_usd=self._max_cost_usd,
+                    cost_usd_used=(
+                        error.usage.reported_cost_usd
+                        if error.usage.reported_cost_usd is not None
+                        else error.usage.estimated_cost_usd
+                    ),
+                )
+                if budget_exhausted
+                else None
+            )
             return L2RunResult(
-                observation=_failure(f"l2-{error.code}", "retryable_infra"),
+                observation=replace(
+                    _failure(
+                        f"l2-{error.code}",
+                        "pass_inconclusive" if budget_exhausted else "retryable_infra",
+                    ),
+                    review_audit=(
+                        audit.model_dump(mode="json") if audit is not None else None
+                    ),
+                ),
                 analyzed_files=(),
                 causal_path=(),
                 tools=error.tools,
@@ -2559,6 +2606,9 @@ class KimiSolSourceReviewAgent:
         trajectory_complete = dossier_complete
         no_tool_retries = 0
         analyzer_calls = 0
+        steps_used = 0
+        read_bytes_used = 0
+        read_files: set[str] = set()
 
         def failure(code: str) -> L2TrajectoryError:
             return L2TrajectoryError(
@@ -2568,9 +2618,13 @@ class KimiSolSourceReviewAgent:
                 response_models=tuple(response_models),
                 response_providers=tuple(response_providers),
                 dossier_complete=trajectory_complete,
+                steps_used=steps_used,
+                read_bytes_used=read_bytes_used,
+                read_files_used=len(read_files),
             )
 
         for _step in range(max_steps or self._max_steps):
+            steps_used = _step + 1
             response = await self._post(
                 client,
                 api_key,
@@ -2733,6 +2787,10 @@ class KimiSolSourceReviewAgent:
                     )
                 except ValueError as error:
                     raise failure("analyzer-contract") from error
+                read_bytes_used += len(tool_output.encode("utf-8"))
+                path = arguments.get("path")
+                if isinstance(path, str):
+                    read_files.add(path)
                 try:
                     _require_complete_analysis(tool_output, allow_tool_error=True)
                 except L2InconclusiveError:
@@ -3020,6 +3078,7 @@ class KimiSolSourceReviewAgent:
                 "error_code": result.observation.error_code,
                 "finding": result.observation.finding,
                 "failure_disposition": result.observation.failure_disposition,
+                "review_audit": result.observation.review_audit,
             },
             "analyzed_files": list(result.analyzed_files),
             "causal_path": list(result.causal_path),
@@ -3076,6 +3135,7 @@ class KimiSolSourceReviewAgent:
                 "artifact_sha256": artifact_sha256,
                 "l1_finding_digest": l1_observation.finding_digest,
                 "finding_digest": observation.finding_digest,
+                "review_audit": observation.review_audit,
                 "analyst_model": self._model,
                 "analyst_fallback_models": list(self._fallback_models),
                 "critic_model": self._critic_model,
@@ -3227,6 +3287,15 @@ class LayeredSourceReviewAgent:
         if self._mode == "shadow":
             self._shadow_results[attempt_id] = result
             return l1
+        if result.observation.failure_disposition == "pass_inconclusive":
+            # Preserve the original bounded L1 lead as partial evidence; the
+            # exhausted L2 trajectory has no safe replacement finding.
+            return replace(
+                result.observation,
+                finding_digest=l1.finding_digest,
+                categories=l1.categories,
+                finding=l1.finding,
+            )
         return result.observation
 
 

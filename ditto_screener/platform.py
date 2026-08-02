@@ -46,6 +46,7 @@ from ditto_screening_protocol import (
     ScreenResultOutcome,
     ScreenResultRequest,
     ScreenResultResponse,
+    ScreenReviewAudit,
     SourceReviewFinding,
 )
 
@@ -236,6 +237,7 @@ class PlatformClient:
         outcome: ScreenResultOutcome | None = None,
         manifest_digest: str | None = None,
         finding_digest: str | None = None,
+        review_audit_digest: str | None = None,
         review_settings_revision: int | None = None,
         review_settings_instance_id: str | None = None,
         review_settings_scope: str | None = None,
@@ -243,12 +245,14 @@ class PlatformClient:
         reason_code: str | None = None,
         evidence: list[ScreenEvidenceItem] | None = None,
         finding: SourceReviewFinding | None = None,
+        review_audit: ScreenReviewAudit | None = None,
         image_sha256: str | None = None,
         image_size_bytes: int | None = None,
         image_id: str | None = None,
         image_ref: str | None = None,
         image_upload_id: UUID | None = None,
         build_only: bool = False,
+        deferred_source_review: bool = False,
     ) -> ScreenResultResponse:
         """Report a signed pass/fail verdict for ``agent_id``."""
         url = f"{self._base}{_PREFIX}/agent/{agent_id}/result"
@@ -262,6 +266,7 @@ class PlatformClient:
             outcome=outcome,
             manifest_digest=manifest_digest,
             finding_digest=finding_digest,
+            review_audit_digest=review_audit_digest,
             review_settings_revision=review_settings_revision,
             review_settings_instance_id=review_settings_instance_id,
             review_settings_scope=review_settings_scope,
@@ -269,12 +274,14 @@ class PlatformClient:
             reason_code=reason_code,
             evidence=evidence,
             finding=finding,
+            review_audit=review_audit,
             image_sha256=image_sha256,
             image_size_bytes=image_size_bytes,
             image_id=image_id,
             image_ref=image_ref,
             image_upload_id=image_upload_id,
             build_only=build_only,
+            deferred_source_review=deferred_source_review,
         )
         body = payload.model_dump(mode="json")
         for attempt in range(len(_VERDICT_RETRY_DELAYS_SECONDS) + 1):

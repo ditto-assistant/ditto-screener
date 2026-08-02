@@ -117,6 +117,29 @@ def test_typed_quarantine_signature_binds_private_evidence_digests() -> None:
     }
 
 
+def test_deferred_source_review_is_signed_only_when_true() -> None:
+    base = {
+        "screener_hotkey": _HOTKEY,
+        "agent_id": _AGENT,
+        "attempt_id": _ATTEMPT,
+        "passed": False,
+        "outcome": ScreenResultOutcome.QUARANTINE,
+        "manifest_digest": "12" * 32,
+        "reason_code": "behavioral-oracle-failed",
+    }
+    legacy = verdict_signing_message(**base)
+    deferred = verdict_signing_message(**base, deferred_source_review=True)
+    legacy_payload = json.loads(
+        legacy.removeprefix(b"ditto-screen-result:v5:").decode()
+    )
+    deferred_payload = json.loads(
+        deferred.removeprefix(b"ditto-screen-result:v5:").decode()
+    )
+    assert "deferred_source_review" not in legacy_payload
+    assert deferred_payload["deferred_source_review"] is True
+    assert deferred != legacy
+
+
 def test_policy_v9_signature_requires_typed_outcome() -> None:
     with pytest.raises(ValueError, match="requires typed outcome"):
         verdict_signing_message(

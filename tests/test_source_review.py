@@ -3118,6 +3118,22 @@ def test_every_static_review_failure_message_maps_to_a_named_code() -> None:
     )
 
 
+def test_source_review_budget_exhaustion_has_public_safe_exact_accounting() -> None:
+    error = source_review_module.SourceReviewBudgetExhausted(
+        "source-review-step-budget-exhausted",
+        max_steps=20,
+        steps_used=20,
+        read_bytes_used=456_789,
+        read_files_used=17,
+    )
+    audit = error.audit()
+    assert audit.stage == "l1"
+    assert audit.reason_code == "source-review-step-budget-exhausted"
+    assert audit.steps_used == audit.max_steps == 20
+    assert audit.read_bytes_used == 456_789
+    assert "source" not in audit.model_dump(mode="json")
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [

@@ -21,6 +21,8 @@ def verdict_signing_message(
     outcome: ScreenResultOutcome | None = None,
     manifest_digest: str | None = None,
     finding_digest: str | None = None,
+    review_audit_digest: str | None = None,
+    deferred_source_review: bool = False,
     review_settings_revision: int | None = None,
     review_settings_instance_id: str | None = None,
     review_settings_scope: str | None = None,
@@ -62,6 +64,12 @@ def verdict_signing_message(
                     "review_settings_scope": review_settings_scope,
                 }
             )
+        if review_audit_digest is not None:
+            fields["review_audit_digest"] = review_audit_digest
+        # Omit the false default so mixed-version signatures remain byte-for-byte
+        # compatible. A true deferred claim is explicitly bound against replay.
+        if deferred_source_review:
+            fields["deferred_source_review"] = True
         payload = json.dumps(
             fields,
             sort_keys=True,

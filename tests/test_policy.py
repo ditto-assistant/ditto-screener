@@ -638,6 +638,33 @@ async def test_build_only_runs_oracle_but_never_quarantines() -> None:
     assert decision.submits_verdict and decision.passed
 
 
+async def test_deferred_source_review_keeps_oracle_quarantine_authoritative() -> None:
+    async def observe(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ef" * 32,
+            elapsed_ms=900,
+            gateway_calls=2,
+            oracle_answer_correct=False,
+        )
+
+    decision = await _oracle_engine().evaluate(
+        _context(observe),
+        build_only=True,
+        deferred_source_review=True,
+    )
+    assert decision.outcome == ScreeningOutcome.QUARANTINE
+
+
+async def test_deferred_source_review_requires_mechanical_lane() -> None:
+    async def observe(*_):  # type: ignore[no-untyped-def]
+        raise AssertionError("invalid mode must fail before module evaluation")
+
+    with pytest.raises(ValueError, match="requires the mechanical lane"):
+        await _oracle_engine().evaluate(_context(observe), deferred_source_review=True)
+
+
 async def test_build_only_still_reports_genuine_infra_failure() -> None:
     """Build-only downgrades review verdicts but not real infra failures."""
 
