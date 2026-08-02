@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.21.2 (2026-08-02)
+
+### Bug Fixes
+
+- Keep mechanical admission policy-free
+  ([#109](https://github.com/ditto-assistant/ditto-screener/pull/109),
+  [`6f436aa`](https://github.com/ditto-assistant/ditto-screener/commit/6f436aa14fe06841dd72846abd0044204810ff16))
+
+
 ## v0.21.1 (2026-08-02)
 
 ### Bug Fixes
