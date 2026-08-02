@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.21.0 (2026-08-02)
+
+### Bug Fixes
+
+- **screener**: Defer bounded inconclusive reviews
+  ([#103](https://github.com/ditto-assistant/ditto-screener/pull/103),
+  [`9a1c788`](https://github.com/ditto-assistant/ditto-screener/commit/9a1c7886c7d139d9c278066aa67bfd64106418e1))
+
+### Features
+
+- **screener**: Strengthen policy v9 source review
+  ([#101](https://github.com/ditto-assistant/ditto-screener/pull/101),
+  [`43e2898`](https://github.com/ditto-assistant/ditto-screener/commit/43e2898b439932b5cacaace093b1b70395c5ef91))
+
+
 ## v0.20.13 (2026-08-01)
 
 ### Bug Fixes
