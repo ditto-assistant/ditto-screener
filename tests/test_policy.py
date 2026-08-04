@@ -626,9 +626,46 @@ async def test_build_only_skips_behavioral_oracle_and_passes() -> None:
     assert decision.submits_verdict and decision.passed
 
 
-async def test_deferred_source_review_mechanical_lane_skips_oracle() -> None:
-    async def observe(*_):  # type: ignore[no-untyped-def]
-        raise AssertionError("deferred mechanical admission must not run the oracle")
+async def test_deferred_source_review_mechanical_lane_requires_model_use() -> None:
+    calls = 0
+
+    async def observe(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=300,
+            gateway_calls=0,
+            oracle_answer_correct=False,
+            gateway_token_observed=False,
+        )
+
+    decision = await _oracle_engine().evaluate(
+        _context(observe),
+        build_only=True,
+        deferred_source_review=True,
+    )
+    assert calls == 1
+    assert decision.outcome == ScreeningOutcome.INCONCLUSIVE
+    assert any(
+        item.code == "behavioral-oracle-insufficient-round-trips"
+        for item in decision.evidence
+    )
+
+
+async def test_deferred_source_review_mechanical_lane_passes_model_user() -> None:
+    async def observe(challenge_id, _request, _timeout):  # type: ignore[no-untyped-def]
+        return ChallengeObservation(
+            challenge_id=challenge_id,
+            ok=True,
+            response_digest="ab" * 32,
+            elapsed_ms=300,
+            gateway_calls=1,
+            oracle_answer_correct=True,
+            gateway_token_observed=True,
+        )
 
     decision = await _oracle_engine().evaluate(
         _context(observe),

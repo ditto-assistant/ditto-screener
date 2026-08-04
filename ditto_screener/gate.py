@@ -615,13 +615,14 @@ class BuildGate:
         already-adjudicated prerequisite rebuild and score-first admission
         whose deep source review is deferred. It skips source review but still
         performs archive/contract validation, build, serve, isolation, and
-        image-export work. A mechanical screen can only pass, report a genuine
-        deterministic or infrastructure failure in those stages, or run out of
-        lease budget; private-policy checks run in the later full review.
+        image-export work. Fresh deferred admissions also run the inexpensive
+        behavioral model-use oracle before validator work is allowed; an
+        already-adjudicated rebuild does not repeat policy checks.
 
         ``deferred_source_review`` distinguishes a fresh score-first admission
         from an already-adjudicated rebuild for the signed platform contract.
-        Both mechanical paths skip private-policy work here.
+        Both mechanical paths skip source review; only the fresh path runs the
+        behavioral model-use oracle.
         """
 
         loop = asyncio.get_running_loop()

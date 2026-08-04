@@ -967,21 +967,20 @@ class PolicyEngine:
                     )
                 selected = selected or result.disposition == ModuleDisposition.TRIPWIRE
 
-        # Mechanical admission proves that the submitted artifact can be
-        # validated, built, started, isolated, and exported. It deliberately
-        # spends no private-policy/model budget: a fresh submission receives
-        # the complete selector + behavioral review after it qualifies, while
-        # a rebuild already passed that review. Running the behavioral oracle
-        # here made an otherwise successful image build "inconclusive" and put
-        # it into the full lease backoff before validators could ever score it.
-        if build_only:
+        # An already-adjudicated rebuild only has to reproduce its mechanical
+        # image. A fresh score-first admission may defer expensive source review,
+        # but it must still prove that the served response path actually invokes
+        # the locked model. Otherwise deterministic or embedding-only responders
+        # consume validator budget before policy v9 ever examines them.
+        if build_only and not deferred_source_review:
             return self._decision(ScreeningOutcome.PASS, evidence, finding)
 
         # Challenge-phase modules run on every full review, decoupled from the
         # selector tripwire. The always-on behavioral oracle lives here so a
         # harness cannot behave only during a ~5% audit. It still runs for a
-        # qualifying submission's deferred review; mechanical admission above
-        # only establishes that an image is ready for validator scoring.
+        # qualifying submission's deferred review and during a fresh deferred
+        # mechanical admission. The latter skips source review but still proves
+        # model use before an image is admitted to validator scoring.
         challenges = tuple(m for m in self.modules if m.phase == "challenge")
         cleared = False
         for module in challenges:
