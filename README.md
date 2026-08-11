@@ -1,5 +1,12 @@
 # Ditto Screener
 
+> [!IMPORTANT]
+> This repository is archived. Development has moved to
+> [`ditto-assistant/ditto-subnet`](https://github.com/ditto-assistant/ditto-subnet),
+> with the maintained worker in
+> [`workers/screener`](https://github.com/ditto-assistant/ditto-subnet/tree/main/workers/screener).
+> Use the monorepo for current documentation, issues, and pull requests.
+
 Platform-operated screening worker for Ditto SN118 submissions.
 
 The stable core leases one submission at a time from `ditto-platform`,
