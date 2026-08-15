@@ -43,51 +43,9 @@ def test_deploy_reinstalls_and_probes_embedded_protocol() -> None:
     assert "verify-installed-signing-contract.py" in bootstrap
 
 
-def test_deploy_workflow_discovers_screeners_by_label_not_a_fixed_vm() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-
-    # The pet VM name/zone are no longer hardcoded: discovery is label-driven.
-    assert "SCREENER_VM: ditto-screener-prod" not in workflow
-    assert "GCP_ZONE: us-central1-c" not in workflow
-    assert "labels.env=prod" in workflow
-    assert "labels.role=screener" in workflow
-    assert "labels.role=screener-fleet" in workflow
-    # Zone projection is normalized to a bare name for --zone.
-    assert "zone.basename()" in workflow
-
-
-def test_deploy_workflow_fans_out_over_the_fleet_in_parallel() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-
-    # Discovery feeds a matrix so hosts deploy concurrently (bounded), instead of
-    # a sequential loop that could exceed the job timeout on a growing fleet.
-    assert "matrix: ${{ fromJson(needs.discover.outputs.matrix) }}" in workflow
-    assert "fail-fast: false" in workflow
-    assert "max-parallel:" in workflow
-    # Each host still receives the exact workflow commit.
-    assert '"$name" "$zone" \'${{ github.sha }}\'' in workflow
-
-
-def test_deploy_workflow_enables_numpy_before_iap_transport() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-    deploy_job = workflow.split("\n  deploy:\n", 1)[1]
-
-    # IAP checks for NumPy in gcloud's own interpreter and automatically uses
-    # the accelerated websocket path when the import succeeds.
-    setup = deploy_job.index("google-github-actions/setup-gcloud@v2")
-    python = deploy_job.index("gcloud info --format='value(basic.python_location)'")
-    install = deploy_job.index('"$gcloud_python" -m pip install')
-    verify = deploy_job.index('import numpy; print(f"NumPy {numpy.__version__}')
-    transport = deploy_job.index("deploy-screener-via-ssh.sh")
-    assert setup < python < install < verify < transport
-
-
-def test_deploy_streams_updater_over_one_ssh_session() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+def test_deploy_transport_streams_updater_over_one_ssh_session() -> None:
     transport = (ROOT / "scripts" / "deploy-screener-via-ssh.sh").read_text()
 
-    assert "gcloud compute scp" not in workflow
-    assert "deploy-screener-via-ssh.sh" in workflow
     assert transport.count("gcloud compute ssh") == 1
     assert '<"$updater"' in transport
     assert "/tmp/update-screener.sh" not in transport
@@ -167,23 +125,16 @@ def test_core_e2e_is_daily_and_manually_dispatchable() -> None:
     assert "if: always()" in workflow
 
 
-def test_release_commit_triggers_deploy_without_recursive_release() -> None:
-    pyproject = (ROOT / "pyproject.toml").read_text()
-    deploy_workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
-    release_workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+def test_production_automation_is_cut_over_to_monorepo() -> None:
+    guide = (ROOT / "MONOREPO.md").read_text()
 
-    # Semantic Release writes the version bump after the feature commit has
-    # already triggered deployment. That release commit must run the push-based
-    # deploy workflow so production receives the newly reported version.
-    assert 'commit_message = "chore(release): v{version}"' in pyproject
-    assert "[skip ci]" not in pyproject
-    assert "push:\n    branches: [main]" in deploy_workflow
+    for legacy_workflow in ("deploy.yml", "release.yml", "bake-image.yml"):
+        assert not (ROOT / ".github" / "workflows" / legacy_workflow).exists()
 
-    # The release workflow excludes its own generated commit, preventing a
-    # release loop without suppressing the separate deploy workflow.
-    assert "!startsWith(github.event.head_commit.message, 'chore(release):')" in (
-        release_workflow
-    )
+    assert "ditto-assistant/ditto-subnet/workers/screener" in guide
+    assert ".github/workflows/release.yml" in guide
+    assert ".github/workflows/screener-deploy.yml" in guide
+    assert ".github/workflows/screener-bake.yml" in guide
 
 
 def test_updater_enables_the_unit_so_it_survives_a_reboot() -> None:
@@ -401,16 +352,13 @@ def test_bootstrap_bake_mode_provisions_before_any_secret() -> None:
     )
 
 
-def test_golden_image_bake_pipeline_exists() -> None:
+def test_golden_image_bake_configuration_remains_with_screener_source() -> None:
     packer = (ROOT / "packer" / "screener-fleet.pkr.hcl").read_text()
-    workflow = (ROOT / ".github" / "workflows" / "bake-image.yml").read_text()
 
     assert "image_family      = var.image_family" in packer
     assert "ditto-screener-fleet" in packer
     # Bakes via the same bootstrap script in bake mode; stores no secret.
     assert "SCREENER_BAKE_ONLY=1" in packer
-    assert "environment: prod" in workflow
-    assert "GCP_SCREENER_BAKE_SA" in workflow
 
 
 def test_systemd_unit_runs_the_extracted_screener_entrypoint() -> None:
